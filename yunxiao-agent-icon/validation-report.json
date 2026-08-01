@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "renderBlockingErrorCount": 0,
+  "softWarningCount": 0,
+  "errors": [],
+  "warnings": [],
+  "projectFileHashes": {
+    "yunxiao-agent-icon.design": "6f0f4a99dbdc923b67bfa99d150c0aca40512a591ee4da64872dea36440cb2ac",
+    "runtime-orchestration-summary.json": "1681b686166a84d8a4c890e19955f802715cfe49f9f61939ba2f61e908bca44c",
+    "assets/yunxiao-agent-icon.png": "d45374a220711d966595bff43124daed6c6bcebfa1078f1a55e588200db09d74"
+  },
+  "designDir": "d:\\python_project\\ai_training\\vscodePlugin\\yunxiao-agent\\yunxiao-agent-icon",
+  "checkedAt": "2026-08-01T05:49:15.197Z"
+}

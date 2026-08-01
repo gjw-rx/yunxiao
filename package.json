@@ -1,10 +1,16 @@
 {
   "name": "yunxiao-agent",
-  "displayName": "ai-chat",
+  "displayName": "云效 Agent",
+  "publisher": "yunxiao",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yunxiao/yunxiao-agent"
+  },
   "description": "码力云效-对接自有ai服务",
-  "version": "0.0.1",
+  "version": "0.0.3",
+  "icon": "media/icon.png",
   "engines": {
-    "vscode": "^1.125.0"
+    "vscode": "^1.107.0"
   },
   "categories": [
     "Other"
@@ -12,12 +18,56 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "yunxiaoAgentContainer",
+          "title": "云效 Agent",
+          "icon": "media/icon.png"
+        }
+      ]
+    },
+    "views": {
+      "yunxiaoAgentContainer": [
+        {
+          "type": "webview",
+          "id": "yunxiaoAgent.chatView",
+          "name": "对话",
+          "retainContextWhenHidden": true
+        }
+      ]
+    },
     "commands": [
       {
-        "command": "yunxiao-agent.helloWorld",
-        "title": "Hello World"
+        "command": "yunxiaoAgent.openPanel",
+        "title": "云效 Agent: 打开对话面板"
+      },
+      {
+        "command": "yunxiaoAgent.newSession",
+        "title": "云效 Agent: 新建会话",
+        "icon": "$(add)"
       }
-    ]
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "yunxiaoAgent.newSession",
+          "when": "view == yunxiaoAgent.chatView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "云效 Agent",
+      "properties": {
+        "yunxiaoAgent.serviceBaseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8002",
+          "description": "AI 服务的 Base URL（FastAPI 服务地址）",
+          "scope": "window"
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
@@ -34,19 +84,23 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.125.0",
+    "@types/marked": "^5.0.2",
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
-    "typescript-eslint": "^8.61.1",
-    "eslint": "^10.5.0",
+    "@types/vscode": "^1.107.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
     "esbuild": "^0.28.1",
+    "eslint": "^10.5.0",
     "npm-run-all": "^4.1.5",
     "typescript": "^6.0.3",
-    "@vscode/test-cli": "^0.0.15",
-    "@vscode/test-electron": "^3.0.0"
+    "typescript-eslint": "^8.61.1"
   },
   "overrides": {
     "diff": "^8.0.4",
     "serialize-javascript": "^7.0.6"
+  },
+  "dependencies": {
+    "marked": "^18.0.7"
   }
 }

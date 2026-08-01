@@ -1,0 +1,44 @@
+{
+  "project": {
+    "resolvedLane": "graphic_bitmap_first",
+    "selectedIntentWorkflowRead": true,
+    "contextRequirementsLoaded": [
+      { "path": "shared-runtime/runtime-boundaries/lane-runtime-contracts.md", "readStatus": "loaded", "bodyRead": true },
+      { "path": "shared-runtime/design-artifact-formats/graphic-asset-design-file-format.md", "readStatus": "loaded", "bodyRead": true },
+      { "path": "shared-runtime/deterministic-tooling/validate-graphic-asset-design.mjs", "readStatus": "loaded", "bodyRead": true },
+      { "path": "delivery-quality/delivery-evidence-contract.md", "readStatus": "loaded", "bodyRead": false },
+      { "path": "intent-workflows/intent-graphic-asset-generation/INTENT_WORKFLOW.md", "readStatus": "loaded", "bodyRead": true },
+      { "path": "intent-workflows/intent-graphic-asset-generation/start-graphic-asset-project.md", "readStatus": "loaded", "bodyRead": true },
+      { "path": "intent-workflows/intent-graphic-asset-generation/graphic-text-controllability-gate.md", "readStatus": "loaded", "bodyRead": true },
+      { "path": "intent-workflows/intent-graphic-asset-generation/graphic-asset-dispatch-contract.md", "readStatus": "loaded", "bodyRead": true }
+    ],
+    "contextReadScope": "graphic-asset lane only",
+    "validationRunDiscipline": "validate-graphic-asset-design.mjs + validate-finish-readiness.mjs --check=all",
+    "graphicStrategyGate": {
+      "graphicStrategyGate": "bitmap-first",
+      "textCriticality": "low",
+      "copyDensity": "none",
+      "coreInfoTypes": [],
+      "bitmapFirstAllowed": true,
+      "layoutStaticRequired": false,
+      "graphicStrategyRoutingReason": "Icon image generation itself is the deliverable; no editable/readable text required, only geometric AI-coding glyph on blue background."
+    },
+    "visualQualityCheckpoints": [
+      "128x128 square 1:1 app-icon composition",
+      "Blue palette (deep navy to electric blue/cyan accent)",
+      "AI-coding motif: code chevrons merged with AI sparkle",
+      "Flat vector style, crisp edges, reads at small sizes"
+    ],
+    "lowValueCallWatchdog": { "noProgressNextAction": "dispatch generation then register .design node" }
+  },
+  "operation": "create-image-project",
+  "assetPlan": [
+    {
+      "title": "云效 Agent AI 编程插件图标",
+      "filename": "yunxiao-agent-icon.png",
+      "deliverableType": "app-icon",
+      "intendedAspect": "square 1:1 (128x128)",
+      "status": "planned"
+    }
+  ]
+}

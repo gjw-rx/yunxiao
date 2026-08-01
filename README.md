@@ -1,71 +1,40 @@
-# yunxiao-agent README
+# 云效 Agent — VSCode 插件
 
-This is the README for your extension "yunxiao-agent". After writing up a brief description, we recommend including the following sections.
+对接自有 AI Agent 服务的 VSCode 对话面板，支持流式回复、Markdown 渲染、多 Agent 切换。
 
-## Features
+## 功能
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+- **多 Agent 选择** — 自动加载服务端配置的 Agent 列表
+- **流式对话** — SSE 实时推送，打字机效果逐字显示回复
+- **Markdown 渲染** — AI 回复支持代码块、列表、链接等格式
+- **会话管理** — 新建会话、加载历史消息
+- **停止生成** — 中断正在进行的流式回复
+- **可配置服务地址** — Settings 中修改，无需改代码
 
-For example if there is an image subfolder under your extension project workspace:
+## 使用方式
 
-\!\[feature X\]\(images/feature-x.png\)
+1. `Ctrl+Shift+P` → 输入 **云效 Agent: 打开对话面板**
+2. 在顶部下拉框选择 Agent
+3. 点击「新会话」创建对话
+4. 在输入框输入消息，`Enter` 发送，`Shift+Enter` 换行
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+## 前置条件
 
-## Requirements
+- AI Agent 后端服务已启动（默认 `http://127.0.0.1:8002`）
+- 后端至少装配一个 Agent
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+## 扩展设置
 
-## Extension Settings
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `yunxiaoAgent.serviceBaseUrl` | `http://127.0.0.1:8002` | AI 服务的 Base URL |
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+在 VSCode Settings 中搜索「云效」即可修改。
 
-For example:
+## 安装 .vsix
 
-This extension contributes the following settings:
+```bash
+code --install-extension yunxiao-agent-0.0.1.vsix
+```
 
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
-
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
----
-
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+或在 VSCode 内：扩展面板 → 右上角 `···` → 从 VSIX 安装。
