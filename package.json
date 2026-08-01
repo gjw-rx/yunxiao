@@ -65,6 +65,18 @@
           "default": "http://127.0.0.1:8002",
           "description": "AI 服务的 Base URL（FastAPI 服务地址）",
           "scope": "window"
+        },
+        "yunxiaoAgent.maxFileSize": {
+          "type": "number",
+          "default": 1048576,
+          "description": "fs.read_file 读取文件大小上限（字节），默认 1MB",
+          "scope": "window"
+        },
+        "yunxiaoAgent.toolTimeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "description": "本地工具执行超时（毫秒），默认 30 秒",
+          "scope": "window"
         }
       }
     }

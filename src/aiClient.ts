@@ -1,6 +1,9 @@
 import * as http from 'http';
 import * as https from 'https';
 import { URL } from 'url';
+import { SseStreamParser, type SseCallbacks } from './protocol/sseHandler';
+import { streamToolResult } from './protocol/toolCallProtocol';
+import type { ToolResult, ToolSchema } from './core/types';
 
 // ---------- 类型定义 ----------
 
@@ -28,19 +31,13 @@ interface ApiResponse<T> {
 	message?: string;
 }
 
-export interface StreamCallbacks {
-	onContent: (text: string) => void;
-	onThought?: (text: string) => void;
-	onToolStart?: (toolName: string) => void;
-	onToolEnd?: (output: string) => void;
-	onEnd: () => void;
-	onError: (err: Error) => void;
-}
-
 interface SessionResult {
 	session_id: string;
 	agent_id: string;
 }
+
+/** 流式回调（与 sseHandler.SseCallbacks 一致，含 Phase 1 新增 onToolCall/onPlan/onProgress）。 */
+export type StreamCallbacks = SseCallbacks;
 
 // ---------- 通用 JSON 请求 ----------
 
@@ -86,58 +83,6 @@ function request<T>(baseUrl: string, path: string, method: string, body?: unknow
 	});
 }
 
-// ---------- SSE 解析 ----------
-
-function handleSseBlock(block: string, cbs: StreamCallbacks): void {
-	for (const line of block.split('\n')) {
-		const trimmed = line.trim();
-		if (!trimmed.startsWith('data:')) {
-			continue;
-		}
-		const jsonStr = trimmed.slice(5).trim();
-		if (!jsonStr) {
-			continue;
-		}
-		try {
-			const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
-
-			// 流中错误信封：{ success: false, error: "..." }
-			if (parsed.success === false) {
-				cbs.onError(new Error((parsed.error as string) ?? '流式请求失败'));
-				return;
-			}
-
-			const evtType = parsed.type as string | undefined;
-			const evtData = parsed.data as string | undefined;
-
-			switch (evtType) {
-				case 'content':
-					if (typeof evtData === 'string') {
-						cbs.onContent(evtData);
-					}
-					break;
-				case 'thought':
-					if (typeof evtData === 'string' && cbs.onThought) {
-						cbs.onThought(evtData);
-					}
-					break;
-				case 'tool_start':
-					if (typeof evtData === 'string' && cbs.onToolStart) {
-						cbs.onToolStart(evtData);
-					}
-					break;
-				case 'tool_end':
-					if (typeof evtData === 'string' && cbs.onToolEnd) {
-						cbs.onToolEnd(evtData);
-					}
-					break;
-			}
-		} catch {
-			// 非 JSON 行，忽略
-		}
-	}
-}
-
 // ---------- AIClient ----------
 
 export class AIClient {
@@ -147,10 +92,13 @@ export class AIClient {
 		return request<AgentInfo[]>(this.baseUrl, '/api/agent/config', 'GET');
 	}
 
-	createSession(agentId: string): Promise<SessionResult> {
-		return request<SessionResult>(this.baseUrl, '/api/agent/invoke/session', 'POST', {
-			agent_id: agentId,
-		});
+	/** 创建会话；localTools 提供时一并上报本地工具 schema 给云端装配。 */
+	createSession(agentId: string, localTools?: ToolSchema[]): Promise<SessionResult> {
+		const body: Record<string, unknown> = { agent_id: agentId };
+		if (localTools && localTools.length > 0) {
+			body.local_tools = localTools;
+		}
+		return request<SessionResult>(this.baseUrl, '/api/agent/invoke/session', 'POST', body);
 	}
 
 	getHistory(sessionId: string, offset = 0, limit = 50): Promise<MessageInfo[]> {
@@ -158,20 +106,34 @@ export class AIClient {
 		return request<MessageInfo[]>(this.baseUrl, `/api/agent/invoke/history${qs}`, 'GET');
 	}
 
-	/** 流式发消息，返回 AbortController 用于中断 */
-	streamMessage(
-		body: { session_id: string; text: string },
-		cbs: StreamCallbacks
+	/** 流式发消息，返回 AbortController 用于中断。事件经 SseStreamParser 解析后分发到回调。 */
+	streamMessage(sessionId: string, text: string, cbs: SseCallbacks): AbortController {
+		return this.openSseStream(
+			'/api/agent/invoke/message/stream',
+			{ session_id: sessionId, text },
+			cbs
+		);
+	}
+
+	/** 提交工具结果并读取续流，返回 AbortController 用于中断。 */
+	submitToolResult(result: ToolResult, sessionId: string, cbs: SseCallbacks): AbortController {
+		return streamToolResult(result, sessionId, { baseUrl: this.baseUrl }, cbs);
+	}
+
+	/** 通用：POST 一个 SSE 端点并读取流，分发到回调。 */
+	private openSseStream(
+		pathStr: string,
+		body: unknown,
+		cbs: SseCallbacks
 	): AbortController {
 		const controller = new AbortController();
-		const url = `${this.baseUrl}/api/agent/invoke/message/stream`;
+		const url = `${this.baseUrl}${pathStr}`;
 
-		// 使用 fetch + ReadableStream（与浏览器端一致的 SSE 解析模式）
 		fetch(url, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
-				'Accept': 'text/event-stream',
+				Accept: 'text/event-stream',
 			},
 			body: JSON.stringify(body),
 			signal: controller.signal,
@@ -179,61 +141,54 @@ export class AIClient {
 			.then(async (res) => {
 				if (!res.ok) {
 					try {
-						const parsed = await res.json() as ApiResponse<unknown>;
-						cbs.onError(new Error(parsed.error ?? `服务返回状态码 ${res.status}`));
+						const parsed = (await res.json()) as ApiResponse<unknown>;
+						cbs.onError?.(new Error(parsed.error ?? `服务返回状态码 ${res.status}`));
 					} catch {
-						cbs.onError(new Error(`服务返回状态码 ${res.status}`));
+						cbs.onError?.(new Error(`服务返回状态码 ${res.status}`));
 					}
 					return;
 				}
 
-				// 检查 Content-Type：application/json 表示流建立前失败（如会话不存在）
+				// Content-Type 为 application/json 表示流建立前失败（如会话不存在）
 				const ct = res.headers.get('content-type') ?? '';
 				if (ct.includes('application/json')) {
 					try {
-						const parsed = await res.json() as ApiResponse<unknown>;
-						cbs.onError(new Error(parsed.error ?? '请求失败'));
+						const parsed = (await res.json()) as ApiResponse<unknown>;
+						cbs.onError?.(new Error(parsed.error ?? '请求失败'));
 					} catch {
-						cbs.onError(new Error('响应解析失败'));
+						cbs.onError?.(new Error('响应解析失败'));
 					}
 					return;
 				}
 
 				if (!res.body) {
-					cbs.onError(new Error('不支持 ReadableStream'));
+					cbs.onError?.(new Error('不支持 ReadableStream'));
 					return;
 				}
 
 				const reader = res.body.getReader();
 				const decoder = new TextDecoder('utf-8');
-				let buffer = '';
+				const parser = new SseStreamParser(cbs);
 
-				// SSE 以 \n\n 分隔事件，逐块解析
 				while (true) {
 					const { done, value } = await reader.read();
 					if (done) {
 						break;
 					}
-
-					buffer += decoder.decode(value, { stream: true });
-
-					let sep: number;
-					while ((sep = buffer.indexOf('\n\n')) !== -1) {
-						const rawEvent = buffer.slice(0, sep);
-						buffer = buffer.slice(sep + 2);
-						handleSseBlock(rawEvent, cbs);
+					parser.feed(decoder.decode(value, { stream: true }));
+					if (controller.signal.aborted) {
+						break;
 					}
 				}
-
-				// 处理缓冲区剩余
-				if (buffer.trim()) {
-					handleSseBlock(buffer, cbs);
+				if (!controller.signal.aborted) {
+					parser.flush();
+					cbs.onEnd?.();
 				}
-				cbs.onEnd();
 			})
 			.catch((err: Error) => {
+				// AbortError 静默处理（用户主动中断）
 				if (err.name !== 'AbortError') {
-					cbs.onError(err);
+					cbs.onError?.(err);
 				}
 			});
 

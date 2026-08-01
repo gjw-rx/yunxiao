@@ -1,8 +1,16 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { AIClient } from './aiClient';
+import type { ToolRegistry } from './core/toolRegistry';
+import type { SessionManager } from './core/sessionManager';
+import type { EventBus, AgentEvent } from './core/eventBus';
 
-const activeControllers = new Map<string, AbortController>();
+interface ChatViewDeps {
+	readonly client: AIClient;
+	readonly registry: ToolRegistry;
+	readonly sessionManager: SessionManager;
+	readonly eventBus: EventBus;
+}
 
 function getServiceBaseUrl(): string {
 	return vscode.workspace
@@ -37,13 +45,23 @@ function getNonce(): string {
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
 	private _view?: vscode.WebviewView;
-	private _client: AIClient;
+	private readonly _client: AIClient;
+	private readonly _registry: ToolRegistry;
+	private readonly _sessionManager: SessionManager;
+	private readonly _eventBus: EventBus;
 	private _baseUrl: string;
 	private _configListener?: vscode.Disposable;
+	private _currentSessionId?: string;
 
-	constructor(private readonly _context: vscode.ExtensionContext) {
+	constructor(
+		private readonly _context: vscode.ExtensionContext,
+		deps: ChatViewDeps
+	) {
 		this._baseUrl = getServiceBaseUrl();
-		this._client = new AIClient(this._baseUrl);
+		this._client = deps.client;
+		this._registry = deps.registry;
+		this._sessionManager = deps.sessionManager;
+		this._eventBus = deps.eventBus;
 	}
 
 	resolveWebviewView(
@@ -76,15 +94,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 				const newUrl = getServiceBaseUrl();
 				if (newUrl !== this._baseUrl) {
 					this._baseUrl = newUrl;
-					this._client = new AIClient(this._baseUrl);
 					vscode.window.showInformationMessage(
-						`云效 Agent: 服务地址已更新为 ${this._baseUrl}`
+						`云效 Agent: 服务地址已更新为 ${this._baseUrl}，请重新加载窗口以生效`
 					);
 				}
 			}
 		});
 
 		this._context.subscriptions.push(this._configListener);
+
+		// 订阅事件总线，将当前会话的事件转发给 webview
+		const unsub = this._eventBus.onAll((e) => this._forwardEvent(e));
+		this._context.subscriptions.push({ dispose: unsub });
+	}
+
+	/** 将当前会话的事件总线事件转发给 webview。 */
+	private _forwardEvent(e: AgentEvent): void {
+		const view = this._view;
+		if (!view || e.sessionId !== this._currentSessionId) {
+			return;
+		}
+		switch (e.type) {
+			case 'content':
+				view.webview.postMessage({ command: 'replyChunk', text: e.payload as string });
+				break;
+			case 'stream_end':
+				view.webview.postMessage({ command: 'replyEnd' });
+				break;
+			case 'error':
+				view.webview.postMessage({ command: 'error', message: e.payload as string });
+				break;
+			case 'tool_state_change': {
+				const p = e.payload as { call_id: string; state: string; tool: string; error?: string };
+				view.webview.postMessage({ command: 'toolState', ...p });
+				break;
+			}
+			case 'thought':
+				view.webview.postMessage({ command: 'thought', text: e.payload as string });
+				break;
+			case 'plan': {
+				const p = e.payload as { steps: string[] };
+				view.webview.postMessage({ command: 'plan', steps: p.steps });
+				break;
+			}
+			default:
+				break;
+		}
 	}
 
 	/** 从工具栏"新建会话"按钮触发 */
@@ -111,7 +166,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			}
 			case 'createSession': {
 				try {
-					const result = await this._client.createSession(msg.agentId as string);
+					// 重置旧会话状态
+					if (this._currentSessionId) {
+						this._sessionManager.reset(this._currentSessionId);
+					}
+					const result = await this._client.createSession(
+						msg.agentId as string,
+						this._registry.localSchemas()
+					);
+					this._currentSessionId = result.session_id;
 					view.webview.postMessage({ command: 'sessionCreated', sessionId: result.session_id });
 				} catch (err: unknown) {
 					view.webview.postMessage({
@@ -124,32 +187,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			case 'sendMessage': {
 				const sessionId = msg.sessionId as string;
 				const text = msg.text as string;
-				const controller = this._client.streamMessage(
-					{ session_id: sessionId, text },
-					{
-						onContent: (chunk) => view.webview.postMessage({ command: 'replyChunk', text: chunk }),
-						onEnd: () => {
-							view.webview.postMessage({ command: 'replyEnd' });
-							activeControllers.delete(sessionId);
-						},
-						onError: (err) => {
-							view.webview.postMessage({
-								command: 'error',
-								message: friendlyError(err, this._baseUrl),
-							});
-							view.webview.postMessage({ command: 'replyEnd' });
-							activeControllers.delete(sessionId);
-						},
-					}
-				);
-				activeControllers.set(sessionId, controller);
+				// 经会话状态机发起流；事件经事件总线回流（见 _forwardEvent）
+				this._sessionManager.sendMessage(sessionId, text);
 				break;
 			}
 			case 'stopStream': {
 				const sessionId = msg.sessionId as string;
-				activeControllers.get(sessionId)?.abort();
-				activeControllers.delete(sessionId);
-				view.webview.postMessage({ command: 'replyEnd' });
+				this._sessionManager.cancel(sessionId);
 				break;
 			}
 			case 'loadHistory': {
@@ -402,6 +446,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     @keyframes blink { 50% { opacity: 0; } }
 
+    /* ── Tool state / thought / plan ── */
+    .message.tool-state {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground, rgba(128,128,128,0.85));
+      padding: 3px 6px;
+      align-self: flex-start;
+      max-width: 100%;
+    }
+    .message.tool-state.pending,
+    .message.tool-state.running { color: var(--vscode-textLink-foreground, #4aa3ff); }
+    .message.tool-state.success { color: var(--vscode-testing-iconPassed, #3fb950); }
+    .message.tool-state.error { color: var(--vscode-errorForeground, #f55); }
+    .message.thought {
+      font-style: italic;
+      opacity: 0.7;
+      font-size: 12px;
+      align-self: flex-start;
+      padding: 2px 6px;
+    }
+    .message.plan {
+      align-self: flex-start;
+      font-size: 12px;
+      padding: 2px 6px;
+    }
+    .message.plan ol { padding-left: 18px; }
+
     /* ── Error bar ── */
     #error {
       padding: 6px 10px;
@@ -635,6 +706,66 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       setTimeout(() => { if (errorEl.textContent === msg) errorEl.textContent = ''; }, 5000);
     }
 
+    const toolRows = new Map();
+    function showToolState(tool, state, error, callId) {
+      clearPlaceholder();
+      let row = toolRows.get(callId);
+      if (!row) {
+        row = document.createElement('div');
+        row.className = 'msg-row';
+        const label = document.createElement('div');
+        label.className = 'msg-label';
+        label.textContent = '工具';
+        const bubble = document.createElement('div');
+        bubble.className = 'message tool-state ' + state;
+        row.appendChild(label);
+        row.appendChild(bubble);
+        messagesEl.appendChild(row);
+        toolRows.set(callId, row);
+      }
+      const bubble = row.querySelector('.tool-state');
+      const icon = state === 'success' ? '✔' : state === 'error' ? '✘' : '⚙';
+      bubble.className = 'message tool-state ' + state;
+      bubble.textContent = icon + ' ' + tool + ' · ' + state + (error ? ' · ' + error : '');
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+    function showThought(text) {
+      clearPlaceholder();
+      const row = document.createElement('div');
+      row.className = 'msg-row';
+      const label = document.createElement('div');
+      label.className = 'msg-label';
+      label.textContent = '思考';
+      const bubble = document.createElement('div');
+      bubble.className = 'message thought';
+      bubble.textContent = text;
+      row.appendChild(label);
+      row.appendChild(bubble);
+      messagesEl.appendChild(row);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+    function showPlan(steps) {
+      clearPlaceholder();
+      const row = document.createElement('div');
+      row.className = 'msg-row';
+      const label = document.createElement('div');
+      label.className = 'msg-label';
+      label.textContent = '计划';
+      const bubble = document.createElement('div');
+      bubble.className = 'message plan';
+      const ol = document.createElement('ol');
+      for (const s of steps) {
+        const li = document.createElement('li');
+        li.textContent = s;
+        ol.appendChild(li);
+      }
+      bubble.appendChild(ol);
+      row.appendChild(label);
+      row.appendChild(bubble);
+      messagesEl.appendChild(row);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
     function setStreaming(state) {
       isStreaming = state;
       sendBtn.style.display = state ? 'none' : 'inline-flex';
@@ -662,6 +793,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'sessionCreated': {
           currentSessionId = msg.sessionId;
           messagesEl.innerHTML = '';
+          toolRows.clear();
           inputEl.disabled = false;
           sendBtn.disabled = false;
           setStreaming(false);
@@ -676,6 +808,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (currentAssistantEl) currentAssistantEl.classList.remove('cursor');
           currentAssistantEl  = null;
           currentAssistantTxt = '';
+          break;
+        case 'toolState':
+          showToolState(msg.tool, msg.state, msg.error, msg.call_id);
+          break;
+        case 'thought':
+          showThought(msg.text);
+          break;
+        case 'plan':
+          showPlan(msg.steps);
           break;
         case 'historyLoaded':
           messagesEl.innerHTML = '';
