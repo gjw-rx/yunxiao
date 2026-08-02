@@ -38,7 +38,7 @@ class FakeStreamClient implements StreamClient {
 	private scripts: EventScript[] = [];
 	private idx = 0;
 	readonly messageCalls: { sessionId: string; text: string }[] = [];
-	readonly submitCalls: { result: ToolResult; sessionId: string }[] = [];
+	readonly submitCalls: { results: ToolResult[]; sessionId: string }[] = [];
 	setScripts(scripts: EventScript[]): void {
 		this.scripts = scripts;
 		this.idx = 0;
@@ -48,8 +48,8 @@ class FakeStreamClient implements StreamClient {
 		this.runNext(cbs);
 		return new AbortController();
 	}
-	submitToolResult(result: ToolResult, sessionId: string, cbs: SseCallbacks): AbortController {
-		this.submitCalls.push({ result, sessionId });
+	submitToolResult(results: ToolResult[], sessionId: string, cbs: SseCallbacks): AbortController {
+		this.submitCalls.push({ results, sessionId });
 		this.runNext(cbs);
 		return new AbortController();
 	}
@@ -149,8 +149,8 @@ describe('SessionManager', () => {
 			.map((e) => (e.payload as { state: string }).state);
 		assert.deepStrictEqual(states, ['pending', 'running', 'success']);
 		assert.strictEqual(client.submitCalls.length, 1);
-		assert.strictEqual(client.submitCalls[0].result.call_id, 'c1');
-		assert.strictEqual(client.submitCalls[0].result.status, 'success');
+		assert.strictEqual(client.submitCalls[0].results[0].call_id, 'c1');
+		assert.strictEqual(client.submitCalls[0].results[0].status, 'success');
 		assert.ok(events.some((e) => e.type === 'content' && e.payload === 'summary'));
 		assert.ok(events.some((e) => e.type === 'tool_result'));
 	});
@@ -168,8 +168,27 @@ describe('SessionManager', () => {
 		await waitForStreamEnd(eventBus);
 		// Assert
 		assert.strictEqual(client.submitCalls.length, 2);
-		assert.strictEqual(client.submitCalls[0].result.call_id, 'c1');
-		assert.strictEqual(client.submitCalls[1].result.call_id, 'c2');
+		assert.strictEqual(client.submitCalls[0].results[0].call_id, 'c1');
+		assert.strictEqual(client.submitCalls[1].results[0].call_id, 'c2');
+	});
+
+	it('runs a batch tool_call round: parallel execute -> batch submit', async () => {
+		// Arrange
+		const { eventBus, client, manager } = setup();
+		client.setScripts([
+			seq(emitToolCall(call('c1')), emitToolCall(call('c2')), endStream()),
+			seq(emitContent('done'), endStream()),
+		]);
+		// Act
+		manager.sendMessage('s1', 'read two files at once');
+		await waitForStreamEnd(eventBus);
+		// Assert
+		assert.strictEqual(client.submitCalls.length, 1);
+		assert.strictEqual(client.submitCalls[0].results.length, 2);
+		const callIds = client.submitCalls[0].results.map((r) => r.call_id).sort();
+		assert.deepStrictEqual(callIds, ['c1', 'c2']);
+		const statuses = client.submitCalls[0].results.map((r) => r.status);
+		assert.deepStrictEqual(statuses, ['success', 'success']);
 	});
 
 	it('posts an error result when the tool throws, then continues', async () => {
@@ -184,7 +203,7 @@ describe('SessionManager', () => {
 		await waitForStreamEnd(eventBus);
 		// Assert
 		assert.strictEqual(client.submitCalls.length, 1);
-		assert.strictEqual(client.submitCalls[0].result.status, 'error');
+		assert.strictEqual(client.submitCalls[0].results[0].status, 'error');
 		assert.ok(events.some((e) => e.type === 'content' && e.payload === 'recovered'));
 	});
 
@@ -200,7 +219,24 @@ describe('SessionManager', () => {
 		await endPromise;
 		// Assert
 		assert.strictEqual(client.submitCalls.length, 1);
-		assert.strictEqual(client.submitCalls[0].result.status, 'cancelled');
-		assert.strictEqual(client.submitCalls[0].result.call_id, 'c1');
+		assert.strictEqual(client.submitCalls[0].results[0].status, 'cancelled');
+		assert.strictEqual(client.submitCalls[0].results[0].call_id, 'c1');
+	});
+
+	it('cancels multiple pending tool_calls: posts batch cancelled results', async () => {
+		// Arrange
+		const { eventBus, client, manager } = setup();
+		client.setScripts([seq(emitToolCall(call('c1')), emitToolCall(call('c2')))]); // 无 end
+		// Act
+		manager.sendMessage('s1', 'read two files');
+		await waitForToolState(eventBus, 'pending');
+		const endPromise = waitForStreamEnd(eventBus);
+		manager.cancel('s1');
+		await endPromise;
+		// Assert
+		assert.strictEqual(client.submitCalls.length, 1);
+		assert.strictEqual(client.submitCalls[0].results.length, 2);
+		const statuses = client.submitCalls[0].results.map((r) => r.status);
+		assert.deepStrictEqual(statuses, ['cancelled', 'cancelled']);
 	});
 });

@@ -14,6 +14,9 @@ import { WriteFileTool } from '../../tools/fs/writeFile';
 import { CodeEditTool } from '../../tools/code/editFile';
 import { DiffViewer, type VsCodeShim } from '../../tools/diff/diffViewer';
 import { BaseTool, type ToolContext, type ToolExecutionResult } from '../../tools/baseTool';
+import { GetDiagnosticsTool } from '../../tools/code/getDiagnostics';
+import { WorkspaceSymbolsTool } from '../../tools/code/workspaceSymbols';
+import { FindReferencesTool } from '../../tools/code/findReferences';
 import type { ToolCall, ToolSchema } from '../../core/types';
 
 /** 慢工具：用于验证超时路径。 */
@@ -37,6 +40,7 @@ class SlowTool extends BaseTool {
 
 interface MockOptions {
 	toolCall?: ToolCall;
+	toolCallQueue?: ToolCall[];
 	toolResultContent?: string;
 	holdMessageStream?: boolean;
 }
@@ -44,6 +48,7 @@ interface MockOptions {
 /** Mock 云端：处理 /message/stream 与 /tool_result，记录请求。 */
 class MockCloud {
 	private server!: http.Server;
+	private queueIndex = 0;
 	readonly toolResults: { call_id: string; status: string; result?: string; error?: string }[] = [];
 	readonly messages: { session_id: string; text: string }[] = [];
 	port = 0;
@@ -76,8 +81,10 @@ class MockCloud {
 			if (req.url === '/api/agent/invoke/message/stream') {
 				this.messages.push(parsed as unknown as { session_id: string; text: string });
 				res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-				if (this.opts.toolCall) {
-					res.write(`data: ${JSON.stringify({ type: 'tool_call', data: this.opts.toolCall })}\n\n`);
+				if (this.opts.toolCallQueue && this.queueIndex < this.opts.toolCallQueue.length) {
+					res.write(`data: ${JSON.stringify({ type: 'tool_call', data: [this.opts.toolCallQueue[this.queueIndex++]] })}\n\n`);
+				} else if (this.opts.toolCall) {
+					res.write(`data: ${JSON.stringify({ type: 'tool_call', data: [this.opts.toolCall] })}\n\n`);
 				}
 				if (!this.opts.holdMessageStream) {
 					res.end();
@@ -85,11 +92,12 @@ class MockCloud {
 				return;
 			}
 			if (req.url === '/api/agent/invoke/tool_result') {
-				this.toolResults.push(
-					parsed as unknown as { call_id: string; status: string; result?: string; error?: string }
-				);
+				const results = (parsed as unknown as { results?: { call_id: string; status: string; result?: string; error?: string }[] }).results ?? [];
+				this.toolResults.push(...results);
 				res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-				if (this.opts.toolResultContent) {
+				if (this.opts.toolCallQueue && this.queueIndex < this.opts.toolCallQueue.length) {
+					res.write(`data: ${JSON.stringify({ type: 'tool_call', data: [this.opts.toolCallQueue[this.queueIndex++]] })}\n\n`);
+				} else if (this.opts.toolResultContent) {
 					res.write(`data: ${JSON.stringify({ type: 'content', data: this.opts.toolResultContent })}\n\n`);
 				}
 				res.end();
@@ -125,14 +133,14 @@ function waitForToolState(eventBus: EventBus, state: string, timeoutMs = 3000): 
 	});
 }
 
-function waitForToolResult(mock: MockCloud, timeoutMs = 2000): Promise<void> {
+function waitForToolResult(mock: MockCloud, count = 1, timeoutMs = 2000): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const start = Date.now();
 		const tick = () => {
-			if (mock.toolResults.length > 0) {
+			if (mock.toolResults.length >= count) {
 				resolve();
 			} else if (Date.now() - start > timeoutMs) {
-				reject(new Error('timeout waiting for mock to receive tool_result'));
+				reject(new Error(`timeout waiting for mock to receive ${count} tool_result(s)`));
 			} else {
 				setTimeout(tick, 10);
 			}
@@ -461,6 +469,136 @@ describe('E2E: Phase 2 file tools vs mock cloud', () => {
 			assert.strictEqual(mock.toolResults.length, 1);
 			assert.strictEqual(mock.toolResults[0].status, 'cancelled');
 			await assert.rejects(() => fs.stat(path.join(workspace, 'denied.ts')));
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+describe('E2E: Phase 3 code intelligence tools vs mock cloud', () => {
+	let workspace: string;
+
+	beforeEach(async () => {
+		workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'yunxiao-e2e3-'));
+		await fs.writeFile(path.join(workspace, 'hello.txt'), FILE_CONTENT);
+	});
+	afterEach(async () => {
+		await fs.rm(workspace, { recursive: true, force: true });
+	});
+
+	it('get_diagnostics end-to-end: tool_call -> code.get_diagnostics -> tool_result', async function () {
+		this.timeout(5000);
+		// Arrange
+		const mock = new MockCloud({
+			toolCall: { call_id: 'c1', tool: 'code.get_diagnostics', args: { file: 'hello.txt' }, site: 'local' },
+			toolResultContent: 'done: diagnostics',
+		});
+		await mock.start();
+
+		const eventBus = new EventBus();
+		const registry = new ToolRegistry();
+		registry.register(new GetDiagnosticsTool());
+		const router = new ToolRouter(registry);
+		const client = new AIClient(mock.baseUrl);
+
+		const manager = new SessionManager({
+			client,
+			router,
+			eventBus,
+			toolTimeoutMs: 5000,
+			getWorkspaceRoots: () => [workspace],
+			getMaxFileSize: () => undefined,
+		});
+
+		try {
+			// Act
+			manager.sendMessage('s1', 'get diagnostics');
+			await waitForStreamEnd(eventBus);
+
+			// Assert：tool_result 回传，状态 success（诊断可能为空，无语言服务）
+			assert.strictEqual(mock.toolResults.length, 1);
+			assert.strictEqual(mock.toolResults[0].call_id, 'c1');
+			assert.strictEqual(mock.toolResults[0].status, 'success');
+		} finally {
+			await mock.close();
+		}
+	});
+
+	it('workspace_symbols end-to-end: tool_call -> code.workspace_symbols -> tool_result', async function () {
+		this.timeout(5000);
+		// Arrange
+		const mock = new MockCloud({
+			toolCall: { call_id: 'c1', tool: 'code.workspace_symbols', args: { query: 'test' }, site: 'local' },
+			toolResultContent: 'done: symbols',
+		});
+		await mock.start();
+
+		const eventBus = new EventBus();
+		const registry = new ToolRegistry();
+		registry.register(new WorkspaceSymbolsTool());
+		const router = new ToolRouter(registry);
+		const client = new AIClient(mock.baseUrl);
+
+		const manager = new SessionManager({
+			client,
+			router,
+			eventBus,
+			toolTimeoutMs: 5000,
+			getWorkspaceRoots: () => [workspace],
+			getMaxFileSize: () => undefined,
+		});
+
+		try {
+			// Act
+			manager.sendMessage('s1', 'find symbols');
+			await waitForStreamEnd(eventBus);
+
+			// Assert：tool_result 回传，状态 success（符号可能为空）
+			assert.strictEqual(mock.toolResults.length, 1);
+			assert.strictEqual(mock.toolResults[0].call_id, 'c1');
+			assert.strictEqual(mock.toolResults[0].status, 'success');
+		} finally {
+			await mock.close();
+		}
+	});
+
+	it('multi-round: find_references -> get_diagnostics', async function () {
+		this.timeout(8000);
+		// Arrange：toolCallQueue 驱动多轮调用
+		const mock = new MockCloud({
+			toolCallQueue: [
+				{ call_id: 'c1', tool: 'code.find_references', args: { file: 'hello.txt', line: 1, column: 1 }, site: 'local' },
+				{ call_id: 'c2', tool: 'code.get_diagnostics', args: { file: 'hello.txt' }, site: 'local' },
+			],
+			toolResultContent: 'done: multi-round',
+		});
+		await mock.start();
+
+		const eventBus = new EventBus();
+		const registry = new ToolRegistry();
+		registry.register(new FindReferencesTool());
+		registry.register(new GetDiagnosticsTool());
+		const router = new ToolRouter(registry);
+		const client = new AIClient(mock.baseUrl);
+
+		const manager = new SessionManager({
+			client,
+			router,
+			eventBus,
+			toolTimeoutMs: 5000,
+			getWorkspaceRoots: () => [workspace],
+			getMaxFileSize: () => undefined,
+		});
+
+		try {
+			// Act
+			manager.sendMessage('s1', 'find refs then diagnostics');
+			await waitForStreamEnd(eventBus);
+
+			// Assert：两轮 tool_result 均回传
+			assert.strictEqual(mock.toolResults.length, 2);
+			assert.strictEqual(mock.toolResults[0].call_id, 'c1');
+			assert.strictEqual(mock.toolResults[1].call_id, 'c2');
 		} finally {
 			await mock.close();
 		}

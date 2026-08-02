@@ -22,7 +22,7 @@ Phase 3 本地侧引入**代码智能工具集**（5 个只读工具）与**本�
 - `code.workspace_symbols`：按符号名搜索（基于 `vscode.executeWorkspaceSymbolProvider`）
 - `code.find_references`：查引用（基于 `vscode.executeReferenceProvider`）
 - `code.go_to_definition`：跳定义（基于 `vscode.executeDefinitionProvider`）
-- `code.search_index`：基于本地 trigram 索引的模糊检索
+- ~~`code.search_index`~~：基于本地 trigram 索引的模糊检索 —— **已移除（回归 ripgrep 按需搜索，探索式查询由 `fs.search_files` + `code.find_references` 承担，见 OpenSpec change `search-index-ripgrep`）**
 
 全部新工具均为 `read` 权限、`site: local`，无需审批，经 `local_tools` 自动上报。
 

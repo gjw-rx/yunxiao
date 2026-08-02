@@ -155,7 +155,7 @@ describe('AIClient', () => {
 		const contents: string[] = [];
 		let ended = false;
 		client.submitToolResult(
-			{ call_id: 'c1', status: 'success', result: 'x' },
+			[{ call_id: 'c1', status: 'success', result: 'x' }],
 			's1',
 			{
 				onContent: (t) => contents.push(t),

@@ -115,9 +115,9 @@ export class AIClient {
 		);
 	}
 
-	/** 提交工具结果并读取续流，返回 AbortController 用于中断。 */
-	submitToolResult(result: ToolResult, sessionId: string, cbs: SseCallbacks): AbortController {
-		return streamToolResult(result, sessionId, { baseUrl: this.baseUrl }, cbs);
+	/** 批量提交工具结果并读取续流，返回 AbortController 用于中断。 */
+	submitToolResult(results: ToolResult[], sessionId: string, cbs: SseCallbacks): AbortController {
+		return streamToolResult(results, sessionId, { baseUrl: this.baseUrl }, cbs);
 	}
 
 	/** 通用：POST 一个 SSE 端点并读取流，分发到回调。 */

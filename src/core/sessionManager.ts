@@ -7,8 +7,8 @@
  *       流 B 可能再次出现 tool_call -> 续流 C ...
  *       流 B 以 content 结束且无 tool_call -> 轮次完成
  *
- * Phase 1 约定：每轮 SSE 流至多一个 tool_call（批量并行 tool_call_batch 留待后续阶段）。
- * 取消：abort 当前流；为 pending 工具发 cancelled 结果（回调置空，忽略续流）。
+ * Phase 3：每轮 SSE 流可含多个 tool_call（data 为数组），并行执行后批量回传结果。
+ * 取消：abort 当前流；为 pending 工具批量发 cancelled 结果（回调置空，忽略续流）。
  * 超时：工具执行超过 toolTimeoutMs 则发 error 结果。
  */
 import type { ToolCall, ToolResult, ToolLifecycleState } from './types';
@@ -17,13 +17,14 @@ import type { EventBus, AgentEvent } from './eventBus';
 import type { SseCallbacks } from '../protocol/sseHandler';
 import type { ToolContext } from '../tools/baseTool';
 import { ToolTimeoutError } from './errors';
+import * as logger from '../logger';
 
 /** 会话管理器驱动的流客户端（由 AIClient 实现）。 */
 export interface StreamClient {
 	/** 发起用户消息 SSE 流。 */
 	streamMessage(sessionId: string, text: string, callbacks: SseCallbacks): AbortController;
-	/** 提交工具结果并读取 SSE 续流。 */
-	submitToolResult(result: ToolResult, sessionId: string, callbacks: SseCallbacks): AbortController;
+	/** 批量提交工具结果并读取 SSE 续流。 */
+	submitToolResult(results: ToolResult[], sessionId: string, callbacks: SseCallbacks): AbortController;
 }
 
 export interface SessionManagerOptions {
@@ -85,14 +86,13 @@ export class SessionManager {
 		}
 		state.abortController?.abort();
 
-		// 为已收集的 pending 工具发 cancelled 结果（回调置空，忽略续流）
-		for (const call of state.pendingToolCalls) {
-			this.emitToolState(sessionId, call, 'error', 'user cancelled');
-			this.opts.client.submitToolResult(
-				{ call_id: call.call_id, status: 'cancelled', error: 'user cancelled' },
-				sessionId,
-				NOOP_CALLBACKS
-			);
+		// 为已收集的 pending 工具批量发 cancelled 结果（回调置空，忽略续流）
+		if (state.pendingToolCalls.length > 0) {
+			const results: ToolResult[] = state.pendingToolCalls.map((call) => {
+				this.emitToolState(sessionId, call, 'error', 'user cancelled');
+				return { call_id: call.call_id, status: 'cancelled', error: 'user cancelled' };
+			});
+			this.opts.client.submitToolResult(results, sessionId, NOOP_CALLBACKS);
 		}
 		state.pendingToolCalls = [];
 		state.running = false;
@@ -124,11 +124,11 @@ export class SessionManager {
 		state.abortController = this.opts.client.streamMessage(sessionId, text, cbs);
 	}
 
-	private startContinuationStream(sessionId: string, result: ToolResult): void {
+	private startContinuationStream(sessionId: string, results: ToolResult[]): void {
 		const state = this.getOrCreate(sessionId);
 		state.pendingToolCalls = [];
 		const cbs = this.makeCallbacks(sessionId);
-		state.abortController = this.opts.client.submitToolResult(result, sessionId, cbs);
+		state.abortController = this.opts.client.submitToolResult(results, sessionId, cbs);
 	}
 
 	/** 构造一轮 SSE 流的回调：转发事件到事件总线，收集 tool_call，结束时驱动续流。 */
@@ -156,7 +156,9 @@ export class SessionManager {
 				emit('stream_end', null);
 			},
 			onEnd: () => {
-				void this.handleStreamEnd(sessionId);
+				this.handleStreamEnd(sessionId).catch((err) => {
+					logger.error('[SessionManager] handleStreamEnd 异常:', err instanceof Error ? err.stack ?? err.message : err);
+				});
 			},
 		};
 	}
@@ -172,40 +174,37 @@ export class SessionManager {
 			return;
 		}
 
-		// Phase 1：每轮处理首个 tool_call；其余视为不支持，发 cancelled
-		const call = state.pendingToolCalls.shift() as ToolCall;
-		const extras = state.pendingToolCalls.splice(0);
-		for (const ex of extras) {
-			this.emitToolState(sessionId, ex, 'error', 'batch not supported in Phase 1');
-			this.opts.client.submitToolResult(
-				{ call_id: ex.call_id, status: 'cancelled', error: 'batch not supported in Phase 1' },
-				sessionId,
-				NOOP_CALLBACKS
-			);
+		// Phase 3：并行执行全部 pending 工具，收集结果后批量续流
+		const calls = state.pendingToolCalls.splice(0);
+		for (const call of calls) {
+			this.emitToolState(sessionId, call, 'running');
+		}
+		const results = await Promise.all(
+			calls.map(async (call): Promise<ToolResult> => {
+				try {
+					const r = await this.executeWithTimeout(sessionId, call);
+					this.emitToolState(
+						sessionId,
+						call,
+						r.status === 'success' ? 'success' : 'error',
+						r.error,
+						r.result
+					);
+					return r;
+				} catch (err) {
+					const reason = err instanceof Error ? err.message : String(err);
+					this.emitToolState(sessionId, call, 'error', reason);
+					return { call_id: call.call_id, status: 'error', error: reason };
+				}
+			})
+		);
+
+		for (const result of results) {
+			this.opts.eventBus.emit({ type: 'tool_result', sessionId, payload: result });
 		}
 
-		// 执行工具（带超时）
-		this.emitToolState(sessionId, call, 'running');
-		let result: ToolResult;
-		try {
-			result = await this.executeWithTimeout(sessionId, call);
-			this.emitToolState(
-				sessionId,
-				call,
-				result.status === 'success' ? 'success' : 'error',
-				result.error,
-				result.result
-			);
-		} catch (err) {
-			const reason = err instanceof Error ? err.message : String(err);
-			result = { call_id: call.call_id, status: 'error', error: reason };
-			this.emitToolState(sessionId, call, 'error', reason);
-		}
-
-		this.opts.eventBus.emit({ type: 'tool_result', sessionId, payload: result });
-
-		// 续流：提交结果 -> 新一轮 SSE 流
-		this.startContinuationStream(sessionId, result);
+		// 续流：批量提交结果 -> 新一轮 SSE 流
+		this.startContinuationStream(sessionId, results);
 	}
 
 	/** 带超时地执行工具（超时则发 error；底层工具 promise 被遗弃）。 */

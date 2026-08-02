@@ -13,8 +13,21 @@ import { SearchFilesTool } from './tools/fs/searchFiles';
 import { DeleteFileTool } from './tools/fs/deleteFile';
 import { MoveFileTool } from './tools/fs/moveFile';
 import { CodeEditTool } from './tools/code/editFile';
+import { GetDiagnosticsTool } from './tools/code/getDiagnostics';
+import { WorkspaceSymbolsTool } from './tools/code/workspaceSymbols';
+import { FindReferencesTool } from './tools/code/findReferences';
+import { GoToDefinitionTool } from './tools/code/goToDefinition';
 import { DiffViewer } from './tools/diff/diffViewer';
 import { getWorkspaceRoots } from './tools/fs/pathGuard';
+import * as logger from './logger';
+
+// 全局崩溃捕获：进程死之前把错误写进 OutputChannel
+process.on('uncaughtException', (err) => {
+	logger.error('[FATAL] uncaughtException:', err instanceof Error ? err.stack ?? err.message : err);
+});
+process.on('unhandledRejection', (reason) => {
+	logger.error('[FATAL] unhandledRejection:', reason instanceof Error ? reason.stack ?? reason?.toString?.() ?? String(reason) : String(reason));
+});
 
 function getServiceBaseUrl(): string {
 	return vscode.workspace
@@ -22,8 +35,19 @@ function getServiceBaseUrl(): string {
 		.get<string>('serviceBaseUrl', 'http://127.0.0.1:8002');
 }
 
-export function activate(context: vscode.ExtensionContext) {
-	console.log('# [Extension] 云效 Agent 扩展已激活');
+export async function activate(context: vscode.ExtensionContext) {
+	logger.log('[Extension] 云效 Agent 扩展已激活');
+	logger.show();
+
+	try {
+		await _activate(context);
+	} catch (err) {
+		logger.error('[Extension] 激活失败:', err instanceof Error ? err.stack ?? err.message : err);
+		throw err;
+	}
+}
+
+async function _activate(context: vscode.ExtensionContext) {
 
 	const baseUrl = getServiceBaseUrl();
 	const client = new AIClient(baseUrl);
@@ -62,6 +86,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// 本地工具注册表
 	const registry = new ToolRegistry();
+	const config = vscode.workspace.getConfiguration('yunxiaoAgent');
 	registry.register(new ReadFileTool());
 	registry.register(new WriteFileTool());
 	registry.register(new ListDirTool());
@@ -72,9 +97,14 @@ export function activate(context: vscode.ExtensionContext) {
 		new CodeEditTool({ approval, diffViewer: new DiffViewer() })
 	);
 
+	// Phase 3: 代码智能工具（只读，无需审批）
+	registry.register(new GetDiagnosticsTool());
+	registry.register(new WorkspaceSymbolsTool());
+	registry.register(new FindReferencesTool());
+	registry.register(new GoToDefinitionTool());
+
 	const router = new ToolRouter(registry, approval);
 
-	const config = vscode.workspace.getConfiguration('yunxiaoAgent');
 	const sessionManager = new SessionManager({
 		client,
 		router,

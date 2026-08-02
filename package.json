@@ -80,7 +80,9 @@
         },
         "yunxiaoAgent.alwaysAllowTools": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "无需审批直接放行的本地工具名列表（如 fs.write_file）；只读工具本就免审批",
           "scope": "window"

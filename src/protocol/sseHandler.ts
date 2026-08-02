@@ -82,8 +82,13 @@ export function handleSseBlock(block: string, cbs: SseCallbacks): void {
 				}
 				break;
 			case 'tool_call': {
-				// 兼容 data 嵌套与字段平铺两种形态
-				const d = (dataIsObject ? (evtData as AnyRecord) : parsed) as AnyRecord;
+			// Phase 3：data 为对象数组，一次包含本轮全部 pending 本地工具调用
+			const arr = Array.isArray(evtData) ? evtData : null;
+			if (!arr) {
+				break;
+			}
+			for (const item of arr) {
+				const d = item as AnyRecord;
 				if (typeof d.call_id === 'string' && typeof d.tool === 'string') {
 					cbs.onToolCall?.({
 						call_id: d.call_id as string,
@@ -93,8 +98,9 @@ export function handleSseBlock(block: string, cbs: SseCallbacks): void {
 						require_approval: d.require_approval as boolean | undefined,
 					});
 				}
-				break;
 			}
+			break;
+		}
 			case 'plan': {
 				const d = (dataIsObject ? (evtData as AnyRecord) : parsed) as AnyRecord;
 				if (Array.isArray(d.steps)) {

@@ -43,10 +43,10 @@ describe('handleSseBlock', () => {
 		assert.deepStrictEqual(cbs.calls.tool_end, ['result']);
 	});
 
-	it('parses tool_call event with nested data', () => {
+	it('parses tool_call event with single-element data array', () => {
 		const cbs = makeCallbacks();
 		handleSseBlock(
-			'data: {"type":"tool_call","data":{"call_id":"c1","tool":"fs.read_file","args":{"path":"a.ts"},"site":"local","require_approval":false}}',
+			'data: {"type":"tool_call","data":[{"call_id":"c1","tool":"fs.read_file","args":{"path":"a.ts"},"site":"local","require_approval":false}]}',
 			cbs
 		);
 		assert.strictEqual(cbs.calls.tool_call.length, 1);
@@ -56,14 +56,15 @@ describe('handleSseBlock', () => {
 		assert.strictEqual(evt.site, 'local');
 	});
 
-	it('parses tool_call event with flat fields (robustness)', () => {
+	it('parses tool_call event with multiple-element data array', () => {
 		const cbs = makeCallbacks();
 		handleSseBlock(
-			'data: {"type":"tool_call","call_id":"c2","tool":"fs.read_file","args":{"path":"b.ts"},"site":"local"}',
+			'data: {"type":"tool_call","data":[{"call_id":"c1","tool":"fs.read_file","args":{"path":"a.ts"},"site":"local"},{"call_id":"c2","tool":"code.get_diagnostics","args":{"file":"a.ts"},"site":"local"}]}',
 			cbs
 		);
-		assert.strictEqual(cbs.calls.tool_call.length, 1);
-		assert.strictEqual((cbs.calls.tool_call[0] as { call_id: string }).call_id, 'c2');
+		assert.strictEqual(cbs.calls.tool_call.length, 2);
+		assert.strictEqual((cbs.calls.tool_call[0] as { call_id: string }).call_id, 'c1');
+		assert.strictEqual((cbs.calls.tool_call[1] as { call_id: string }).call_id, 'c2');
 	});
 
 	it('parses plan and progress events', () => {

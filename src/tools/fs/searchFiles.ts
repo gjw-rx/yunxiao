@@ -36,7 +36,7 @@ const NODE_FALLBACK_MAX_FILES = 500;
 export class SearchFilesTool extends BaseTool {
 	readonly schema: ToolSchema = {
 		name: 'fs.search_files',
-		description: '搜索工作区文件内容（ripgrep 优先，缺失回退 Node）。支持 regex 与 glob 两种模式。',
+		description: '搜索工作区文件内容（ripgrep 优先，缺失回退 Node）。支持 regex 与 glob 两种模式。用于代码探索与模糊定位，替代已移除的 code.search_index。',
 		parameters: {
 			type: 'object',
 			properties: {

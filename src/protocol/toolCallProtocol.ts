@@ -11,6 +11,7 @@
 import { SseStreamParser, type SseCallbacks } from './sseHandler';
 import type { ToolResult } from '../core/types';
 import { ProtocolError } from '../core/errors';
+import * as logger from '../logger';
 
 export interface StreamToolResultOptions {
 	readonly baseUrl: string;
@@ -82,18 +83,20 @@ async function pumpSse(
  * 流正常结束触发 onEnd；连接失败/4xx 触发 onError。
  */
 export function streamToolResult(
-	result: ToolResult,
+	results: ToolResult[],
 	sessionId: string,
 	options: StreamToolResultOptions,
 	callbacks: ToolResultCallbacks
 ): AbortController {
 	const controller = new AbortController();
-	void runStreamToolResult(result, sessionId, options, callbacks, controller);
+	runStreamToolResult(results, sessionId, options, callbacks, controller).catch((err) => {
+		logger.error('[toolCallProtocol] runStreamToolResult 异常:', err instanceof Error ? err.stack ?? err.message : err);
+	});
 	return controller;
 }
 
 async function runStreamToolResult(
-	result: ToolResult,
+	results: ToolResult[],
 	sessionId: string,
 	options: StreamToolResultOptions,
 	callbacks: ToolResultCallbacks,
@@ -107,7 +110,7 @@ async function runStreamToolResult(
 	} = options;
 
 	const url = `${baseUrl}/api/agent/invoke/tool_result`;
-	const body = JSON.stringify({ session_id: sessionId, ...result });
+	const body = JSON.stringify({ session_id: sessionId, results });
 
 	let attempt = 0;
 	while (true) {

@@ -43,7 +43,7 @@ class FakeFetch {
 	};
 }
 
-const RESULT: ToolResult = { call_id: 'c1', status: 'success', result: 'content' };
+const RESULTS: ToolResult[] = [{ call_id: 'c1', status: 'success', result: 'content' }];
 const BASE = { baseUrl: 'http://svc', sleep: async () => {} };
 
 function makeCallbacks(): SseCallbacks & {
@@ -83,7 +83,7 @@ describe('streamToolResult', () => {
 		);
 		const cbs = makeCallbacks();
 		// Act
-		const controller = streamToolResult(RESULT, 's1', { ...BASE, fetchImpl: ff.fetch }, cbs);
+		const controller = streamToolResult(RESULTS, 's1', { ...BASE, fetchImpl: ff.fetch }, cbs);
 		await waitForEnd(cbs);
 		// Assert
 		assert.deepStrictEqual(cbs.content, ['summary']);
@@ -91,6 +91,7 @@ describe('streamToolResult', () => {
 		assert.strictEqual(cbs.errors.length, 0);
 		assert.strictEqual(ff.calls.length, 1);
 		assert.strictEqual(ff.calls[0].url, 'http://svc/api/agent/invoke/tool_result');
+		assert.ok(ff.calls[0].body.includes('"results"'));
 		assert.ok(ff.calls[0].body.includes('"call_id":"c1"'));
 		assert.ok(ff.calls[0].body.includes('"session_id":"s1"'));
 		void controller;
@@ -101,12 +102,12 @@ describe('streamToolResult', () => {
 		const ff = new FakeFetch();
 		ff.enqueue(
 			sseResponse(200, [
-				'data: {"type":"tool_call","data":{"call_id":"c2","tool":"fs.read_file","args":{"path":"b.ts"},"site":"local"}}\n\n',
+				'data: {"type":"tool_call","data":[{"call_id":"c2","tool":"fs.read_file","args":{"path":"b.ts"},"site":"local"}]}\n\n',
 			])
 		);
 		const cbs = makeCallbacks();
 		// Act
-		streamToolResult(RESULT, 's1', { ...BASE, fetchImpl: ff.fetch }, cbs);
+		streamToolResult(RESULTS, 's1', { ...BASE, fetchImpl: ff.fetch }, cbs);
 		await waitForEnd(cbs);
 		// Assert
 		assert.strictEqual(cbs.toolCalls.length, 1);
@@ -119,7 +120,7 @@ describe('streamToolResult', () => {
 		ff.enqueue(errorResponse(400, 'bad call_id'));
 		const cbs = makeCallbacks();
 		// Act
-		streamToolResult(RESULT, 's1', { ...BASE, fetchImpl: ff.fetch }, cbs);
+		streamToolResult(RESULTS, 's1', { ...BASE, fetchImpl: ff.fetch }, cbs);
 		await waitForError(cbs);
 		// Assert
 		assert.strictEqual(cbs.errors.length, 1);
@@ -137,7 +138,7 @@ describe('streamToolResult', () => {
 		);
 		const cbs = makeCallbacks();
 		// Act
-		streamToolResult(RESULT, 's1', { ...BASE, fetchImpl: ff.fetch }, cbs);
+		streamToolResult(RESULTS, 's1', { ...BASE, fetchImpl: ff.fetch }, cbs);
 		await waitForEnd(cbs);
 		// Assert
 		assert.deepStrictEqual(cbs.content, ['ok']);
@@ -153,7 +154,7 @@ describe('streamToolResult', () => {
 		);
 		const cbs = makeCallbacks();
 		// Act
-		streamToolResult(RESULT, 's1', { ...BASE, fetchImpl: ff.fetch }, cbs);
+		streamToolResult(RESULTS, 's1', { ...BASE, fetchImpl: ff.fetch }, cbs);
 		await waitForEnd(cbs);
 		// Assert
 		assert.strictEqual(ff.calls.length, 2);
@@ -165,7 +166,7 @@ describe('streamToolResult', () => {
 		ff.enqueue(new Error('fail'), new Error('fail'), new Error('fail'));
 		const cbs = makeCallbacks();
 		// Act
-		streamToolResult(RESULT, 's1', { ...BASE, fetchImpl: ff.fetch, maxRetries: 3 }, cbs);
+		streamToolResult(RESULTS, 's1', { ...BASE, fetchImpl: ff.fetch, maxRetries: 3 }, cbs);
 		await waitForError(cbs);
 		// Assert
 		assert.strictEqual(cbs.errors.length, 1);
