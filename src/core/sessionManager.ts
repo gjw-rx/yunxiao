@@ -36,6 +36,8 @@ export interface SessionManagerOptions {
 	readonly getWorkspaceRoots: () => string[];
 	/** 获取读文件大小上限。 */
 	readonly getMaxFileSize?: () => number | undefined;
+	/** 审批网关（可选，会话重置时清理其会话级允许记忆）。 */
+	readonly approval?: { clearSession(sessionId: string): void };
 }
 
 /** 工具状态变更事件 payload。 */
@@ -99,6 +101,7 @@ export class SessionManager {
 		const state = this.sessions.get(sessionId);
 		state?.abortController?.abort();
 		this.sessions.delete(sessionId);
+		this.opts.approval?.clearSession(sessionId);
 	}
 
 	private getOrCreate(sessionId: string): SessionState {
@@ -201,6 +204,7 @@ export class SessionManager {
 			workspaceRoots: this.opts.getWorkspaceRoots(),
 			maxFileSize: this.opts.getMaxFileSize?.(),
 			toolTimeoutMs: this.toolTimeoutMs,
+			sessionId,
 			warn: (m) => this.opts.eventBus.emit({ type: 'error', sessionId, payload: m }),
 		};
 		return new Promise<ToolResult>((resolve, reject) => {

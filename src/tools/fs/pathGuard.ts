@@ -104,6 +104,7 @@ export async function resolveWithinRoots(
 	const { resolved, root } = lexicalResolve(inputPath, roots);
 
 	let finalPath = resolved;
+	let matchedRoot = root;
 	const followSymlinks = options?.followSymlinks ?? true;
 	if (followSymlinks) {
 		const realpath = options?.realpath ?? ((p: string) => fs.realpath(p));
@@ -123,6 +124,12 @@ export async function resolveWithinRoots(
 				throw new PathGuardError(`符号链接指向工作区外: ${resolved}`, 'symlink_escape');
 			}
 			finalPath = real;
+			// 用匹配的 realpath root 计算 relativePath，避免 root(词法) 与 finalPath(real)
+			// 在工作区根本身为符号链接时发散（如 macOS /var -> /private/var）。
+			const matchedIdx = realRoots.findIndex((rr) => isContainedBy(real, [rr]));
+			if (matchedIdx >= 0) {
+				matchedRoot = realRoots[matchedIdx];
+			}
 		} catch (err) {
 			// PathGuardError 直接抛出
 			if (err instanceof PathGuardError) {
@@ -135,8 +142,8 @@ export async function resolveWithinRoots(
 
 	return {
 		fsPath: finalPath,
-		relativePath: path.relative(root, finalPath),
-		root,
+		relativePath: path.relative(matchedRoot, finalPath),
+		root: matchedRoot,
 		sensitive: isSensitivePath(resolved),
 	};
 }

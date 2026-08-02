@@ -8,7 +8,11 @@ import { ToolRegistry } from '../../core/toolRegistry';
 import { ToolRouter } from '../../core/toolRouter';
 import { EventBus } from '../../core/eventBus';
 import { SessionManager } from '../../core/sessionManager';
+import { ApprovalGateway } from '../../core/approvalGateway';
 import { ReadFileTool } from '../../tools/fs/readFile';
+import { WriteFileTool } from '../../tools/fs/writeFile';
+import { CodeEditTool } from '../../tools/code/editFile';
+import { DiffViewer, type VsCodeShim } from '../../tools/diff/diffViewer';
 import { BaseTool, type ToolContext, type ToolExecutionResult } from '../../tools/baseTool';
 import type { ToolCall, ToolSchema } from '../../core/types';
 
@@ -271,6 +275,192 @@ describe('E2E: local pipeline vs mock cloud', () => {
 			assert.strictEqual(mock.toolResults[0].status, 'error');
 			assert.ok(mock.toolResults[0].error?.includes('超时'));
 			assert.ok(contents.includes('recovered'));
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+/** 自动放行的审批网关（e2e 不弹真实对话框）。 */
+function autoAllowApproval(): ApprovalGateway {
+	return new ApprovalGateway({
+		prompter: { prompt: async () => 'allow' },
+		store: { getAlwaysAllow: () => [], addAlwaysAllow: async () => {} },
+	});
+}
+
+/** 无操作 DiffViewer（e2e 不打开真实 diff 编辑器）。 */
+function noopDiffViewer(): DiffViewer {
+	const shim: VsCodeShim = {
+		executeCommand: async () => undefined,
+		fileUri: (p) => p,
+	};
+	return new DiffViewer(shim);
+}
+
+describe('E2E: Phase 2 file tools vs mock cloud', () => {
+	let workspace: string;
+
+	beforeEach(async () => {
+		workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'yunxiao-e2e2-'));
+	});
+	afterEach(async () => {
+		await fs.rm(workspace, { recursive: true, force: true });
+	});
+
+	it('writes a local file end-to-end: tool_call -> write_file(approved) -> tool_result', async function () {
+		this.timeout(5000);
+		// Arrange
+		const mock = new MockCloud({
+			toolCall: {
+				call_id: 'c1',
+				tool: 'fs.write_file',
+				args: { path: 'src/utils/logger.ts', content: 'export const log = () => {}\n' },
+				site: 'local',
+			},
+			toolResultContent: 'done: file written',
+		});
+		await mock.start();
+
+		const eventBus = new EventBus();
+		const approval = autoAllowApproval();
+		const registry = new ToolRegistry();
+		registry.register(new WriteFileTool());
+		const router = new ToolRouter(registry, approval);
+		const client = new AIClient(mock.baseUrl);
+		const contents: string[] = [];
+		eventBus.on('content', (e) => contents.push(e.payload as string));
+
+		const manager = new SessionManager({
+			client,
+			router,
+			eventBus,
+			approval,
+			toolTimeoutMs: 5000,
+			getWorkspaceRoots: () => [workspace],
+			getMaxFileSize: () => undefined,
+		});
+
+		try {
+			// Act
+			manager.sendMessage('s1', 'create logger.ts');
+			await waitForStreamEnd(eventBus);
+
+			// Assert：文件已创建，结果回传
+			assert.strictEqual(mock.toolResults.length, 1);
+			assert.strictEqual(mock.toolResults[0].status, 'success');
+			const written = await fs.readFile(
+				path.join(workspace, 'src/utils/logger.ts'),
+				'utf8'
+			);
+			assert.strictEqual(written, 'export const log = () => {}\n');
+			assert.ok(contents.includes('done: file written'));
+		} finally {
+			await mock.close();
+		}
+	});
+
+	it('edits a local file end-to-end: tool_call -> code.edit(approved) -> tool_result with diff', async function () {
+		this.timeout(5000);
+		// Arrange：先准备待编辑文件
+		await fs.writeFile(
+			path.join(workspace, 'extension.ts'),
+			'export function getServiceBaseUrl() {}\n'
+		);
+		const mock = new MockCloud({
+			toolCall: {
+				call_id: 'c1',
+				tool: 'code.edit',
+				args: {
+					path: 'extension.ts',
+					oldString: 'getServiceBaseUrl',
+					newString: 'getServiceUrl',
+				},
+				site: 'local',
+			},
+			toolResultContent: 'done: renamed',
+		});
+		await mock.start();
+
+		const eventBus = new EventBus();
+		const approval = autoAllowApproval();
+		const registry = new ToolRegistry();
+		registry.register(new CodeEditTool({ approval, diffViewer: noopDiffViewer() }));
+		const router = new ToolRouter(registry, approval); // code.edit 自处理审批，路由层不重复 gate
+		const client = new AIClient(mock.baseUrl);
+		const contents: string[] = [];
+		eventBus.on('content', (e) => contents.push(e.payload as string));
+
+		const manager = new SessionManager({
+			client,
+			router,
+			eventBus,
+			approval,
+			toolTimeoutMs: 5000,
+			getWorkspaceRoots: () => [workspace],
+			getMaxFileSize: () => undefined,
+		});
+
+		try {
+			// Act
+			manager.sendMessage('s1', 'rename getServiceBaseUrl');
+			await waitForStreamEnd(eventBus);
+
+			// Assert：文件已改名，结果含 diff 元数据
+			assert.strictEqual(mock.toolResults.length, 1);
+			assert.strictEqual(mock.toolResults[0].status, 'success');
+			const written = await fs.readFile(path.join(workspace, 'extension.ts'), 'utf8');
+			assert.ok(written.includes('getServiceUrl'));
+			assert.ok(!written.includes('getServiceBaseUrl'));
+			assert.ok(contents.includes('done: renamed'));
+		} finally {
+			await mock.close();
+		}
+	});
+
+	it('denies a write via approval and posts a cancelled result', async function () {
+		this.timeout(5000);
+		// Arrange：审批拒绝
+		const mock = new MockCloud({
+			toolCall: {
+				call_id: 'c1',
+				tool: 'fs.write_file',
+				args: { path: 'denied.ts', content: 'x' },
+				site: 'local',
+			},
+			toolResultContent: 'recovered after deny',
+		});
+		await mock.start();
+
+		const eventBus = new EventBus();
+		const approval = new ApprovalGateway({
+			prompter: { prompt: async () => undefined }, // 拒绝
+			store: { getAlwaysAllow: () => [], addAlwaysAllow: async () => {} },
+		});
+		const registry = new ToolRegistry();
+		registry.register(new WriteFileTool());
+		const router = new ToolRouter(registry, approval);
+		const client = new AIClient(mock.baseUrl);
+
+		const manager = new SessionManager({
+			client,
+			router,
+			eventBus,
+			approval,
+			toolTimeoutMs: 5000,
+			getWorkspaceRoots: () => [workspace],
+			getMaxFileSize: () => undefined,
+		});
+
+		try {
+			// Act
+			manager.sendMessage('s1', 'write denied.ts');
+			await waitForStreamEnd(eventBus);
+
+			// Assert：回传 cancelled，文件未创建
+			assert.strictEqual(mock.toolResults.length, 1);
+			assert.strictEqual(mock.toolResults[0].status, 'cancelled');
+			await assert.rejects(() => fs.stat(path.join(workspace, 'denied.ts')));
 		} finally {
 			await mock.close();
 		}

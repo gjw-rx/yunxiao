@@ -1,27 +1,9 @@
 {
-  "data": [
-    {
-      "id": "image-001",
-      "title": "云效 Agent AI 编程插件图标",
-      "type": "image",
-      "version": 1,
-      "createdAt": 1785563000000,
-      "canvasData": {
-        "x": 0,
-        "y": 0,
-        "naturalSize": {
-          "width": 128,
-          "height": 128
-        }
-      },
-      "devMetadata": {
-        "imageSrc": "assets/yunxiao-agent-icon.png"
-      }
-    }
-  ],
+  "data": [],
   "config": {
-    "autoLayout": true,
+    "autoLayout": false,
     "deviceType": "freeSize",
-    "projectName": "云效 Agent 插件图标"
+    "projectName": "云效 Agent 插件图标",
+    "visualEditorEnabled": true
   }
 }

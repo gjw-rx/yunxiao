@@ -10,7 +10,7 @@
   "version": "0.0.3",
   "icon": "media/icon.png",
   "engines": {
-    "vscode": "^1.107.0"
+    "vscode": "^1.99.0"
   },
   "categories": [
     "Other"
@@ -77,6 +77,13 @@
           "default": 30000,
           "description": "本地工具执行超时（毫秒），默认 30 秒",
           "scope": "window"
+        },
+        "yunxiaoAgent.alwaysAllowTools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "无需审批直接放行的本地工具名列表（如 fs.write_file）；只读工具本就免审批",
+          "scope": "window"
         }
       }
     }
@@ -99,7 +106,7 @@
     "@types/marked": "^5.0.2",
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
-    "@types/vscode": "^1.107.0",
+    "@types/vscode": "^1.99.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
     "esbuild": "^0.28.1",
@@ -113,6 +120,7 @@
     "serialize-javascript": "^7.0.6"
   },
   "dependencies": {
+    "diff": "^8.0.4",
     "marked": "^18.0.7"
   }
 }

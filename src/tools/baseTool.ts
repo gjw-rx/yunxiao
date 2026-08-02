@@ -13,6 +13,8 @@ export interface ToolContext {
 	readonly maxFileSize?: number;
 	/** 工具执行超时（毫秒）。 */
 	readonly toolTimeoutMs?: number;
+	/** 当前会话 ID（供审批网关做会话级允许记忆）。 */
+	readonly sessionId?: string;
 	/** 用户警告回调（如敏感文件访问），由会话层桥接到 UI。 */
 	readonly warn?: (message: string) => void;
 	/** 未来扩展：审批网关回调等（Phase 2+）。 */
@@ -38,6 +40,12 @@ export abstract class BaseTool {
 	get permission(): ToolSchema['permissions'] {
 		return this.schema.permissions;
 	}
+
+	/**
+	 * 是否自行处理审批（如 code.edit 需先展示 diff 预览再确认）。
+	 * 默认 false：由路由层统一审批。true 时路由层跳过审批，工具在 execute 内自行弹窗。
+	 */
+	readonly handlesOwnApproval: boolean = false;
 }
 
 /** 校验参数为非空字符串，否则抛 ToolValidationError。供子类复用。 */

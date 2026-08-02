@@ -5,7 +5,15 @@ import { ToolRegistry } from './core/toolRegistry';
 import { ToolRouter } from './core/toolRouter';
 import { EventBus } from './core/eventBus';
 import { SessionManager } from './core/sessionManager';
+import { ApprovalGateway } from './core/approvalGateway';
 import { ReadFileTool, DEFAULT_MAX_FILE_SIZE } from './tools/fs/readFile';
+import { WriteFileTool } from './tools/fs/writeFile';
+import { ListDirTool } from './tools/fs/listDir';
+import { SearchFilesTool } from './tools/fs/searchFiles';
+import { DeleteFileTool } from './tools/fs/deleteFile';
+import { MoveFileTool } from './tools/fs/moveFile';
+import { CodeEditTool } from './tools/code/editFile';
+import { DiffViewer } from './tools/diff/diffViewer';
 import { getWorkspaceRoots } from './tools/fs/pathGuard';
 
 function getServiceBaseUrl(): string {
@@ -19,31 +27,68 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const baseUrl = getServiceBaseUrl();
 	const client = new AIClient(baseUrl);
+	const eventBus = new EventBus();
 
-	// 本地工具注册表：注册首个本地工具 fs.read_file
+	// 先创建 provider（作为审批 prompter 的实现方）
+	const provider = new ChatViewProvider(context, {
+		client,
+		registry: new ToolRegistry(),
+		sessionManager: null as unknown as SessionManager,
+		eventBus,
+	});
+
+	// 审批网关：使用 webview 内嵌审批卡片
+	const approval = new ApprovalGateway({
+		prompter: {
+			async prompt(ctx) {
+				let filePath: string | undefined;
+				try {
+					const args = JSON.parse(ctx.summary.split('\n')[1] || '{}');
+					filePath = args.file_path || args.path || args.src || undefined;
+				} catch {
+					// ignore
+				}
+				const callId = ctx.callId ?? `approval_${Date.now()}`;
+				return provider.requestApproval(
+					callId,
+					ctx.toolName,
+					ctx.summary,
+					filePath,
+					ctx.sessionId ?? ''
+				);
+			},
+		},
+	});
+
+	// 本地工具注册表
 	const registry = new ToolRegistry();
 	registry.register(new ReadFileTool());
+	registry.register(new WriteFileTool());
+	registry.register(new ListDirTool());
+	registry.register(new SearchFilesTool());
+	registry.register(new DeleteFileTool());
+	registry.register(new MoveFileTool());
+	registry.register(
+		new CodeEditTool({ approval, diffViewer: new DiffViewer() })
+	);
 
-	const router = new ToolRouter(registry);
-	const eventBus = new EventBus();
+	const router = new ToolRouter(registry, approval);
 
 	const config = vscode.workspace.getConfiguration('yunxiaoAgent');
 	const sessionManager = new SessionManager({
 		client,
 		router,
 		eventBus,
+		approval,
 		toolTimeoutMs: config.get<number>('toolTimeoutMs', 30_000),
 		getWorkspaceRoots: () => getWorkspaceRoots(),
 		getMaxFileSize: () =>
 			config.get<number>('maxFileSize', DEFAULT_MAX_FILE_SIZE),
 	});
 
-	const provider = new ChatViewProvider(context, {
-		client,
-		registry,
-		sessionManager,
-		eventBus,
-	});
+	// 回填 provider 的依赖（解决循环依赖：provider -> approval -> provider）
+	(provider as unknown as { _registry: ToolRegistry; _sessionManager: SessionManager })._registry = registry;
+	(provider as unknown as { _registry: ToolRegistry; _sessionManager: SessionManager })._sessionManager = sessionManager;
 
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider('yunxiaoAgent.chatView', provider, {
