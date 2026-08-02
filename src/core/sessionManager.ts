@@ -46,6 +46,10 @@ export interface ToolStateChangePayload {
 	readonly state: ToolLifecycleState;
 	readonly tool: string;
 	readonly error?: string;
+	/** 工具入参，供 UI 展示本轮调用了什么。 */
+	readonly args?: unknown;
+	/** 工具产出，仅在终态（success/error）携带。 */
+	readonly output?: unknown;
 }
 
 interface SessionState {
@@ -185,7 +189,13 @@ export class SessionManager {
 		let result: ToolResult;
 		try {
 			result = await this.executeWithTimeout(sessionId, call);
-			this.emitToolState(sessionId, call, result.status === 'success' ? 'success' : 'error');
+			this.emitToolState(
+				sessionId,
+				call,
+				result.status === 'success' ? 'success' : 'error',
+				result.error,
+				result.result
+			);
 		} catch (err) {
 			const reason = err instanceof Error ? err.message : String(err);
 			result = { call_id: call.call_id, status: 'error', error: reason };
@@ -228,13 +238,16 @@ export class SessionManager {
 		sessionId: string,
 		call: ToolCall,
 		state: ToolLifecycleState,
-		error?: string
+		error?: string,
+		output?: unknown
 	): void {
 		const payload: ToolStateChangePayload = {
 			call_id: call.call_id,
 			state,
 			tool: call.tool,
 			error,
+			args: call.args,
+			output,
 		};
 		this.opts.eventBus.emit({ type: 'tool_state_change', sessionId, payload });
 	}

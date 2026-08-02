@@ -129,7 +129,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 				view.webview.postMessage({ command: 'error', message: e.payload as string });
 				break;
 			case 'tool_state_change': {
-				const p = e.payload as { call_id: string; state: string; tool: string; error?: string; input?: unknown; output?: unknown };
+				const p = e.payload as {
+					call_id: string;
+					state: string;
+					tool: string;
+					error?: string;
+					args?: unknown;
+					output?: unknown;
+				};
 				view.webview.postMessage({ command: 'toolState', ...p });
 				break;
 			}
@@ -316,6 +323,12 @@ ${this._getJs()}
       --radius: 6px;
       --radius-lg: 8px;
       --accent: var(--vscode-textLink-foreground, #3794ff);
+      /* 时间线轨道与步骤节点 */
+      --rail: color-mix(in srgb, var(--fg) 16%, transparent);
+      --rail-active: var(--accent);
+      --step-bg: color-mix(in srgb, var(--fg) 4%, transparent);
+      --step-bg-hover: color-mix(in srgb, var(--fg) 8%, transparent);
+      --label-tracking: 0.08em;
       --success: var(--vscode-testing-iconPassed, #3fb950);
       --error: var(--vscode-errorForeground, #f85149);
       --warning: var(--vscode-editorWarning-foreground, #d29922);
@@ -518,161 +531,26 @@ ${this._getJs()}
     }
     .btn-stop:hover:not(:disabled) { opacity: 0.85; }
 
-    /* ── Tool calls section ── */
-    #toolsSection {
-      flex-shrink: 0;
-      border-bottom: 1px solid var(--border);
-      max-height: 0;
-      overflow: hidden;
-      transition: max-height 0.3s ease;
-    }
-    #toolsSection.active {
-      max-height: 300px;
-    }
-
-    #toolsHeader {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 10px;
-      cursor: pointer;
-      user-select: none;
-      background: var(--vscode-sideBarSectionHeader-background, transparent);
-    }
-    #toolsHeader:hover { background: var(--hover-bg); }
-
-    #toolsHeader .chevron { transition: transform 0.2s; }
-    #toolsSection.collapsed #toolsHeader .chevron { transform: rotate(-90deg); }
-
-    #toolsTitle {
-      flex: 1;
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      color: var(--muted);
-    }
-
-    #toolsCount {
-      background: var(--vscode-badge-background, #4d4d4d);
-      color: var(--vscode-badge-foreground, #fff);
-      font-size: 10px;
-      font-weight: 600;
-      padding: 1px 6px;
-      border-radius: 10px;
-      min-width: 18px;
-      text-align: center;
-    }
-
-    #toolsList {
-      overflow-y: auto;
-      max-height: 240px;
-      padding: 2px 8px 8px;
-    }
-    #toolsSection.collapsed #toolsList { display: none; }
-
-    .tool-chip {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 8px;
-      border-radius: var(--radius);
-      margin-bottom: 3px;
-      background: var(--code-bg);
-      border: 1px solid var(--border-light);
-      cursor: pointer;
-      transition: background 0.12s;
-    }
-    .tool-chip:hover { background: var(--hover-bg); }
-
-    .tool-icon {
-      width: 16px;
-      height: 16px;
-      flex-shrink: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .tool-icon svg { width: 14px; height: 14px; }
-
-    .tool-chip-name {
-      flex: 1;
-      font-size: 12px;
-      font-family: var(--mono);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .tool-chip-status {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      font-size: 11px;
-      flex-shrink: 0;
-    }
-
-    .tool-status-icon {
-      width: 14px;
-      height: 14px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .tool-chip.pending .tool-status-icon { color: var(--muted); }
-    .tool-chip.running .tool-status-icon { color: var(--accent); }
-    .tool-chip.success .tool-status-icon { color: var(--success); }
-    .tool-chip.error .tool-status-icon { color: var(--error); }
-
-    /* Spinner */
+    /* ── Spinner ── */
     .spinner {
-      width: 12px;
-      height: 12px;
-      border: 2px solid transparent;
+      width: 11px;
+      height: 11px;
+      border: 1.5px solid transparent;
       border-top-color: currentColor;
+      border-right-color: currentColor;
       border-radius: 50%;
-      animation: spin 0.8s linear infinite;
+      animation: spin 0.7s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* Tool detail expanded */
-    .tool-detail {
-      display: none;
-      padding: 8px 10px;
-      margin: 2px 0 4px;
-      background: var(--vscode-editor-background, #1e1e1e);
-      border-radius: var(--radius);
-      border: 1px solid var(--border-light);
-      font-family: var(--mono);
-      font-size: 11px;
-      line-height: 1.5;
-      max-height: 180px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-    .tool-chip.expanded + .tool-detail { display: block; }
-
-    .tool-detail-label {
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 4px;
-      font-family: var(--font);
-    }
-    .tool-detail-section { margin-bottom: 8px; }
-    .tool-detail-section:last-child { margin-bottom: 0; }
 
     /* ── Messages area ── */
     #messages {
       flex: 1;
       overflow-y: auto;
-      padding: 12px 10px 4px;
+      padding: 14px 12px 8px;
       display: flex;
       flex-direction: column;
-      gap: 2px;
+      scroll-behavior: smooth;
     }
 
     .placeholder {
@@ -681,57 +559,65 @@ ${this._getJs()}
       margin: auto;
       font-size: 12px;
       line-height: 1.7;
-      padding: 30px 10px;
+      padding: 30px 14px;
+      animation: rise 0.35s ease both;
     }
-    .placeholder svg { opacity: 0.35; margin-bottom: 10px; }
+    .placeholder svg { opacity: 0.28; margin-bottom: 12px; }
     .placeholder-title {
-      font-size: 14px;
-      font-weight: 500;
-      margin-bottom: 4px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      margin-bottom: 5px;
       color: var(--fg);
-      opacity: 0.7;
+      opacity: 0.75;
     }
 
     .msg-row {
       display: flex;
       flex-direction: column;
       max-width: 100%;
-      margin-bottom: 10px;
+      margin-bottom: 18px;
+      animation: rise 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: none; }
     }
 
     .msg-label {
       font-size: 10px;
       font-weight: 600;
-      letter-spacing: 0.04em;
+      letter-spacing: var(--label-tracking);
       text-transform: uppercase;
       color: var(--muted);
-      margin-bottom: 4px;
-      padding: 0 2px;
+      margin-bottom: 6px;
       display: flex;
       align-items: center;
       gap: 6px;
     }
 
     .message {
-      line-height: 1.6;
+      line-height: 1.65;
       font-size: 13px;
       word-break: break-word;
     }
 
+    /* 用户消息：靠右，内敛的实心块 */
+    .msg-row.user-row { align-items: flex-end; }
     .message.user {
-      align-self: flex-end;
-      background: var(--vscode-badge-background, var(--btn-bg));
-      color: var(--vscode-badge-foreground, var(--btn-fg));
+      background: var(--step-bg);
+      border: 1px solid var(--border);
+      color: var(--fg);
       padding: 8px 12px;
-      border-radius: 12px 12px 2px 12px;
+      border-radius: 10px 10px 3px 10px;
       white-space: pre-wrap;
-      max-width: 88%;
+      max-width: 90%;
     }
 
+    /* 助手最终回复：全宽正文，不用气泡 */
     .message.assistant {
-      align-self: flex-start;
-      padding: 2px 2px;
       max-width: 100%;
+      padding-left: 1px;
     }
 
     /* Markdown styling */
@@ -797,35 +683,251 @@ ${this._getJs()}
     }
     @keyframes blink { 50% { opacity: 0; } }
 
-    /* Thought / plan */
-    .message.thought {
-      font-style: italic;
-      opacity: 0.65;
-      font-size: 12px;
-      align-self: flex-start;
-      padding: 4px 8px;
-      border-left: 2px solid var(--muted);
-      margin-left: 2px;
+    /* ══ 回合（turn）容器 ══
+       一个 turn = 过程时间线（思考/工具）+ 最终回复。
+       时间线永远排在回复之前。 */
+    .turn {
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 18px;
     }
-    .message.plan {
-      align-self: flex-start;
-      font-size: 12px;
-      padding: 6px 10px;
-      background: var(--code-bg);
+
+    /* ── 过程时间线 ── */
+    .trace {
+      position: relative;
+      margin-bottom: 10px;
+      animation: rise 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+    .trace:empty { display: none; }
+
+    /* 竖向轨道 */
+    .trace::before {
+      content: '';
+      position: absolute;
+      left: 7px;
+      top: 20px;
+      bottom: 6px;
+      width: 1px;
+      background: var(--rail);
+    }
+
+    .trace-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: var(--label-tracking);
+      text-transform: uppercase;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+      padding: 2px 0 8px;
+      transition: color 0.15s;
+    }
+    .trace-header:hover { color: var(--fg); }
+    .trace-header .chevron {
+      width: 10px;
+      height: 10px;
+      transition: transform 0.2s;
+    }
+    .trace.collapsed .trace-header .chevron { transform: rotate(-90deg); }
+
+    .trace-count {
+      font-family: var(--mono);
+      font-weight: 500;
+      letter-spacing: 0;
+      opacity: 0.7;
+    }
+    .trace-live {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.35; transform: scale(0.7); }
+    }
+
+    .trace-body { display: flex; flex-direction: column; gap: 1px; }
+    .trace.collapsed .trace-body { display: none; }
+    .trace.collapsed::before { display: none; }
+
+    /* ── 时间线步骤（思考 / 工具 / 计划共用） ── */
+    .step {
+      position: relative;
+      padding-left: 22px;
+      animation: rise 0.2s ease both;
+    }
+
+    /* 节点圆点，压在轨道上 */
+    .step-dot {
+      position: absolute;
+      left: 3px;
+      top: 6px;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--bg);
+      border: 1.5px solid var(--rail);
+      box-sizing: border-box;
+      z-index: 1;
+    }
+    .step.running .step-dot {
+      border-color: var(--rail-active);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+    }
+    .step.success .step-dot { border-color: var(--success); background: var(--success); }
+    .step.error   .step-dot { border-color: var(--error);   background: var(--error); }
+
+    .step-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 4px 6px 4px 0;
       border-radius: var(--radius);
-      border: 1px solid var(--border-light);
-      margin-left: 2px;
+      font-size: 12px;
+      min-height: 22px;
     }
-    .message.plan ol { padding-left: 20px; margin: 0; }
-    .message.plan li { margin: 2px 0; }
+    .step.clickable > .step-head { cursor: pointer; }
+    .step.clickable > .step-head:hover { background: var(--step-bg-hover); }
+
+    .step-icon {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+    }
+    .step-icon svg { width: 13px; height: 13px; }
+    .step.running .step-icon { color: var(--accent); }
+
+    /* 工具名用等宽字体，与散文正文形成对照 */
+    .step-name {
+      font-family: var(--mono);
+      font-size: 11.5px;
+      color: var(--fg);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    /* 主要参数就地预览，省去展开动作 */
+    .step-arg {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      direction: rtl;
+      text-align: left;
+    }
+
+    .step-status {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      color: var(--muted);
+      width: 13px;
+      height: 13px;
+    }
+    .step.running .step-status { color: var(--accent); }
+    .step.success .step-status { color: var(--success); }
+    .step.error   .step-status { color: var(--error); }
+
+    .step-chevron {
+      width: 9px;
+      height: 9px;
+      flex-shrink: 0;
+      color: var(--muted);
+      opacity: 0;
+      transition: transform 0.2s, opacity 0.15s;
+    }
+    .step.clickable:hover .step-chevron { opacity: 0.7; }
+    .step.expanded .step-chevron { opacity: 0.7; transform: rotate(180deg); }
+
+    /* 步骤详情 */
+    .step-detail {
+      display: none;
+      margin: 2px 0 6px;
+      border-left: 1px solid var(--border);
+      padding-left: 10px;
+    }
+    .step.expanded .step-detail { display: block; }
+
+    .detail-label {
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: var(--label-tracking);
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 3px;
+    }
+    .detail-block {
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: var(--step-bg);
+      border-radius: 4px;
+      padding: 6px 8px;
+      max-height: 200px;
+      overflow: auto;
+      margin-bottom: 7px;
+    }
+    .detail-block:last-child { margin-bottom: 0; }
+    .detail-block.is-error { color: var(--error); }
+
+    /* ── 思考步骤 ── */
+    .step.thought .step-body {
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--muted);
+      padding: 1px 0 5px;
+      white-space: pre-wrap;
+    }
+    .step.thought.collapsed-text .step-body {
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    /* ── 计划步骤 ── */
+    .step.plan ol {
+      margin: 2px 0 6px;
+      padding-left: 18px;
+      font-size: 12px;
+      color: var(--fg);
+    }
+    .step.plan li { margin: 2px 0; line-height: 1.55; }
 
     /* ── Approval card ── */
     .approval-card {
       background: var(--vscode-inputValidation-warningBackground, rgba(210,153,34,0.08));
       border: 1px solid var(--warning);
+      border-left-width: 3px;
       border-radius: var(--radius-lg);
-      padding: 12px;
-      margin: 8px 0;
+      padding: 11px 12px;
+      margin: 4px 0 10px;
+      animation: rise 0.2s ease both;
+    }
+    /* 决定作出后卡片退场，不留常驻残影 */
+    .approval-card.resolving {
+      animation: fold 0.22s ease forwards;
+      pointer-events: none;
+      overflow: hidden;
+    }
+    @keyframes fold {
+      from { opacity: 1; transform: none; }
+      to   { opacity: 0; transform: translateY(-3px); }
     }
 
     .approval-header {
@@ -847,19 +949,61 @@ ${this._getJs()}
 
     .approval-tool-name {
       font-weight: 600;
-      font-size: 13px;
-      margin-bottom: 2px;
+      font-size: 12px;
+      font-family: var(--mono);
+      margin-bottom: 5px;
       display: flex;
       align-items: center;
       gap: 6px;
     }
+    .approval-tool-name .step-icon { color: var(--warning); }
+
+    .approval-kicker {
+      font-family: var(--font);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: var(--label-tracking);
+      text-transform: uppercase;
+      color: var(--warning);
+      margin-left: auto;
+      flex-shrink: 0;
+    }
 
     .approval-summary {
-      font-size: 12px;
+      font-family: var(--mono);
+      font-size: 11px;
       color: var(--fg);
       line-height: 1.5;
-      margin-bottom: 4px;
+      margin-bottom: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 96px;
+      overflow: hidden;
+      position: relative;
     }
+    /* 长摘要（如 diff）底部淡出，避免撑爆卡片 */
+    .approval-summary.clipped::after {
+      content: '';
+      position: absolute;
+      left: 0; right: 0; bottom: 0;
+      height: 28px;
+      background: linear-gradient(transparent, var(--bg));
+    }
+    .approval-summary.open {
+      max-height: 340px;
+      overflow: auto;
+    }
+    .approval-summary.open::after { display: none; }
+
+    .approval-more {
+      font-size: 11px;
+      color: var(--accent);
+      cursor: pointer;
+      margin-bottom: 8px;
+      display: inline-block;
+      user-select: none;
+    }
+    .approval-more:hover { text-decoration: underline; }
 
     .approval-file-path {
       font-family: var(--mono);
@@ -886,8 +1030,9 @@ ${this._getJs()}
       cursor: pointer;
       border: 1px solid transparent;
       font-family: var(--font);
-      transition: background 0.12s, border-color 0.12s;
+      transition: background 0.12s, border-color 0.12s, transform 0.1s;
     }
+    .approval-btn:active { transform: scale(0.97); }
 
     .approval-btn.allow {
       background: var(--btn-bg);
@@ -1116,17 +1261,6 @@ ${this._getJs()}
     </button>
   </div>
 
-  <div id="toolsSection" class="collapsed">
-    <div id="toolsHeader">
-      <svg class="chevron" viewBox="0 0 16 16" fill="currentColor" style="width:12px;height:12px;">
-        <path d="M4 6l4 4 4-4H4z"/>
-      </svg>
-      <span id="toolsTitle">工具调用</span>
-      <span id="toolsCount">0</span>
-    </div>
-    <div id="toolsList"></div>
-  </div>
-
   <div id="messages">
     <div class="placeholder">
       <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor" style="display:block;margin:0 auto 10px;">
@@ -1174,22 +1308,21 @@ ${this._getJs()}
     const agentIcon    = document.getElementById('agentIcon');
     const agentName    = document.getElementById('agentName');
     const agentModelText = document.getElementById('agentModelText');
-    const toolsSection = document.getElementById('toolsSection');
-    const toolsHeader  = document.getElementById('toolsHeader');
-    const toolsList    = document.getElementById('toolsList');
-    const toolsCount   = document.getElementById('toolsCount');
 
     // ── State ──
     let agents = [];
     let selectedAgentId = null;
     let currentSessionId = null;
     let isStreaming = false;
-    let currentAssistantEl = null;
+
+    /* 「回合」模型：一轮对话 = 过程时间线（思考/工具/审批）+ 最终回复。
+       时间线容器先于回复气泡插入 DOM，因此过程天然呈现在回复之上。 */
+    let currentTurn = null;        // { rootEl, traceEl, traceBodyEl, countEl, liveEl, stepCount }
+    let currentAssistantEl = null; // 当前流式回复气泡
     let currentAssistantTxt = '';
-    const toolEntries = new Map(); // call_id -> { chipEl, detailEl, state, tool }
+    const toolEntries = new Map();   // call_id -> { stepEl, detailEl, state, tool }
     const approvalCards = new Map(); // call_id -> card element
-    const diffCards = new Map(); // call_id -> card element
-    let toolsExpanded = false;
+    const diffCards = new Map();     // call_id -> card element
 
     // ── Color palette for agent icons ──
     const agentColors = [
@@ -1313,94 +1446,162 @@ ${this._getJs()}
       renderAgentDropdown();
     }
 
-    // ── Tools section ──
-    toolsHeader.addEventListener('click', () => {
-      toolsSection.classList.toggle('collapsed');
-      toolsExpanded = !toolsSection.classList.contains('collapsed');
-    });
+    // ══ 回合与过程时间线 ══
 
-    function updateToolsCount() {
-      const count = toolEntries.size;
-      toolsCount.textContent = count;
-      if (count > 0) {
-        toolsSection.classList.add('active');
-        // Auto-expand when tools are active (running/pending)
-        let hasActive = false;
-        for (const entry of toolEntries.values()) {
-          if (entry.state === 'running' || entry.state === 'pending') {
-            hasActive = true;
-            break;
-          }
-        }
-        if (hasActive && !toolsExpanded) {
-          toolsSection.classList.remove('collapsed');
-        }
-        // Auto-collapse when no tools active and was auto-expanded
-        if (!hasActive && toolsSection.classList.contains('active') && !toolsExpanded) {
-          // keep it visible but allow manual collapse
-        }
-      } else {
-        toolsSection.classList.remove('active');
-      }
+    /** 取得（或懒创建）当前回合。回合内 trace 在前、回复在后。 */
+    function ensureTurn() {
+      if (currentTurn) return currentTurn;
+      clearPlaceholder();
+
+      const root = document.createElement('div');
+      root.className = 'turn';
+
+      const trace = document.createElement('div');
+      trace.className = 'trace';
+
+      const header = document.createElement('div');
+      header.className = 'trace-header';
+      header.innerHTML = \`
+        <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M4 6l4 4 4-4H4z"/>
+        </svg>
+        <span>过程</span>
+        <span class="trace-count">0</span>
+        <span class="trace-live"></span>
+      \`;
+      header.addEventListener('click', () => trace.classList.toggle('collapsed'));
+
+      const body = document.createElement('div');
+      body.className = 'trace-body';
+
+      trace.appendChild(header);
+      trace.appendChild(body);
+      root.appendChild(trace);
+      messagesEl.appendChild(root);
+
+      currentTurn = {
+        rootEl: root,
+        traceEl: trace,
+        traceBodyEl: body,
+        countEl: header.querySelector('.trace-count'),
+        liveEl: header.querySelector('.trace-live'),
+        stepCount: 0,
+      };
+      return currentTurn;
     }
 
-    function showToolState(tool, state, error, callId, input, output) {
-      clearPlaceholder();
+    /** 把一个步骤挂到当前回合的时间线上。 */
+    function addStep(el) {
+      const turn = ensureTurn();
+      turn.traceBodyEl.appendChild(el);
+      turn.stepCount += 1;
+      turn.countEl.textContent = turn.stepCount;
+      scrollToBottom();
+      return turn;
+    }
+
+    /** 回合收尾：停掉 live 指示灯，过程默认折叠，让最终回复成为焦点。 */
+    function finishTurn() {
+      if (!currentTurn) return;
+      if (currentTurn.liveEl) currentTurn.liveEl.style.display = 'none';
+      if (currentTurn.stepCount > 0) currentTurn.traceEl.classList.add('collapsed');
+      currentTurn = null;
+    }
+
+    /** 从工具入参里挑一个最有信息量的字段做行内预览。 */
+    function summarizeArgs(args) {
+      if (!args || typeof args !== 'object') {
+        return typeof args === 'string' ? args : '';
+      }
+      const keys = ['path', 'file_path', 'pattern', 'query', 'command', 'dir', 'url'];
+      for (const k of keys) {
+        const v = args[k];
+        if (typeof v === 'string' && v) return v;
+      }
+      return '';
+    }
+
+    function stringify(v) {
+      if (v === null || v === undefined) return '';
+      return typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+    }
+
+    function truncate(s, max) {
+      return s.length > max ? s.slice(0, max) + '\\n… (已截断)' : s;
+    }
+
+    function showToolState(tool, state, error, callId, args, output) {
       let entry = toolEntries.get(callId);
+
       if (!entry) {
-        // Create chip
-        const chip = document.createElement('div');
-        chip.className = 'tool-chip ' + state;
-        chip.innerHTML = \`
-          <span class="tool-icon">\${getToolIconSvg(tool)}</span>
-          <span class="tool-chip-name">\${escapeHtml(tool)}</span>
-          <span class="tool-chip-status">
-            <span class="tool-status-icon">\${getStatusIcon(state)}</span>
-          </span>
-          <svg class="chevron" viewBox="0 0 16 16" fill="currentColor" style="width:10px;height:10px;">
-            <path d="M4 6l4 4 4-4H4z"/>
-          </svg>
+        const step = document.createElement('div');
+        step.className = 'step tool clickable ' + state;
+        step.innerHTML = \`
+          <span class="step-dot"></span>
+          <div class="step-head">
+            <span class="step-icon">\${getToolIconSvg(tool)}</span>
+            <span class="step-name">\${escapeHtml(tool)}</span>
+            <span class="step-arg"></span>
+            <span class="step-status">\${getStatusIcon(state)}</span>
+            <svg class="step-chevron" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4 6l4 4 4-4H4z"/>
+            </svg>
+          </div>
         \`;
 
         const detail = document.createElement('div');
-        detail.className = 'tool-detail';
+        detail.className = 'step-detail';
+        step.appendChild(detail);
 
-        chip.addEventListener('click', () => {
-          chip.classList.toggle('expanded');
+        step.querySelector('.step-head').addEventListener('click', () => {
+          step.classList.toggle('expanded');
         });
 
-        toolsList.appendChild(chip);
-        toolsList.appendChild(detail);
-        entry = { chipEl: chip, detailEl: detail, state, tool };
+        entry = { stepEl: step, detailEl: detail, state, tool };
         toolEntries.set(callId, entry);
+        addStep(step);
       }
 
-      // Update state
+      // 状态推进：保留展开态
       entry.state = state;
-      entry.chipEl.className = 'tool-chip ' + state + (entry.chipEl.classList.contains('expanded') ? ' expanded' : '');
-      entry.chipEl.querySelector('.tool-status-icon').innerHTML = getStatusIcon(state);
+      const wasExpanded = entry.stepEl.classList.contains('expanded');
+      entry.stepEl.className =
+        'step tool clickable ' + state + (wasExpanded ? ' expanded' : '');
+      entry.stepEl.querySelector('.step-status').innerHTML = getStatusIcon(state);
 
-      // Update detail
-      let detailHtml = '';
-      if (input !== undefined && input !== null) {
-        detailHtml += \`<div class="tool-detail-section"><div class="tool-detail-label">输入</div>\${escapeHtml(typeof input === 'string' ? input : JSON.stringify(input, null, 2))}</div>\`;
+      const argPreview = summarizeArgs(args);
+      if (argPreview) {
+        entry.stepEl.querySelector('.step-arg').textContent = argPreview;
+      }
+
+      let html = '';
+      if (args !== undefined && args !== null) {
+        html += \`<div class="detail-label">参数</div><div class="detail-block">\${escapeHtml(truncate(stringify(args), 1200))}</div>\`;
       }
       if (error) {
-        detailHtml += \`<div class="tool-detail-section" style="color: var(--error);"><div class="tool-detail-label">错误</div>\${escapeHtml(error)}</div>\`;
+        html += \`<div class="detail-label">错误</div><div class="detail-block is-error">\${escapeHtml(error)}</div>\`;
       } else if (output !== undefined && output !== null) {
-        const outStr = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
-        const truncated = outStr.length > 2000 ? outStr.substring(0, 2000) + '\\n... (已截断)' : outStr;
-        detailHtml += \`<div class="tool-detail-section"><div class="tool-detail-label">输出</div>\${escapeHtml(truncated)}</div>\`;
+        html += \`<div class="detail-label">结果</div><div class="detail-block">\${escapeHtml(truncate(stringify(output), 2000))}</div>\`;
       }
-      entry.detailEl.innerHTML = detailHtml;
+      entry.detailEl.innerHTML = html;
 
-      updateToolsCount();
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      scrollToBottom();
     }
 
-    // ── Approval cards ──
+    // ══ 审批卡片 ══
+
+    /** 决定已作出：卡片退场并销毁，不在时间线里留常驻残影。 */
+    function dismissApprovalCard(callId) {
+      const card = approvalCards.get(callId);
+      if (!card) return;
+      approvalCards.delete(callId);
+      card.classList.add('resolving');
+      const drop = () => card.remove();
+      card.addEventListener('animationend', drop, { once: true });
+      setTimeout(drop, 400); // 动画被跳过时的兜底
+    }
+
     function showApprovalCard(callId, toolName, summary, filePath) {
-      clearPlaceholder();
       if (approvalCards.has(callId)) return;
 
       const card = document.createElement('div');
@@ -1412,8 +1613,9 @@ ${this._getJs()}
           </svg>
           <div class="approval-content">
             <div class="approval-tool-name">
-              <span class="tool-icon" style="width:16px;height:16px;">\${getToolIconSvg(toolName)}</span>
+              <span class="step-icon">\${getToolIconSvg(toolName)}</span>
               \${escapeHtml(toolName)}
+              <span class="approval-kicker">待确认</span>
             </div>
             <div class="approval-summary">\${escapeHtml(summary)}</div>
             \${filePath ? \`<div class="approval-file-path">\${escapeHtml(filePath)}</div>\` : ''}
@@ -1426,31 +1628,37 @@ ${this._getJs()}
         </div>
       \`;
 
-      card.querySelectorAll('.approval-btn').forEach(btn => {
+      card.querySelectorAll('.approval-btn').forEach((btn) => {
         btn.addEventListener('click', () => {
-          const decision = btn.getAttribute('data-decision');
           vscode.postMessage({
             command: 'approvalDecision',
             call_id: callId,
-            decision: decision
+            decision: btn.getAttribute('data-decision'),
           });
-          card.style.opacity = '0.5';
-          card.style.pointerEvents = 'none';
-          const btns = card.querySelectorAll('.approval-btn');
-          btns.forEach(b => b.disabled = true);
+          dismissApprovalCard(callId);
         });
       });
 
-      // Insert into the current assistant message or at the end
-      if (currentAssistantEl) {
-        currentAssistantEl.parentNode.appendChild(card);
-      } else {
-        const row = appendAssistantRow();
-        row.appendChild(card);
+      // 审批也属于「过程」，进时间线
+      addStep(card);
+      approvalCards.set(callId, card);
+
+      // 入 DOM 后才能量高度：长摘要（diff 等）折起，需要时再展开
+      const summaryEl = card.querySelector('.approval-summary');
+      if (summaryEl.scrollHeight > summaryEl.clientHeight + 4) {
+        summaryEl.classList.add('clipped');
+        const more = document.createElement('span');
+        more.className = 'approval-more';
+        more.textContent = '展开全部';
+        more.addEventListener('click', () => {
+          const open = summaryEl.classList.toggle('open');
+          summaryEl.classList.toggle('clipped', !open);
+          more.textContent = open ? '收起' : '展开全部';
+        });
+        summaryEl.parentNode.insertBefore(more, summaryEl.nextSibling);
       }
 
-      approvalCards.set(callId, card);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      scrollToBottom();
     }
 
     // ── Diff cards ──
@@ -1491,15 +1699,9 @@ ${this._getJs()}
         card.classList.toggle('expanded');
       });
 
-      if (currentAssistantEl) {
-        currentAssistantEl.parentNode.appendChild(card);
-      } else {
-        const row = appendAssistantRow();
-        row.appendChild(card);
-      }
-
+      addStep(card);
       diffCards.set(callId, card);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      scrollToBottom();
     }
 
     // ── Utility ──
@@ -1549,6 +1751,7 @@ ${this._getJs()}
       const text = inputEl.value.trim();
       if (!text || !currentSessionId || isStreaming) return;
 
+      finishTurn(); // 收束上一回合，新回合从这条用户消息之后开始
       appendUserMsg(text);
       inputEl.value = '';
       autoResize();
@@ -1565,105 +1768,126 @@ ${this._getJs()}
       if (p) p.remove();
     }
 
+    /** 清空消息流与所有回合级 DOM 引用。 */
+    function resetConversation() {
+      messagesEl.innerHTML = '';
+      toolEntries.clear();
+      approvalCards.clear();
+      diffCards.clear();
+      currentTurn = null;
+      currentAssistantEl = null;
+      currentAssistantTxt = '';
+    }
+
+    function scrollToBottom() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function renderMarkdown(el, text) {
+      if (typeof window.marked !== 'undefined') {
+        el.innerHTML = window.marked.parse(text, { breaks: true });
+      } else {
+        el.textContent = text;
+      }
+    }
+
     function appendUserMsg(text) {
       clearPlaceholder();
       const row = document.createElement('div');
-      row.className = 'msg-row';
-      row.innerHTML = '<div class="msg-label" style="text-align:right;justify-content:flex-end;">你</div>';
+      row.className = 'msg-row user-row';
       const bubble = document.createElement('div');
       bubble.className = 'message user';
       bubble.textContent = text;
       row.appendChild(bubble);
       messagesEl.appendChild(row);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      scrollToBottom();
     }
 
-    function appendAssistantRow() {
-      clearPlaceholder();
+    /** 回复气泡挂在当前回合尾部——因此永远排在过程时间线之后。 */
+    function appendAssistantBubble(streaming) {
+      const turn = ensureTurn();
       const row = document.createElement('div');
       row.className = 'msg-row';
-      row.innerHTML = '<div class="msg-label">Agent</div>';
+      row.innerHTML = '<div class="msg-label">回复</div>';
       const bubble = document.createElement('div');
-      bubble.className = 'message assistant cursor';
+      bubble.className = 'message assistant' + (streaming ? ' cursor' : '');
       row.appendChild(bubble);
-      messagesEl.appendChild(row);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      turn.rootEl.appendChild(row);
+      scrollToBottom();
       return bubble;
     }
 
     function updateAssistantMsg(chunk) {
       currentAssistantTxt += chunk;
-      if (!currentAssistantEl) { currentAssistantEl = appendAssistantRow(); }
-      if (typeof window.marked !== 'undefined') {
-        currentAssistantEl.innerHTML = window.marked.parse(currentAssistantTxt, { breaks: true });
-      } else {
-        currentAssistantEl.textContent = currentAssistantTxt;
+      if (!currentAssistantEl) {
+        currentAssistantEl = appendAssistantBubble(true);
       }
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      renderMarkdown(currentAssistantEl, currentAssistantTxt);
+      scrollToBottom();
     }
 
     function appendMsgFromHistory(role, text) {
       if (role === 'user') { appendUserMsg(text); return; }
-      const row = document.createElement('div');
-      row.className = 'msg-row';
-      row.innerHTML = '<div class="msg-label">Agent</div>';
-      const bubble = document.createElement('div');
-      bubble.className = 'message assistant';
-      if (typeof window.marked !== 'undefined') {
-        bubble.innerHTML = window.marked.parse(text, { breaks: true });
-      } else {
-        bubble.textContent = text;
-      }
-      row.appendChild(bubble);
-      messagesEl.appendChild(row);
+      const bubble = appendAssistantBubble(false);
+      renderMarkdown(bubble, text);
+      finishTurn();
     }
 
     function showThought(text) {
-      clearPlaceholder();
-      const row = document.createElement('div');
-      row.className = 'msg-row';
-      const label = document.createElement('div');
-      label.className = 'msg-label';
-      label.innerHTML = \`
-        <svg viewBox="0 0 16 16" fill="currentColor" style="width:12px;height:12px;opacity:0.6;">
-          <path d="M8 1a5 5 0 0 1 4.9 4.1A3.5 3.5 0 0 1 12.5 12H11v-1h1.5a2.5 2.5 0 0 0 .4-4.97A4 4 0 1 0 4 6.5a3 3 0 0 0-.5 5.97V13h1v-.5A3 3 0 0 0 7 9.5 3.5 3.5 0 0 1 8 2.5z"/>
-        </svg>
-        思考
+      const step = document.createElement('div');
+      step.className = 'step thought';
+      step.innerHTML = \`
+        <span class="step-dot"></span>
+        <div class="step-head">
+          <span class="step-icon">
+            <svg viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 1a5 5 0 0 1 4.9 4.1A3.5 3.5 0 0 1 12.5 12H11v-1h1.5a2.5 2.5 0 0 0 .4-4.97A4 4 0 1 0 4 6.5a3 3 0 0 0-.5 5.97V13h1v-.5A3 3 0 0 0 7 9.5 3.5 3.5 0 0 1 8 2.5z"/>
+            </svg>
+          </span>
+          <span class="step-name">思考</span>
+        </div>
       \`;
-      const bubble = document.createElement('div');
-      bubble.className = 'message thought';
-      bubble.textContent = text;
-      row.appendChild(label);
-      row.appendChild(bubble);
-      messagesEl.appendChild(row);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      const body = document.createElement('div');
+      body.className = 'step-body';
+      body.textContent = text;
+      step.appendChild(body);
+
+      // 先夹到三行再量：夹住后仍溢出说明确实是长思考，给它一个展开开关
+      step.classList.add('collapsed-text');
+      addStep(step);
+
+      if (body.scrollHeight > body.clientHeight + 4) {
+        step.classList.add('clickable');
+        step.querySelector('.step-head').addEventListener('click', () => {
+          step.classList.toggle('collapsed-text');
+        });
+      } else {
+        step.classList.remove('collapsed-text');
+      }
     }
 
     function showPlan(steps) {
-      clearPlaceholder();
-      const row = document.createElement('div');
-      row.className = 'msg-row';
-      const label = document.createElement('div');
-      label.className = 'msg-label';
-      label.innerHTML = \`
-        <svg viewBox="0 0 16 16" fill="currentColor" style="width:12px;height:12px;opacity:0.6;">
-          <path d="M1 3h10v1H1V3zm0 4h10v1H1V7zm0 4h7v1H1v-1zm12-7v5h1V4h-1zm0 6v3h1v-3h-1z"/>
-        </svg>
-        计划
+      const step = document.createElement('div');
+      step.className = 'step plan';
+      step.innerHTML = \`
+        <span class="step-dot"></span>
+        <div class="step-head">
+          <span class="step-icon">
+            <svg viewBox="0 0 16 16" fill="currentColor">
+              <path d="M1 3h10v1H1V3zm0 4h10v1H1V7zm0 4h7v1H1v-1zm12-7v5h1V4h-1zm0 6v3h1v-3h-1z"/>
+            </svg>
+          </span>
+          <span class="step-name">计划</span>
+        </div>
       \`;
-      const bubble = document.createElement('div');
-      bubble.className = 'message plan';
       const ol = document.createElement('ol');
       for (const s of steps) {
         const li = document.createElement('li');
         li.textContent = s;
         ol.appendChild(li);
       }
-      bubble.appendChild(ol);
-      row.appendChild(label);
-      row.appendChild(bubble);
-      messagesEl.appendChild(row);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      step.appendChild(ol);
+      addStep(step);
     }
 
     function showError(msg) {
@@ -1694,12 +1918,7 @@ ${this._getJs()}
         }
         case 'sessionCreated': {
           currentSessionId = msg.sessionId;
-          messagesEl.innerHTML = '';
-          toolEntries.clear();
-          approvalCards.clear();
-          diffCards.clear();
-          toolsList.innerHTML = '';
-          updateToolsCount();
+          resetConversation();
           inputEl.disabled = false;
           sendBtn.disabled = false;
           setStreaming(false);
@@ -1714,9 +1933,10 @@ ${this._getJs()}
           if (currentAssistantEl) currentAssistantEl.classList.remove('cursor');
           currentAssistantEl = null;
           currentAssistantTxt = '';
+          finishTurn();
           break;
         case 'toolState':
-          showToolState(msg.tool, msg.state, msg.error, msg.call_id, msg.input, msg.output);
+          showToolState(msg.tool, msg.state, msg.error, msg.call_id, msg.args, msg.output);
           break;
         case 'thought':
           showThought(msg.text);
@@ -1725,12 +1945,7 @@ ${this._getJs()}
           showPlan(msg.steps);
           break;
         case 'historyLoaded':
-          messagesEl.innerHTML = '';
-          toolEntries.clear();
-          approvalCards.clear();
-          diffCards.clear();
-          toolsList.innerHTML = '';
-          updateToolsCount();
+          resetConversation();
           if (msg.messages.length === 0) {
             messagesEl.innerHTML = \`
               <div class="placeholder">
@@ -1742,7 +1957,7 @@ ${this._getJs()}
               </div>\`;
           }
           for (const m of msg.messages) appendMsgFromHistory(m.role, m.content);
-          messagesEl.scrollTop = messagesEl.scrollHeight;
+          scrollToBottom();
           break;
         case 'error':
           showError(msg.message);
@@ -1751,6 +1966,7 @@ ${this._getJs()}
             if (currentAssistantEl) currentAssistantEl.classList.remove('cursor');
             currentAssistantEl = null;
             currentAssistantTxt = '';
+            finishTurn();
           }
           break;
         case 'triggerNewSession':
