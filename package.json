@@ -23,7 +23,7 @@
         {
           "id": "yunxiaoAgentContainer",
           "title": "云效 Agent",
-          "icon": "media/icon.png"
+          "icon": "media/icon-view.svg"
         }
       ]
     },
@@ -33,6 +33,7 @@
           "type": "webview",
           "id": "yunxiaoAgent.chatView",
           "name": "对话",
+          "icon": "media/icon-view.svg",
           "retainContextWhenHidden": true
         }
       ]
@@ -48,15 +49,6 @@
         "icon": "$(add)"
       }
     ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "yunxiaoAgent.newSession",
-          "when": "view == yunxiaoAgent.chatView",
-          "group": "navigation"
-        }
-      ]
-    },
     "configuration": {
       "title": "云效 Agent",
       "properties": {

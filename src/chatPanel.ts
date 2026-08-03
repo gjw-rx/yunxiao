@@ -56,6 +56,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _configListener?: vscode.Disposable;
   private _currentSessionId?: string;
   private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
+  private readonly _sessionNames = new Map<string, string>();
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -270,6 +271,63 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
+      case 'openFile': {
+        const uris = await vscode.window.showOpenDialog({
+          canSelectMany: false,
+          openLabel: '打开文件',
+          title: '选择要打开的文件',
+        });
+        if (uris?.[0]) {
+          await vscode.commands.executeCommand('vscode.open', uris[0]);
+        }
+        break;
+      }
+      case 'requestWorkspaceFiles': {
+        const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+        if (workspaceFolders.length === 0) {
+          view.webview.postMessage({ command: 'workspaceFiles', files: [] });
+          break;
+        }
+        const uris = await vscode.workspace.findFiles(
+          '**/*',
+          '**/{node_modules,.git,.venv,dist,out,coverage}/**',
+          300,
+        );
+        const files = uris
+          .map((uri) => {
+            const folder = vscode.workspace.getWorkspaceFolder(uri);
+            const relativePath = folder
+              ? path.relative(folder.uri.fsPath, uri.fsPath).split(path.sep).join('/')
+              : path.basename(uri.fsPath);
+            const displayPath = workspaceFolders.length > 1 && folder
+              ? `${folder.name}/${relativePath}`
+              : relativePath;
+            return { path: displayPath, name: path.basename(uri.fsPath) };
+          })
+          .sort((a, b) => a.path.localeCompare(b.path));
+        view.webview.postMessage({ command: 'workspaceFiles', files });
+        break;
+      }
+      case 'renameSession': {
+        const sessionId = msg.sessionId as string;
+        const name = msg.name as string;
+        if (sessionId && name) {
+          this._sessionNames.set(sessionId, name);
+        }
+        break;
+      }
+      case 'showHistory': {
+        // 简化版：返回当前会话名称列表
+        const sessions: { session_id: string; name: string }[] = [];
+        for (const [sid, name] of this._sessionNames) {
+          sessions.push({ session_id: sid, name });
+        }
+        if (this._currentSessionId && !this._sessionNames.has(this._currentSessionId)) {
+          sessions.unshift({ session_id: this._currentSessionId, name: 'Untitled' });
+        }
+        view.webview.postMessage({ command: 'historyList', sessions });
+        break;
+      }
     }
   }
 
@@ -377,49 +435,90 @@ ${this._getJs()}
       padding: 8px 10px;
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
-      position: relative;
     }
 
-    /* ── Agent selector (custom dropdown) ── */
-    #agentSelector {
+    /* ── Session name input ── */
+    .session-name-input {
       flex: 1;
       min-width: 0;
-      position: relative;
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid transparent;
+      border-radius: var(--radius);
+      padding: 4px 8px;
+      font-family: var(--font);
+      font-size: 13px;
+      font-weight: 500;
+      outline: none;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .session-name-input:hover { border-color: var(--border-light); }
+    .session-name-input:focus {
+      border-color: var(--focus);
+      background: var(--input-bg);
     }
 
-    #agentBtn {
-      width: 100%;
+    /* ── Compact Agent selector (in toolbar) ── */
+    .agent-selector-compact {
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .agent-compact-btn {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 6px 8px;
-      background: var(--input-bg);
-      color: var(--input-fg);
-      border: 1px solid var(--input-border);
+      gap: 5px;
+      padding: 3px 6px;
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid var(--border);
       border-radius: var(--radius);
       cursor: pointer;
       font-family: var(--font);
-      font-size: 12px;
-      text-align: left;
-      transition: border-color 0.15s;
-    }
-    #agentBtn:hover { border-color: var(--muted); }
-    #agentBtn:focus { outline: none; border-color: var(--focus); }
-    #agentBtn.open { border-color: var(--focus); }
-
-    .agent-icon-dot {
-      width: 20px;
-      height: 20px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
       font-size: 11px;
-      font-weight: 600;
-      color: #fff;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .agent-compact-btn:hover { border-color: var(--muted); background: var(--hover-bg); }
+    .agent-compact-btn:focus { outline: none; border-color: var(--focus); }
+    .agent-compact-btn.open { border-color: var(--focus); }
+
+    .agent-compact-btn .agent-icon-dot {
+      width: 16px;
+      height: 16px;
+      font-size: 9px;
     }
 
+    .agent-compact-name {
+      max-width: 80px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .agent-compact-btn .chevron {
+      width: 10px;
+      height: 10px;
+    }
+
+    /* Dropdown panel (shared) */
+    #agentDropdown {
+      position: absolute;
+      bottom: calc(100% + 4px);
+      right: 0;
+      left: auto;
+      min-width: 220px;
+      background: var(--vscode-dropdown-background, var(--vscode-editor-background, #252526));
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      z-index: 100;
+      max-height: 280px;
+      overflow-y: auto;
+      display: none;
+    }
+    #agentDropdown.show { display: block; }
+
+    /* Dropdown card content (shared) */
     .agent-info {
       flex: 1;
       min-width: 0;
@@ -441,32 +540,6 @@ ${this._getJs()}
       overflow: hidden;
       text-overflow: ellipsis;
     }
-
-    .chevron {
-      width: 12px;
-      height: 12px;
-      flex-shrink: 0;
-      transition: transform 0.2s;
-      color: var(--muted);
-    }
-    #agentBtn.open .chevron { transform: rotate(180deg); }
-
-    /* Dropdown panel */
-    #agentDropdown {
-      position: absolute;
-      top: calc(100% + 4px);
-      left: 0;
-      right: 0;
-      background: var(--vscode-dropdown-background, var(--vscode-editor-background, #252526));
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-      z-index: 100;
-      max-height: 280px;
-      overflow-y: auto;
-      display: none;
-    }
-    #agentDropdown.show { display: block; }
 
     .agent-card {
       display: flex;
@@ -1181,20 +1254,38 @@ ${this._getJs()}
 
     /* ── Input area ── */
     #inputArea {
+      position: relative;
       padding: 8px 10px 10px;
       border-top: 1px solid var(--border);
       flex-shrink: 0;
       background: var(--bg);
     }
 
+    #filePicker {
+      position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); display: none;
+      overflow: hidden; background: var(--vscode-quickInput-background, var(--vscode-editor-background, #252526));
+      border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 30px rgba(0,0,0,0.28); z-index: 110;
+      animation: picker-rise 0.14s ease-out both;
+    }
+    #filePicker.show { display: block; }
+    .file-picker-heading { display: flex; justify-content: space-between; padding: 8px 10px 6px; color: var(--muted); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
+    .file-picker-hint { opacity: 0.7; text-transform: none; letter-spacing: 0; }
+    #filePickerList { max-height: 220px; overflow-y: auto; padding: 0 4px 4px; }
+    .file-option { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; text-align: left; font: inherit; }
+    .file-option:hover, .file-option.active { background: var(--vscode-list-activeSelectionBackground, var(--hover-bg)); color: var(--vscode-list-activeSelectionForeground, var(--fg)); }
+    .file-option-icon { color: var(--muted); flex: 0 0 auto; }
+    .file-option-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+    .file-picker-empty { padding: 12px 10px; color: var(--muted); font-size: 12px; }
+    @keyframes picker-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
     #inputWrapper {
       display: flex;
       align-items: flex-end;
-      gap: 6px;
+      gap: 8px;
       background: var(--input-bg);
       border: 1px solid var(--input-border);
       border-radius: 10px;
-      padding: 6px 8px;
+      padding: 8px 10px;
       transition: border-color 0.15s, box-shadow 0.15s;
     }
     #inputWrapper:focus-within {
@@ -1219,6 +1310,60 @@ ${this._getJs()}
     #input::placeholder { color: var(--input-placeholder); }
     #input:disabled { cursor: not-allowed; opacity: 0.5; }
 
+    /* ── Input toolbar ── */
+    .input-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 2px 0;
+      gap: 6px;
+    }
+    .toolbar-left, .toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .open-file-btn {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 1px solid transparent;
+      color: var(--muted);
+      transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s;
+    }
+    .open-file-btn:hover:not(:disabled) {
+      color: var(--fg);
+      background: var(--hover-bg);
+      border-color: var(--border-light);
+    }
+    .open-file-btn:active:not(:disabled) { transform: scale(0.92); }
+    .open-file-btn:focus-visible { outline: 1px solid var(--focus); outline-offset: 1px; }
+    .open-file-btn svg { width: 15px; height: 15px; }
+
+    /* Shared icon-dot style (used in compact agent btn + dropdown cards) */
+    .agent-icon-dot {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      font-size: 11px;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .chevron {
+      width: 12px;
+      height: 12px;
+      flex-shrink: 0;
+      transition: transform 0.2s;
+      color: var(--muted);
+    }
+    .agent-compact-btn.open .chevron { transform: rotate(180deg); }
+
     #sendBtn, #stopBtn {
       width: 28px;
       height: 28px;
@@ -1227,38 +1372,33 @@ ${this._getJs()}
       flex-shrink: 0;
     }
 
+    .session-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+    .session-actions .btn-icon { width: 26px; height: 26px; padding: 0; color: var(--muted); }
+    .session-actions .btn-icon:hover:not(:disabled) { color: var(--fg); }
+
     #hint {
       text-align: center;
       font-size: 10px;
       color: var(--muted);
       margin-top: 5px;
       opacity: 0.7;
-    }
-`;
+    }`;
   }
 
   private _getBodyHtml(): string {
     return `
   <div id="header">
-    <div id="agentSelector">
-      <button id="agentBtn" aria-haspopup="listbox">
-        <span class="agent-icon-dot" id="agentIcon" style="background: #6c757d;">?</span>
-        <span class="agent-info">
-          <span class="agent-name" id="agentName">选择 Agent</span>
-          <span class="agent-model" id="agentModelText">--</span>
-        </span>
-        <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M4 6l4 4 4-4H4z"/>
-        </svg>
+    <input id="sessionNameInput" class="session-name-input" type="text" value="Untitled" placeholder="会话名称" />
+    <div class="session-actions">
+      <button id="newSessionIconBtn" class="btn btn-icon" title="新建会话">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M7.25 1a.75.75 0 0 1 .75.75V7h5.25a.75.75 0 0 1 0 1.5H8v5.25a.75.75 0 0 1-1.5 0V8.5H1.25a.75.75 0 0 1 0-1.5H6.5V1.75A.75.75 0 0 1 7.25 1z"/></svg>
       </button>
-      <div id="agentDropdown" role="listbox"></div>
-    </div>
-    <button id="newSessionBtn" class="btn" title="新建会话">
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm1 10H7V9H5V7h2V5h2v2h2v2H9v2z"/>
+      <button id="historyBtn" class="btn btn-icon" title="历史会话">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M8 2C4.69 2 2 4.69 2 8s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm0 11c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm.5-8H7v3.21l2.65 2.65.71-.71L8.5 7.79V5z"/>
       </svg>
-      新会话
-    </button>
+      </button>
+    </div>
   </div>
 
   <div id="messages">
@@ -1267,27 +1407,52 @@ ${this._getJs()}
         <path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
       </svg>
       <div class="placeholder-title">欢迎使用云效 Agent</div>
-      选择 Agent 并点击「新会话」开始对话
+      输入消息开始对话，用 @ 引用文件
     </div>
   </div>
 
   <div id="error"></div>
 
   <div id="inputArea">
-    <div id="inputWrapper">
-      <textarea id="input" rows="1" placeholder="输入消息..." disabled></textarea>
-      <button id="sendBtn" class="btn" disabled title="发送 (Enter)">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M1.5 1.5l13 6.5-13 6.5V8.75l8-1.25-8-1.25V1.5z"/>
-        </svg>
-      </button>
-      <button id="stopBtn" class="btn btn-stop" style="display:none" title="停止">
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-          <rect x="1" y="1" width="8" height="8" rx="1"/>
-        </svg>
-      </button>
+    <div id="filePicker" role="listbox" aria-label="选择工作区文件">
+      <div class="file-picker-heading"><span>工作区文件</span><span class="file-picker-hint">↑↓ 选择 · Enter 确认 · Esc 关闭</span></div>
+      <div id="filePickerList"></div>
     </div>
-    <div id="hint">Enter 发送 &middot; Shift+Enter 换行</div>
+    <div id="inputWrapper">
+      <textarea id="input" rows="1" placeholder="输入消息... 使用 @ 引用文件" disabled></textarea>
+    </div>
+    <div id="inputToolbar" class="input-toolbar">
+      <div class="toolbar-left">
+        <button id="openFileBtn" class="btn btn-icon open-file-btn" title="打开文件" aria-label="打开文件">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 2v12M2 8h12" />
+          </svg>
+        </button>
+      </div>
+      <div class="toolbar-right">
+        <div id="agentSelectorCompact" class="agent-selector-compact">
+          <button id="agentBtn" class="agent-compact-btn" aria-haspopup="listbox" title="选择 Agent">
+            <span class="agent-icon-dot" id="agentIcon" style="background: #6c757d;">?</span>
+            <span class="agent-compact-name" id="agentName">Agent</span>
+            <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4 6l4 4 4-4H4z"/>
+            </svg>
+          </button>
+          <div id="agentDropdown" role="listbox"></div>
+        </div>
+        <button id="sendBtn" class="btn btn-icon" disabled title="发送 (Enter)">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1.5 1.5l13 6.5-13 6.5V8.75l8-1.25-8-1.25V1.5z"/>
+          </svg>
+        </button>
+        <button id="stopBtn" class="btn btn-stop btn-icon" style="display:none" title="停止">
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+            <rect x="1" y="1" width="8" height="8" rx="1"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div id="hint">Enter 发送 &middot; Shift+Enter 换行 &middot; @ 引用文件</div>
   </div>
 `;
   }
@@ -1301,19 +1466,27 @@ ${this._getJs()}
     const inputEl      = document.getElementById('input');
     const sendBtn      = document.getElementById('sendBtn');
     const stopBtn      = document.getElementById('stopBtn');
-    const newSessBtn   = document.getElementById('newSessionBtn');
+    const openFileBtn  = document.getElementById('openFileBtn');
+    const newSessBtn   = document.getElementById('newSessionIconBtn');
+    const historyBtn   = document.getElementById('historyBtn');
+    const sessionNameInput = document.getElementById('sessionNameInput');
     const errorEl      = document.getElementById('error');
     const agentBtn     = document.getElementById('agentBtn');
     const agentDropdown= document.getElementById('agentDropdown');
     const agentIcon    = document.getElementById('agentIcon');
     const agentName    = document.getElementById('agentName');
-    const agentModelText = document.getElementById('agentModelText');
+    const filePicker   = document.getElementById('filePicker');
+    const filePickerList = document.getElementById('filePickerList');
 
     // ── State ──
     let agents = [];
     let selectedAgentId = null;
     let currentSessionId = null;
     let isStreaming = false;
+    let workspaceFiles = [];
+    let filePickerIndex = 0;
+    let filePickerAtStart = -1;
+    let filteredFiles = [];
 
     /* 「回合」模型：一轮对话 = 过程时间线（思考/工具/审批）+ 最终回复。
        时间线容器先于回复气泡插入 DOM，因此过程天然呈现在回复之上。 */
@@ -1399,6 +1572,9 @@ ${this._getJs()}
       if (!agentDropdown.contains(e.target) && e.target !== agentBtn) {
         closeAgentDropdown();
       }
+      if (!filePicker.contains(e.target) && e.target !== inputEl) {
+        closeFilePicker();
+      }
     });
 
     function toggleAgentDropdown() {
@@ -1447,7 +1623,6 @@ ${this._getJs()}
       agentIcon.style.background = color;
       agentIcon.textContent = getAgentInitial(agent.agent_name);
       agentName.textContent = agent.agent_name;
-      agentModelText.textContent = agent.model || '--';
       closeAgentDropdown();
       renderAgentDropdown();
     }
@@ -1729,11 +1904,99 @@ ${this._getJs()}
 
     newSessBtn.addEventListener('click', startNewSession);
 
+    openFileBtn.addEventListener('click', () => {
+      vscode.postMessage({ command: 'openFile' });
+    });
+
+    historyBtn.addEventListener('click', () => {
+      vscode.postMessage({ command: 'showHistory' });
+    });
+
+    // ── Session name editing ──
+    sessionNameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); sessionNameInput.blur(); }
+    });
+    sessionNameInput.addEventListener('blur', () => {
+      const name = sessionNameInput.value.trim() || 'Untitled';
+      sessionNameInput.value = name;
+      if (currentSessionId) {
+        vscode.postMessage({ command: 'renameSession', sessionId: currentSessionId, name });
+      }
+    });
+
     inputEl.addEventListener('keydown', (e) => {
+      if (filePicker.classList.contains('show')) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (filteredFiles.length === 0) return;
+          filePickerIndex = (filePickerIndex + (e.key === 'ArrowDown' ? 1 : -1) + filteredFiles.length) % filteredFiles.length;
+          renderFilePicker();
+          return;
+        }
+        if (e.key === 'Enter') { e.preventDefault(); selectFile(filteredFiles[filePickerIndex]); return; }
+        if (e.key === 'Escape') { e.preventDefault(); closeFilePicker(); return; }
+      }
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
     });
 
     inputEl.addEventListener('input', autoResize);
+
+    // ── @ file selection ──
+    inputEl.addEventListener('input', handleAtTrigger);
+
+    function handleAtTrigger() {
+      const cursorPos = inputEl.selectionStart;
+      const text = inputEl.value.substring(0, cursorPos);
+      const atStart = text.lastIndexOf('@');
+      const prefix = atStart >= 0 ? text.charAt(atStart - 1) : '';
+      if (atStart < 0 || (prefix && !/\\s/.test(prefix)) || /\\s/.test(text.slice(atStart + 1))) {
+        closeFilePicker();
+        return;
+      }
+      filePickerAtStart = atStart;
+      if (workspaceFiles.length === 0) vscode.postMessage({ command: 'requestWorkspaceFiles' });
+      showFilePicker(text.slice(atStart + 1));
+    }
+
+    function showFilePicker(query) {
+      filteredFiles = workspaceFiles.filter((file) => file.path.toLowerCase().includes(query.toLowerCase())).slice(0, 80);
+      filePickerIndex = Math.min(filePickerIndex, Math.max(filteredFiles.length - 1, 0));
+      filePicker.classList.add('show');
+      renderFilePicker();
+    }
+
+    function renderFilePicker() {
+      if (filteredFiles.length === 0) {
+        filePickerList.innerHTML = '<div class="file-picker-empty">没有匹配的工作区文件</div>';
+        return;
+      }
+      filePickerList.innerHTML = filteredFiles.map((file, index) =>
+        '<button class="file-option' + (index === filePickerIndex ? ' active' : '') + '" role="option" data-index="' + index + '">' +
+        '<span class="file-option-icon">▱</span><span class="file-option-path">' + escapeHtml(file.path) + '</span></button>'
+      ).join('');
+      filePickerList.querySelectorAll('.file-option').forEach((option) => {
+        option.addEventListener('mousedown', (e) => e.preventDefault());
+        option.addEventListener('click', () => selectFile(filteredFiles[Number(option.dataset.index)]));
+      });
+    }
+
+    function selectFile(file) {
+      if (!file || filePickerAtStart < 0) return;
+      const cursorPos = inputEl.selectionStart;
+      const before = inputEl.value.substring(0, filePickerAtStart);
+      const after = inputEl.value.substring(cursorPos);
+      const insert = '@' + file.path + ' ';
+      inputEl.value = before + insert + after;
+      inputEl.selectionStart = inputEl.selectionEnd = before.length + insert.length;
+      closeFilePicker();
+      inputEl.focus();
+      autoResize();
+    }
+
+    function closeFilePicker() {
+      filePicker.classList.remove('show');
+      filePickerAtStart = -1;
+    }
 
     function autoResize() {
       inputEl.style.height = 'auto';
@@ -1750,6 +2013,8 @@ ${this._getJs()}
           return;
         }
       }
+      // 重置会话名称
+      sessionNameInput.value = 'Untitled';
       vscode.postMessage({ command: 'createSession', agentId: selectedAgentId });
     }
 
@@ -1919,6 +2184,8 @@ ${this._getJs()}
           renderAgentDropdown();
           if (agents.length > 0 && !selectedAgentId) {
             selectAgent(agents[0].agent_id);
+            // 自动创建会话
+            startNewSession();
           }
           break;
         }
@@ -1984,6 +2251,31 @@ ${this._getJs()}
         case 'diffResult':
           showDiffCard(msg.call_id, msg.file_path, msg.diff_html, msg.additions, msg.deletions);
           break;
+        case 'workspaceFiles': {
+          workspaceFiles = msg.files || [];
+          if (filePickerAtStart >= 0) {
+            const cursorPos = inputEl.selectionStart;
+            const text = inputEl.value.substring(0, cursorPos);
+            showFilePicker(text.slice(filePickerAtStart + 1));
+          }
+          break;
+        }
+        case 'historyList': {
+          // 简单实现：如果有会话则切换加载
+          const sessions = msg.sessions || [];
+          if (sessions.length === 0) {
+            showError('暂无历史会话');
+          } else {
+            // 简化版：加载最近的会话
+            const latest = sessions[0];
+            if (latest && latest.session_id) {
+              currentSessionId = latest.session_id;
+              sessionNameInput.value = latest.name || 'Untitled';
+              vscode.postMessage({ command: 'loadHistory', sessionId: currentSessionId });
+            }
+          }
+          break;
+        }
       }
     });
 
