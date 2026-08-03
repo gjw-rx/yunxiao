@@ -86,6 +86,42 @@
           "default": [],
           "description": "无需审批直接放行的本地工具名列表（如 fs.write_file）；只读工具本就免审批",
           "scope": "window"
+        },
+        "yunxiaoAgent.shellWhitelist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "npm test",
+            "npm run lint",
+            "npm run build",
+            "npm run check",
+            "git status",
+            "git diff",
+            "git log",
+            "git branch",
+            "node -v",
+            "npm -v",
+            "tsc --noEmit",
+            "python -m pytest",
+            "go test",
+            "cargo test"
+          ],
+          "description": "终端自动放行的安全命令前缀列表（前缀匹配，如 npm test 匹配 npm test -- --grep foo）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.terminalTimeoutMs": {
+          "type": "number",
+          "default": 300000,
+          "description": "终端命令执行超时（毫秒），默认 5 分钟",
+          "scope": "window"
+        },
+        "yunxiaoAgent.terminalOutputLimit": {
+          "type": "number",
+          "default": 10000,
+          "description": "终端输出截断上限（字符），保留尾部",
+          "scope": "window"
         }
       }
     }
@@ -123,6 +159,7 @@
   },
   "dependencies": {
     "diff": "^8.0.4",
-    "marked": "^18.0.7"
+    "marked": "^18.0.7",
+    "simple-git": "^3.27.0"
   }
 }

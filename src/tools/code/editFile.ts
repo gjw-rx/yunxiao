@@ -117,7 +117,10 @@ export class CodeEditTool extends BaseTool {
 		} else {
 			const oldString = args.oldString as string;
 			const newString = args.newString as string;
-			const count = countOccurrences(content, oldString);
+			// 换行符归一化：LLM 发来的 oldString/newString 可能用 \n，
+			// 但文件可能是 \r\n（Windows）。将入参换行符对齐到文件实际风格，避免精确匹配失败。
+			const normalized = normalizeLineEndings(content, oldString, newString);
+			const count = countOccurrences(content, normalized.oldString);
 			if (count === 0) {
 				return { status: 'error', error: `未找到要替换的字符串（oldString 不在文件中）` };
 			}
@@ -127,7 +130,7 @@ export class CodeEditTool extends BaseTool {
 					error: `多处匹配（${count} 处），请提供更多上下文使 oldString 唯一`,
 				};
 			}
-			proposed = content.replace(oldString, newString);
+			proposed = content.replace(normalized.oldString, normalized.newString);
 		}
 
 		if (proposed === content) {
@@ -152,7 +155,7 @@ export class CodeEditTool extends BaseTool {
 				`code.edit: ${inputPath}`
 			);
 		} catch {
-			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => {});
+			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => { });
 			// 预览失败不阻断应用（降级为无预览）
 		}
 
@@ -166,7 +169,7 @@ export class CodeEditTool extends BaseTool {
 
 		// 8. 应用或取消
 		if (decision === 'deny') {
-			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => {});
+			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => { });
 			return {
 				status: 'cancelled',
 				error: '用户拒绝执行',
@@ -178,7 +181,7 @@ export class CodeEditTool extends BaseTool {
 			// 原子应用：rename 预览文件到目标
 			await fs.rename(previewPath, resolved.fsPath);
 		} catch (err) {
-			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => {});
+			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => { });
 			return {
 				status: 'error',
 				error: `应用编辑失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -215,4 +218,34 @@ function countOccurrences(haystack: string, needle: string): number {
 		i += needle.length;
 	}
 	return count;
+}
+
+/**
+ * 将 oldString/newString 的换行符对齐到文件内容的实际换行风格。
+ * 文件用 \r\n（Windows）时，入参的 \n 会被转为 \r\n；反之亦然。
+ * 若入参与文件风格一致则原样返回。
+ */
+function normalizeLineEndings(
+	fileContent: string,
+	oldString: string,
+	newString: string
+): { oldString: string; newString: string } {
+	const fileHasCrlf = fileContent.includes('\r\n');
+	const inputHasCrlf = oldString.includes('\r\n');
+
+	if (fileHasCrlf && !inputHasCrlf) {
+		// 文件是 CRLF，入参是 LF -> 入参转 CRLF
+		return {
+			oldString: oldString.replace(/\n/g, '\r\n'),
+			newString: newString.replace(/\n/g, '\r\n'),
+		};
+	}
+	if (!fileHasCrlf && inputHasCrlf) {
+		// 文件是 LF，入参是 CRLF -> 入参转 LF
+		return {
+			oldString: oldString.replace(/\r\n/g, '\n'),
+			newString: newString.replace(/\r\n/g, '\n'),
+		};
+	}
+	return { oldString, newString };
 }

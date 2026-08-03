@@ -29,6 +29,10 @@ export interface ToolResultMetadata {
 	readonly affected_files?: string[];
 	readonly diff?: string;
 	readonly duration_ms?: number;
+	/** 终端命令退出码（terminal.exec 填充）。 */
+	readonly exitCode?: number;
+	/** git commit 短 SHA（git.commit 填充）。 */
+	readonly sha?: string;
 }
 
 /** 本地执行后回传云端的工具结果。 */

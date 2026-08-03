@@ -235,4 +235,42 @@ describe('CodeEditTool', () => {
 		assert.strictEqual(result.status, 'success');
 		assert.ok(result.result?.includes('无变化'));
 	});
+
+	it('CRLF 文件 + LF 入参：换行符归一化后匹配成功', async () => {
+		// Arrange：文件用 CRLF，LLM 发来的 oldString/newString 用 LF
+		await writeFile('readme.md', 'line1\r\nline2\r\nline3\r\n');
+		const tool = new CodeEditTool({
+			approval: mockApproval('allow'),
+			diffViewer: mockDiffViewer().viewer,
+		});
+		// Act：oldString 用 \n（LF），文件用 \r\n（CRLF）
+		const result = await tool.execute(
+			{ path: 'readme.md', oldString: 'line2\nline3', newString: 'changed\nchanged' },
+			await makeContext()
+		);
+		// Assert：归一化后匹配成功
+		assert.strictEqual(result.status, 'success');
+		const written = await fs.readFile(path.join(workspace, 'readme.md'), 'utf8');
+		assert.ok(written.includes('changed\r\nchanged'));
+		assert.ok(!written.includes('line2'));
+	});
+
+	it('LF 文件 + CRLF 入参：换行符归一化后匹配成功', async () => {
+		// Arrange：文件用 LF，LLM 发来的 oldString 用 CRLF
+		await writeFile('readme.md', 'line1\nline2\nline3\n');
+		const tool = new CodeEditTool({
+			approval: mockApproval('allow'),
+			diffViewer: mockDiffViewer().viewer,
+		});
+		// Act：oldString 用 \r\n（CRLF），文件用 \n（LF）
+		const result = await tool.execute(
+			{ path: 'readme.md', oldString: 'line2\r\nline3', newString: 'changed\r\nchanged' },
+			await makeContext()
+		);
+		// Assert：归一化后匹配成功，写入保持文件的 LF 风格
+		assert.strictEqual(result.status, 'success');
+		const written = await fs.readFile(path.join(workspace, 'readme.md'), 'utf8');
+		assert.ok(written.includes('changed\nchanged'));
+		assert.ok(!written.includes('line2'));
+	});
 });

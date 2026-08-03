@@ -18,6 +18,13 @@ import { WorkspaceSymbolsTool } from './tools/code/workspaceSymbols';
 import { FindReferencesTool } from './tools/code/findReferences';
 import { GoToDefinitionTool } from './tools/code/goToDefinition';
 import { DiffViewer } from './tools/diff/diffViewer';
+import { TerminalExecTool } from './tools/terminal/terminalExec';
+import { ShellWhitelist } from './tools/terminal/shellWhitelist';
+import { GitStatusTool } from './tools/git/gitStatus';
+import { GitDiffTool } from './tools/git/gitDiff';
+import { GitCommitTool } from './tools/git/gitCommit';
+import { GitBranchTool } from './tools/git/gitBranch';
+import { GitStashTool } from './tools/git/gitStash';
 import { getWorkspaceRoots } from './tools/fs/pathGuard';
 import * as logger from './logger';
 
@@ -103,6 +110,24 @@ async function _activate(context: vscode.ExtensionContext) {
 	registry.register(new FindReferencesTool());
 	registry.register(new GoToDefinitionTool());
 
+	// Phase 4: 终端执行与 Git 集成
+	const shellWhitelist = new ShellWhitelist(
+		config.get<string[]>('shellWhitelist', [])
+	);
+	registry.register(
+		new TerminalExecTool({
+			approval,
+			shellWhitelist,
+			terminalTimeoutMs: config.get<number>('terminalTimeoutMs', 300_000),
+			terminalOutputLimit: config.get<number>('terminalOutputLimit', 10_000),
+		})
+	);
+	registry.register(new GitStatusTool());
+	registry.register(new GitDiffTool());
+	registry.register(new GitCommitTool());
+	registry.register(new GitBranchTool());
+	registry.register(new GitStashTool());
+
 	const router = new ToolRouter(registry, approval);
 
 	const sessionManager = new SessionManager({
@@ -114,6 +139,12 @@ async function _activate(context: vscode.ExtensionContext) {
 		getWorkspaceRoots: () => getWorkspaceRoots(),
 		getMaxFileSize: () =>
 			config.get<number>('maxFileSize', DEFAULT_MAX_FILE_SIZE),
+		getTerminalOutputLimit: () =>
+			config.get<number>('terminalOutputLimit', 10_000),
+		getToolTimeoutMs: (toolName) =>
+			toolName === 'terminal.exec'
+				? config.get<number>('terminalTimeoutMs', 300_000)
+				: undefined,
 	});
 
 	// 回填 provider 的依赖（解决循环依赖：provider -> approval -> provider）
@@ -141,4 +172,4 @@ async function _activate(context: vscode.ExtensionContext) {
 	);
 }
 
-export function deactivate() {}
+export function deactivate() { }

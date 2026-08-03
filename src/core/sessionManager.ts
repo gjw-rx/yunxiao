@@ -37,6 +37,10 @@ export interface SessionManagerOptions {
 	readonly getWorkspaceRoots: () => string[];
 	/** 获取读文件大小上限。 */
 	readonly getMaxFileSize?: () => number | undefined;
+	/** 获取终端输出截断上限。 */
+	readonly getTerminalOutputLimit?: () => number | undefined;
+	/** 按工具名获取自定义超时（毫秒），返回 undefined 则用默认 toolTimeoutMs。 */
+	readonly getToolTimeoutMs?: (toolName: string) => number | undefined;
 	/** 审批网关（可选，会话重置时清理其会话级允许记忆）。 */
 	readonly approval?: { clearSession(sessionId: string): void };
 }
@@ -209,17 +213,19 @@ export class SessionManager {
 
 	/** 带超时地执行工具（超时则发 error；底层工具 promise 被遗弃）。 */
 	private executeWithTimeout(sessionId: string, call: ToolCall): Promise<ToolResult> {
+		const effectiveTimeout = this.opts.getToolTimeoutMs?.(call.tool) ?? this.toolTimeoutMs;
 		const context: ToolContext = {
 			workspaceRoots: this.opts.getWorkspaceRoots(),
 			maxFileSize: this.opts.getMaxFileSize?.(),
-			toolTimeoutMs: this.toolTimeoutMs,
+			toolTimeoutMs: effectiveTimeout,
 			sessionId,
 			warn: (m) => this.opts.eventBus.emit({ type: 'error', sessionId, payload: m }),
+			terminalOutputLimit: this.opts.getTerminalOutputLimit?.(),
 		};
 		return new Promise<ToolResult>((resolve, reject) => {
 			const timer = setTimeout(() => {
-				reject(new ToolTimeoutError(call.tool, this.toolTimeoutMs));
-			}, this.toolTimeoutMs);
+				reject(new ToolTimeoutError(call.tool, effectiveTimeout));
+			}, effectiveTimeout);
 			this.opts.router
 				.route(call, context)
 				.then((r) => {

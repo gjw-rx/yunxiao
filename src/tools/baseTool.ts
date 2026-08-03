@@ -17,6 +17,10 @@ export interface ToolContext {
 	readonly sessionId?: string;
 	/** 用户警告回调（如敏感文件访问），由会话层桥接到 UI。 */
 	readonly warn?: (message: string) => void;
+	/** 终端输出截断上限（字符），保留尾部。 */
+	readonly terminalOutputLimit?: number;
+	/** 取消信号（终端长任务用），触发时工具应中止并返回 cancelled。 */
+	readonly abortSignal?: AbortSignal;
 	/** 未来扩展：审批网关回调等（Phase 2+）。 */
 }
 

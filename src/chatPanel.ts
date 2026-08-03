@@ -6,280 +6,280 @@ import type { SessionManager } from './core/sessionManager';
 import type { EventBus, AgentEvent } from './core/eventBus';
 
 interface ChatViewDeps {
-	readonly client: AIClient;
-	readonly registry: ToolRegistry;
-	readonly sessionManager: SessionManager;
-	readonly eventBus: EventBus;
+  readonly client: AIClient;
+  readonly registry: ToolRegistry;
+  readonly sessionManager: SessionManager;
+  readonly eventBus: EventBus;
 }
 
 function getServiceBaseUrl(): string {
-	return vscode.workspace
-		.getConfiguration('yunxiaoAgent')
-		.get<string>('serviceBaseUrl', 'http://127.0.0.1:8002');
+  return vscode.workspace
+    .getConfiguration('yunxiaoAgent')
+    .get<string>('serviceBaseUrl', 'http://127.0.0.1:8002');
 }
 
 function friendlyError(err: unknown, baseUrl: string): string {
-	const message = err instanceof Error ? err.message : String(err);
-	if (
-		message.includes('ECONNREFUSED') ||
-		message.includes('ENOTFOUND') ||
-		message.includes('fetch failed') ||
-		message.includes('connect')
-	) {
-		return `无法连接 AI 服务，请确认服务已启动且地址正确（当前: ${baseUrl}）`;
-	}
-	if (message.includes('会话不存在')) {
-		return '会话已失效，请新建会话';
-	}
-	return message;
+  const message = err instanceof Error ? err.message : String(err);
+  if (
+    message.includes('ECONNREFUSED') ||
+    message.includes('ENOTFOUND') ||
+    message.includes('fetch failed') ||
+    message.includes('connect')
+  ) {
+    return `无法连接 AI 服务，请确认服务已启动且地址正确（当前: ${baseUrl}）`;
+  }
+  if (message.includes('会话不存在')) {
+    return '会话已失效，请新建会话';
+  }
+  return message;
 }
 
 function getNonce(): string {
-	const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-	let result = '';
-	for (let i = 0; i < 32; i++) {
-		result += chars.charAt(Math.floor(Math.random() * chars.length));
-	}
-	return result;
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for (let i = 0; i < 32; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
 }
 
 /** 待处理的审批请求：call_id -> resolve 回调 */
 type ApprovalResolver = (decision: 'allow' | 'always' | 'deny') => void;
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
-	private _view?: vscode.WebviewView;
-	private readonly _client: AIClient;
-	private readonly _registry: ToolRegistry;
-	private readonly _sessionManager: SessionManager;
-	private readonly _eventBus: EventBus;
-	private _baseUrl: string;
-	private _configListener?: vscode.Disposable;
-	private _currentSessionId?: string;
-	private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
+  private _view?: vscode.WebviewView;
+  private readonly _client: AIClient;
+  private readonly _registry: ToolRegistry;
+  private readonly _sessionManager: SessionManager;
+  private readonly _eventBus: EventBus;
+  private _baseUrl: string;
+  private _configListener?: vscode.Disposable;
+  private _currentSessionId?: string;
+  private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
 
-	constructor(
-		private readonly _context: vscode.ExtensionContext,
-		deps: ChatViewDeps
-	) {
-		this._baseUrl = getServiceBaseUrl();
-		this._client = deps.client;
-		this._registry = deps.registry;
-		this._sessionManager = deps.sessionManager;
-		this._eventBus = deps.eventBus;
-	}
+  constructor(
+    private readonly _context: vscode.ExtensionContext,
+    deps: ChatViewDeps
+  ) {
+    this._baseUrl = getServiceBaseUrl();
+    this._client = deps.client;
+    this._registry = deps.registry;
+    this._sessionManager = deps.sessionManager;
+    this._eventBus = deps.eventBus;
+  }
 
-	resolveWebviewView(
-		webviewView: vscode.WebviewView,
-		_ctx: vscode.WebviewViewResolveContext,
-		_token: vscode.CancellationToken
-	): void {
-		this._view = webviewView;
+  resolveWebviewView(
+    webviewView: vscode.WebviewView,
+    _ctx: vscode.WebviewViewResolveContext,
+    _token: vscode.CancellationToken
+  ): void {
+    this._view = webviewView;
 
-		webviewView.webview.options = {
-			enableScripts: true,
-			localResourceRoots: [
-				vscode.Uri.file(path.join(this._context.extensionPath, 'dist')),
-				vscode.Uri.file(path.join(this._context.extensionPath, 'media')),
-			],
-		};
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [
+        vscode.Uri.file(path.join(this._context.extensionPath, 'dist')),
+        vscode.Uri.file(path.join(this._context.extensionPath, 'media')),
+      ],
+    };
 
-		webviewView.webview.html = this._getHtml(webviewView.webview);
+    webviewView.webview.html = this._getHtml(webviewView.webview);
 
-		webviewView.webview.onDidReceiveMessage(
-			async (msg: { command: string; [key: string]: unknown }) => {
-				await this._handleMessage(msg);
-			},
-			undefined,
-			this._context.subscriptions
-		);
+    webviewView.webview.onDidReceiveMessage(
+      async (msg: { command: string;[key: string]: unknown }) => {
+        await this._handleMessage(msg);
+      },
+      undefined,
+      this._context.subscriptions
+    );
 
-		this._configListener = vscode.workspace.onDidChangeConfiguration((e) => {
-			if (e.affectsConfiguration('yunxiaoAgent.serviceBaseUrl')) {
-				const newUrl = getServiceBaseUrl();
-				if (newUrl !== this._baseUrl) {
-					this._baseUrl = newUrl;
-					vscode.window.showInformationMessage(
-						`云效 Agent: 服务地址已更新为 ${this._baseUrl}，请重新加载窗口以生效`
-					);
-				}
-			}
-		});
+    this._configListener = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('yunxiaoAgent.serviceBaseUrl')) {
+        const newUrl = getServiceBaseUrl();
+        if (newUrl !== this._baseUrl) {
+          this._baseUrl = newUrl;
+          vscode.window.showInformationMessage(
+            `云效 Agent: 服务地址已更新为 ${this._baseUrl}，请重新加载窗口以生效`
+          );
+        }
+      }
+    });
 
-		this._context.subscriptions.push(this._configListener);
+    this._context.subscriptions.push(this._configListener);
 
-		// 订阅事件总线，将当前会话的事件转发给 webview
-		const unsub = this._eventBus.onAll((e) => this._forwardEvent(e));
-		this._context.subscriptions.push({ dispose: unsub });
-	}
+    // 订阅事件总线，将当前会话的事件转发给 webview
+    const unsub = this._eventBus.onAll((e) => this._forwardEvent(e));
+    this._context.subscriptions.push({ dispose: unsub });
+  }
 
-	/** 将当前会话的事件总线事件转发给 webview。 */
-	private _forwardEvent(e: AgentEvent): void {
-		const view = this._view;
-		if (!view || e.sessionId !== this._currentSessionId) {
-			return;
-		}
-		switch (e.type) {
-			case 'content':
-				view.webview.postMessage({ command: 'replyChunk', text: e.payload as string });
-				break;
-			case 'stream_end':
-				view.webview.postMessage({ command: 'replyEnd' });
-				break;
-			case 'error':
-				view.webview.postMessage({ command: 'error', message: e.payload as string });
-				break;
-			case 'tool_state_change': {
-				const p = e.payload as {
-					call_id: string;
-					state: string;
-					tool: string;
-					error?: string;
-					args?: unknown;
-					output?: unknown;
-				};
-				view.webview.postMessage({ command: 'toolState', ...p });
-				break;
-			}
-			case 'thought':
-				view.webview.postMessage({ command: 'thought', text: e.payload as string });
-				break;
-			case 'plan': {
-				const p = e.payload as { steps: string[] };
-				view.webview.postMessage({ command: 'plan', steps: p.steps });
-				break;
-			}
-			default:
-				break;
-		}
-	}
+  /** 将当前会话的事件总线事件转发给 webview。 */
+  private _forwardEvent(e: AgentEvent): void {
+    const view = this._view;
+    if (!view || e.sessionId !== this._currentSessionId) {
+      return;
+    }
+    switch (e.type) {
+      case 'content':
+        view.webview.postMessage({ command: 'replyChunk', text: e.payload as string });
+        break;
+      case 'stream_end':
+        view.webview.postMessage({ command: 'replyEnd' });
+        break;
+      case 'error':
+        view.webview.postMessage({ command: 'error', message: e.payload as string });
+        break;
+      case 'tool_state_change': {
+        const p = e.payload as {
+          call_id: string;
+          state: string;
+          tool: string;
+          error?: string;
+          args?: unknown;
+          output?: unknown;
+        };
+        view.webview.postMessage({ command: 'toolState', ...p });
+        break;
+      }
+      case 'thought':
+        view.webview.postMessage({ command: 'thought', text: e.payload as string });
+        break;
+      case 'plan': {
+        const p = e.payload as { steps: string[] };
+        view.webview.postMessage({ command: 'plan', steps: p.steps });
+        break;
+      }
+      default:
+        break;
+    }
+  }
 
-	/** 从工具栏"新建会话"按钮触发 */
-	triggerNewSession(): void {
-		this._view?.webview.postMessage({ command: 'triggerNewSession' });
-	}
+  /** 从工具栏"新建会话"按钮触发 */
+  triggerNewSession(): void {
+    this._view?.webview.postMessage({ command: 'triggerNewSession' });
+  }
 
-	/**
-	 * 通过 webview 内嵌卡片请求用户审批。
-	 * 返回 Promise，用户点击按钮后 resolve。
-	 * @param callId 工具调用 ID（用于关联审批结果）
-	 * @param toolName 工具名称
-	 * @param summary 操作摘要
-	 * @param filePath 关联的文件路径（可选）
-	 * @param sessionId 当前会话 ID
-	 */
-	requestApproval(
-		callId: string,
-		toolName: string,
-		summary: string,
-		filePath: string | undefined,
-		sessionId: string
-	): Promise<'allow' | 'always' | 'deny'> {
-		const view = this._view;
-		return new Promise<'allow' | 'always' | 'deny'>((resolve) => {
-			if (!view || sessionId !== this._currentSessionId) {
-				// 视图不可见或会话不匹配，回退为 deny（安全保守）
-				resolve('deny');
-				return;
-			}
-			this._pendingApprovals.set(callId, resolve);
-			view.webview.postMessage({
-				command: 'approvalRequest',
-				call_id: callId,
-				tool_name: toolName,
-				summary,
-				file_path: filePath,
-			});
-		});
-	}
+  /**
+   * 通过 webview 内嵌卡片请求用户审批。
+   * 返回 Promise，用户点击按钮后 resolve。
+   * @param callId 工具调用 ID（用于关联审批结果）
+   * @param toolName 工具名称
+   * @param summary 操作摘要
+   * @param filePath 关联的文件路径（可选）
+   * @param sessionId 当前会话 ID
+   */
+  requestApproval(
+    callId: string,
+    toolName: string,
+    summary: string,
+    filePath: string | undefined,
+    sessionId: string
+  ): Promise<'allow' | 'always' | 'deny'> {
+    const view = this._view;
+    return new Promise<'allow' | 'always' | 'deny'>((resolve) => {
+      if (!view || sessionId !== this._currentSessionId) {
+        // 视图不可见或会话不匹配，回退为 deny（安全保守）
+        resolve('deny');
+        return;
+      }
+      this._pendingApprovals.set(callId, resolve);
+      view.webview.postMessage({
+        command: 'approvalRequest',
+        call_id: callId,
+        tool_name: toolName,
+        summary,
+        file_path: filePath,
+      });
+    });
+  }
 
-	private async _handleMessage(msg: { command: string; [key: string]: unknown }): Promise<void> {
-		const view = this._view;
-		if (!view) { return; }
+  private async _handleMessage(msg: { command: string;[key: string]: unknown }): Promise<void> {
+    const view = this._view;
+    if (!view) { return; }
 
-		switch (msg.command) {
-			case 'requestAgents': {
-				try {
-					const agents = await this._client.listAgents();
-					view.webview.postMessage({ command: 'agentsLoaded', agents });
-				} catch (err: unknown) {
-					view.webview.postMessage({
-						command: 'error',
-						message: `获取 Agent 列表失败: ${friendlyError(err, this._baseUrl)}`,
-					});
-				}
-				break;
-			}
-			case 'createSession': {
-				try {
-					// 重置旧会话状态
-					if (this._currentSessionId) {
-						this._sessionManager.reset(this._currentSessionId);
-					}
-					const result = await this._client.createSession(
-						msg.agentId as string,
-						this._registry.localSchemas()
-					);
-					this._currentSessionId = result.session_id;
-					view.webview.postMessage({ command: 'sessionCreated', sessionId: result.session_id });
-				} catch (err: unknown) {
-					view.webview.postMessage({
-						command: 'error',
-						message: `创建会话失败: ${friendlyError(err, this._baseUrl)}`,
-					});
-				}
-				break;
-			}
-			case 'sendMessage': {
-				const sessionId = msg.sessionId as string;
-				const text = msg.text as string;
-				// 经会话状态机发起流；事件经事件总线回流（见 _forwardEvent）
-				this._sessionManager.sendMessage(sessionId, text);
-				break;
-			}
-			case 'stopStream': {
-				const sessionId = msg.sessionId as string;
-				this._sessionManager.cancel(sessionId);
-				break;
-			}
-			case 'loadHistory': {
-				try {
-					const history = await this._client.getHistory(msg.sessionId as string);
-					view.webview.postMessage({ command: 'historyLoaded', messages: history });
-				} catch (err: unknown) {
-					view.webview.postMessage({
-						command: 'error',
-						message: `加载历史失败: ${friendlyError(err, this._baseUrl)}`,
-					});
-				}
-				break;
-			}
-			case 'approvalDecision': {
-				const callId = msg.call_id as string;
-				const decision = msg.decision as 'allow' | 'always' | 'deny';
-				const resolver = this._pendingApprovals.get(callId);
-				if (resolver) {
-					this._pendingApprovals.delete(callId);
-					resolver(decision);
-				}
-				break;
-			}
-			case 'openDiff': {
-				const filePath = msg.file_path as string;
-				if (filePath) {
-					vscode.commands.executeCommand('vscode.open', vscode.Uri.file(filePath));
-				}
-				break;
-			}
-		}
-	}
+    switch (msg.command) {
+      case 'requestAgents': {
+        try {
+          const agents = await this._client.listAgents();
+          view.webview.postMessage({ command: 'agentsLoaded', agents });
+        } catch (err: unknown) {
+          view.webview.postMessage({
+            command: 'error',
+            message: `获取 Agent 列表失败: ${friendlyError(err, this._baseUrl)}`,
+          });
+        }
+        break;
+      }
+      case 'createSession': {
+        try {
+          // 重置旧会话状态
+          if (this._currentSessionId) {
+            this._sessionManager.reset(this._currentSessionId);
+          }
+          const result = await this._client.createSession(
+            msg.agentId as string,
+            this._registry.localSchemas()
+          );
+          this._currentSessionId = result.session_id;
+          view.webview.postMessage({ command: 'sessionCreated', sessionId: result.session_id });
+        } catch (err: unknown) {
+          view.webview.postMessage({
+            command: 'error',
+            message: `创建会话失败: ${friendlyError(err, this._baseUrl)}`,
+          });
+        }
+        break;
+      }
+      case 'sendMessage': {
+        const sessionId = msg.sessionId as string;
+        const text = msg.text as string;
+        // 经会话状态机发起流；事件经事件总线回流（见 _forwardEvent）
+        this._sessionManager.sendMessage(sessionId, text);
+        break;
+      }
+      case 'stopStream': {
+        const sessionId = msg.sessionId as string;
+        this._sessionManager.cancel(sessionId);
+        break;
+      }
+      case 'loadHistory': {
+        try {
+          const history = await this._client.getHistory(msg.sessionId as string);
+          view.webview.postMessage({ command: 'historyLoaded', messages: history });
+        } catch (err: unknown) {
+          view.webview.postMessage({
+            command: 'error',
+            message: `加载历史失败: ${friendlyError(err, this._baseUrl)}`,
+          });
+        }
+        break;
+      }
+      case 'approvalDecision': {
+        const callId = msg.call_id as string;
+        const decision = msg.decision as 'allow' | 'always' | 'deny';
+        const resolver = this._pendingApprovals.get(callId);
+        if (resolver) {
+          this._pendingApprovals.delete(callId);
+          resolver(decision);
+        }
+        break;
+      }
+      case 'openDiff': {
+        const filePath = msg.file_path as string;
+        if (filePath) {
+          vscode.commands.executeCommand('vscode.open', vscode.Uri.file(filePath));
+        }
+        break;
+      }
+    }
+  }
 
-	private _getHtml(webview: vscode.Webview): string {
-		const nonce = getNonce();
-		const markedUri = webview.asWebviewUri(
-			vscode.Uri.file(path.join(this._context.extensionPath, 'dist', 'webview', 'marked.js'))
-		);
+  private _getHtml(webview: vscode.Webview): string {
+    const nonce = getNonce();
+    const markedUri = webview.asWebviewUri(
+      vscode.Uri.file(path.join(this._context.extensionPath, 'dist', 'webview', 'marked.js'))
+    );
 
-		return `<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -298,10 +298,10 @@ ${this._getJs()}
   </script>
 </body>
 </html>`;
-	}
+  }
 
-	private _getCss(): string {
-		return `
+  private _getCss(): string {
+    return `
     /* ── Design tokens ── */
     :root {
       --bg: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e));
@@ -1235,10 +1235,10 @@ ${this._getJs()}
       opacity: 0.7;
     }
 `;
-	}
+  }
 
-	private _getBodyHtml(): string {
-		return `
+  private _getBodyHtml(): string {
+    return `
   <div id="header">
     <div id="agentSelector">
       <button id="agentBtn" aria-haspopup="listbox">
@@ -1290,10 +1290,10 @@ ${this._getJs()}
     <div id="hint">Enter 发送 &middot; Shift+Enter 换行</div>
   </div>
 `;
-	}
+  }
 
-	private _getJs(): string {
-		return `
+  private _getJs(): string {
+    return `
     const vscode = acquireVsCodeApi();
 
     // ── DOM refs ──
@@ -1368,6 +1368,12 @@ ${this._getJs()}
       }
       if (name.includes('diff')) {
         return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1v14M1 8h14" stroke="currentColor" stroke-width="1" fill="none"/><path d="M5 4h6v1H5V4zm0 3h6v1H5V7zm0 3h4v1H5v-1z"/></svg>';
+      }
+      if (name.includes('terminal') || name.includes('exec')) {
+        return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M1 2h14v12H1V2zm1 2v8h12V4H2zm2 1.5L5.5 7 4 8.5V5.5zm0 3L5.5 10 4 11.5v-3zM7 9h4v1H7V9z"/></svg>';
+      }
+      if (name.includes('git') || name.includes('commit') || name.includes('branch') || name.includes('stash') || name.includes('status')) {
+        return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm10 10a2 2 0 1 1-4 0 2 2 0 0 1 4 0zM7 3H5.9a3 3 0 0 1 0 6h4.2a3 3 0 0 1 0 6H11v2H9v-4h1a1 1 0 0 0 0-2H5.9a5 5 0 0 0 0-10H7V1l3 2.5L7 6V3z"/></svg>';
       }
       // default gear icon
       return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm4.9 1.3l1.8-.5-.5-1.8-1.7.6a5 5 0 0 0-1.5-.9l-.4-1.8h-2l-.4 1.8a5 5 0 0 0-1.5.9l-1.7-.6-.5 1.8 1.8.5a5 5 0 0 0 0 1.8l-1.8.5.5 1.8 1.7-.6a5 5 0 0 0 1.5.9l.4 1.8h2l.4-1.8a5 5 0 0 0 1.5-.9l1.7.6.5-1.8-1.8-.5a5 5 0 0 0 0-1.8z"/></svg>';
@@ -1513,7 +1519,7 @@ ${this._getJs()}
       if (!args || typeof args !== 'object') {
         return typeof args === 'string' ? args : '';
       }
-      const keys = ['path', 'file_path', 'pattern', 'query', 'command', 'dir', 'url'];
+      const keys = ['path', 'file_path', 'pattern', 'query', 'command', 'dir', 'url', 'message', 'name'];
       for (const k of keys) {
         const v = args[k];
         if (typeof v === 'string' && v) return v;
@@ -1984,5 +1990,5 @@ ${this._getJs()}
     // init
     vscode.postMessage({ command: 'requestAgents' });
 `;
-	}
+  }
 }

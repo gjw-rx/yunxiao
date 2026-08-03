@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as http from 'http';
 import * as path from 'path';
 import * as os from 'os';
+import { execSync } from 'child_process';
 import { promises as fs } from 'fs';
 import { AIClient } from '../../aiClient';
 import { ToolRegistry } from '../../core/toolRegistry';
@@ -17,6 +18,9 @@ import { BaseTool, type ToolContext, type ToolExecutionResult } from '../../tool
 import { GetDiagnosticsTool } from '../../tools/code/getDiagnostics';
 import { WorkspaceSymbolsTool } from '../../tools/code/workspaceSymbols';
 import { FindReferencesTool } from '../../tools/code/findReferences';
+import { TerminalExecTool } from '../../tools/terminal/terminalExec';
+import { ShellWhitelist } from '../../tools/terminal/shellWhitelist';
+import { GitStatusTool } from '../../tools/git/gitStatus';
 import type { ToolCall, ToolSchema } from '../../core/types';
 
 /** 慢工具：用于验证超时路径。 */
@@ -52,7 +56,7 @@ class MockCloud {
 	readonly toolResults: { call_id: string; status: string; result?: string; error?: string }[] = [];
 	readonly messages: { session_id: string; text: string }[] = [];
 	port = 0;
-	constructor(private readonly opts: MockOptions) {}
+	constructor(private readonly opts: MockOptions) { }
 
 	get baseUrl(): string {
 		return `http://127.0.0.1:${this.port}`;
@@ -293,7 +297,7 @@ describe('E2E: local pipeline vs mock cloud', () => {
 function autoAllowApproval(): ApprovalGateway {
 	return new ApprovalGateway({
 		prompter: { prompt: async () => 'allow' },
-		store: { getAlwaysAllow: () => [], addAlwaysAllow: async () => {} },
+		store: { getAlwaysAllow: () => [], addAlwaysAllow: async () => { } },
 	});
 }
 
@@ -443,7 +447,7 @@ describe('E2E: Phase 2 file tools vs mock cloud', () => {
 		const eventBus = new EventBus();
 		const approval = new ApprovalGateway({
 			prompter: { prompt: async () => undefined }, // 拒绝
-			store: { getAlwaysAllow: () => [], addAlwaysAllow: async () => {} },
+			store: { getAlwaysAllow: () => [], addAlwaysAllow: async () => { } },
 		});
 		const registry = new ToolRegistry();
 		registry.register(new WriteFileTool());
@@ -599,6 +603,318 @@ describe('E2E: Phase 3 code intelligence tools vs mock cloud', () => {
 			assert.strictEqual(mock.toolResults.length, 2);
 			assert.strictEqual(mock.toolResults[0].call_id, 'c1');
 			assert.strictEqual(mock.toolResults[1].call_id, 'c2');
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+describe('E2E: Phase 4 terminal & git tools vs mock cloud', () => {
+	let workspace: string;
+
+	beforeEach(async () => {
+		workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'yunxiao-e2e4-'));
+	});
+	afterEach(async () => {
+		await fs.rm(workspace, { recursive: true, force: true });
+	});
+
+	it('terminal.exec runs a whitelisted command end-to-end', async function () {
+		this.timeout(8000);
+		// Arrange：node -v 在默认白名单中，免审批
+		const mock = new MockCloud({
+			toolCall: {
+				call_id: 'c1',
+				tool: 'terminal.exec',
+				args: { command: 'node -v' },
+				site: 'local',
+			},
+			toolResultContent: 'done: command executed',
+		});
+		await mock.start();
+
+		const eventBus = new EventBus();
+		const approval = autoAllowApproval();
+		const registry = new ToolRegistry();
+		registry.register(
+			new TerminalExecTool({
+				approval,
+				shellWhitelist: new ShellWhitelist(['node -v']),
+				terminalTimeoutMs: 10_000,
+			})
+		);
+		const router = new ToolRouter(registry, approval);
+		const client = new AIClient(mock.baseUrl);
+		const contents: string[] = [];
+		eventBus.on('content', (e) => contents.push(e.payload as string));
+
+		const manager = new SessionManager({
+			client,
+			router,
+			eventBus,
+			approval,
+			toolTimeoutMs: 15_000,
+			getWorkspaceRoots: () => [workspace],
+			getMaxFileSize: () => undefined,
+			getToolTimeoutMs: () => 15_000,
+		});
+
+		try {
+			// Act
+			manager.sendMessage('s1', 'run node -v');
+			await waitForStreamEnd(eventBus);
+
+			// Assert：命令执行成功，结果回传
+			assert.strictEqual(mock.toolResults.length, 1);
+			assert.strictEqual(mock.toolResults[0].status, 'success');
+			const payload = JSON.parse(mock.toolResults[0].result!);
+			assert.strictEqual(payload.exitCode, 0);
+			assert.ok(payload.stdout.length > 0);
+			assert.ok(contents.includes('done: command executed'));
+		} finally {
+			await mock.close();
+		}
+	});
+
+	it('terminal.exec blocks a dangerous command (cancelled, no spawn)', async function () {
+		this.timeout(5000);
+		// Arrange
+		const mock = new MockCloud({
+			toolCall: {
+				call_id: 'c1',
+				tool: 'terminal.exec',
+				args: { command: 'rm -rf /' },
+				site: 'local',
+			},
+			toolResultContent: 'recovered after block',
+		});
+		await mock.start();
+
+		const eventBus = new EventBus();
+		const approval = autoAllowApproval();
+		const registry = new ToolRegistry();
+		registry.register(
+			new TerminalExecTool({ approval, shellWhitelist: new ShellWhitelist() })
+		);
+		const router = new ToolRouter(registry, approval);
+		const client = new AIClient(mock.baseUrl);
+
+		const manager = new SessionManager({
+			client,
+			router,
+			eventBus,
+			approval,
+			toolTimeoutMs: 5000,
+			getWorkspaceRoots: () => [workspace],
+			getMaxFileSize: () => undefined,
+		});
+
+		try {
+			// Act
+			manager.sendMessage('s1', 'run rm -rf');
+			await waitForStreamEnd(eventBus);
+
+			// Assert：危险命令被拦截，回传 cancelled
+			assert.strictEqual(mock.toolResults.length, 1);
+			assert.strictEqual(mock.toolResults[0].status, 'cancelled');
+			assert.ok(mock.toolResults[0].error?.includes('危险命令已被拦截'));
+		} finally {
+			await mock.close();
+		}
+	});
+
+	it('terminal.exec unknown command approved then executes', async function () {
+		this.timeout(8000);
+		// Arrange：node -v 不在白名单，走审批（autoAllow）
+		const mock = new MockCloud({
+			toolCall: {
+				call_id: 'c1',
+				tool: 'terminal.exec',
+				args: { command: 'node -v' },
+				site: 'local',
+			},
+			toolResultContent: 'done: unknown approved',
+		});
+		await mock.start();
+
+		const eventBus = new EventBus();
+		const approval = autoAllowApproval();
+		const registry = new ToolRegistry();
+		registry.register(
+			new TerminalExecTool({
+				approval,
+				shellWhitelist: new ShellWhitelist(['npm test']),
+				terminalTimeoutMs: 10_000,
+			})
+		);
+		const router = new ToolRouter(registry, approval);
+		const client = new AIClient(mock.baseUrl);
+
+		const manager = new SessionManager({
+			client,
+			router,
+			eventBus,
+			approval,
+			toolTimeoutMs: 15_000,
+			getWorkspaceRoots: () => [workspace],
+			getMaxFileSize: () => undefined,
+			getToolTimeoutMs: () => 15_000,
+		});
+
+		try {
+			// Act
+			manager.sendMessage('s1', 'run node -v');
+			await waitForStreamEnd(eventBus);
+
+			// Assert：审批通过后执行成功
+			assert.strictEqual(mock.toolResults.length, 1);
+			assert.strictEqual(mock.toolResults[0].status, 'success');
+			const payload = JSON.parse(mock.toolResults[0].result!);
+			assert.strictEqual(payload.exitCode, 0);
+			assert.ok(payload.stdout.length > 0);
+		} finally {
+			await mock.close();
+		}
+	});
+
+	it('git.status reads repo status end-to-end', async function () {
+		this.timeout(8000);
+		// Arrange：初始化 git 仓库并创建变更
+		execSync('git init', { cwd: workspace });
+		execSync('git config user.email test@test.com', { cwd: workspace });
+		execSync('git config user.name test', { cwd: workspace });
+		await fs.writeFile(path.join(workspace, 'a.txt'), 'a\n');
+		await fs.writeFile(path.join(workspace, 'b.txt'), 'b\n');
+		execSync('git add a.txt', { cwd: workspace });
+		execSync('git commit -m "init"', { cwd: workspace });
+		await fs.writeFile(path.join(workspace, 'a.txt'), 'modified\n');
+		await fs.writeFile(path.join(workspace, 'c.txt'), 'c\n');
+
+		const mock = new MockCloud({
+			toolCall: {
+				call_id: 'c1',
+				tool: 'git.status',
+				args: {},
+				site: 'local',
+			},
+			toolResultContent: 'done: git status',
+		});
+		await mock.start();
+
+		const eventBus = new EventBus();
+		const registry = new ToolRegistry();
+		registry.register(new GitStatusTool());
+		const router = new ToolRouter(registry);
+		const client = new AIClient(mock.baseUrl);
+
+		const manager = new SessionManager({
+			client,
+			router,
+			eventBus,
+			toolTimeoutMs: 5000,
+			getWorkspaceRoots: () => [workspace],
+			getMaxFileSize: () => undefined,
+		});
+
+		try {
+			// Act
+			manager.sendMessage('s1', 'git status');
+			await waitForStreamEnd(eventBus);
+
+			// Assert：状态查询成功，结果含分支与文件变更
+			assert.strictEqual(mock.toolResults.length, 1);
+			assert.strictEqual(mock.toolResults[0].status, 'success');
+			const payload = JSON.parse(mock.toolResults[0].result!);
+			assert.ok(payload.currentBranch);
+			// a.txt 已修改（unstaged），c.txt 未跟踪
+			assert.ok(payload.unstaged.length > 0);
+			assert.ok(payload.untracked.includes('c.txt'));
+		} finally {
+			await mock.close();
+		}
+	});
+
+	it('multi-round: terminal.exec(fail) -> code.edit(fix) -> terminal.exec(pass)', async function () {
+		this.timeout(15_000);
+		// Arrange：创建一个会报错的 JS 文件，第一轮跑测试失败，第二轮修复后通过
+		await fs.writeFile(
+			path.join(workspace, 'test.js'),
+			'const assert = require("assert");\nassert.strictEqual(1, 2); // 故意失败\n'
+		);
+		const mock = new MockCloud({
+			toolCallQueue: [
+				{
+					call_id: 'c1',
+					tool: 'terminal.exec',
+					args: { command: 'node test.js' },
+					site: 'local',
+				},
+				{
+					call_id: 'c2',
+					tool: 'code.edit',
+					args: {
+						path: 'test.js',
+						oldString: 'assert.strictEqual(1, 2); // 故意失败',
+						newString: 'assert.strictEqual(1, 1); // 已修复',
+					},
+					site: 'local',
+				},
+				{
+					call_id: 'c3',
+					tool: 'terminal.exec',
+					args: { command: 'node test.js' },
+					site: 'local',
+				},
+			],
+			toolResultContent: 'done: test fixed and passed',
+		});
+		await mock.start();
+
+		const eventBus = new EventBus();
+		const approval = autoAllowApproval();
+		const registry = new ToolRegistry();
+		registry.register(
+			new TerminalExecTool({
+				approval,
+				shellWhitelist: new ShellWhitelist(['node test.js']),
+				terminalTimeoutMs: 10_000,
+			})
+		);
+		registry.register(new CodeEditTool({ approval, diffViewer: noopDiffViewer() }));
+		const router = new ToolRouter(registry, approval);
+		const client = new AIClient(mock.baseUrl);
+
+		const manager = new SessionManager({
+			client,
+			router,
+			eventBus,
+			approval,
+			toolTimeoutMs: 15_000,
+			getWorkspaceRoots: () => [workspace],
+			getMaxFileSize: () => undefined,
+			getToolTimeoutMs: () => 15_000,
+		});
+
+		try {
+			// Act
+			manager.sendMessage('s1', 'run test, fix, rerun');
+			await waitForStreamEnd(eventBus, 12_000);
+
+			// Assert：三轮 tool_result 均回传
+			assert.strictEqual(mock.toolResults.length, 3);
+			// 第一轮：测试失败（exitCode=1）
+			assert.strictEqual(mock.toolResults[0].call_id, 'c1');
+			assert.strictEqual(mock.toolResults[0].status, 'success');
+			const r1 = JSON.parse(mock.toolResults[0].result!);
+			assert.strictEqual(r1.exitCode, 1);
+			// 第二轮：code.edit 修复
+			assert.strictEqual(mock.toolResults[1].call_id, 'c2');
+			assert.strictEqual(mock.toolResults[1].status, 'success');
+			// 第三轮：测试通过（exitCode=0）
+			assert.strictEqual(mock.toolResults[2].call_id, 'c3');
+			assert.strictEqual(mock.toolResults[2].status, 'success');
+			const r3 = JSON.parse(mock.toolResults[2].result!);
+			assert.strictEqual(r3.exitCode, 0);
 		} finally {
 			await mock.close();
 		}
