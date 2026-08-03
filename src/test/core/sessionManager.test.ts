@@ -16,12 +16,15 @@ class FakeTool extends BaseTool {
 		permissions: 'read',
 		site: 'local',
 	};
-	constructor(private readonly behavior: 'success' | 'error' = 'success') {
+	constructor(private readonly behavior: 'success' | 'error' | 'slow' = 'success') {
 		super();
 	}
 	async execute(args: Record<string, unknown>, _ctx: ToolContext): Promise<ToolExecutionResult> {
 		if (this.behavior === 'error') {
 			throw new Error('boom');
+		}
+		if (this.behavior === 'slow') {
+			await new Promise((resolve) => setTimeout(resolve, 50));
 		}
 		return { status: 'success', result: `content of ${args.path ?? ''}` };
 	}
@@ -65,7 +68,7 @@ class FakeStreamClient implements StreamClient {
 	}
 }
 
-function setup(behavior: 'success' | 'error' = 'success') {
+function setup(behavior: 'success' | 'error' | 'slow' = 'success', toolTimeoutMs = 1000) {
 	const eventBus = new EventBus();
 	const registry = new ToolRegistry();
 	registry.register(new FakeTool(behavior));
@@ -75,7 +78,7 @@ function setup(behavior: 'success' | 'error' = 'success') {
 		client,
 		router,
 		eventBus,
-		toolTimeoutMs: 1000,
+		toolTimeoutMs,
 		getWorkspaceRoots: () => [],
 		getMaxFileSize: () => undefined,
 	});
@@ -238,5 +241,31 @@ describe('SessionManager', () => {
 		assert.strictEqual(client.submitCalls[0].results.length, 2);
 		const statuses = client.submitCalls[0].results.map((r) => r.status);
 		assert.deepStrictEqual(statuses, ['cancelled', 'cancelled']);
+	});
+
+	it('times out a running tool, posts one error result, and continues', async () => {
+		const { eventBus, client, manager } = setup('slow', 5);
+		client.setScripts([
+			seq(emitToolCall(call('c1')), endStream()),
+			seq(emitContent('recovered'), endStream()),
+		]);
+		manager.sendMessage('s1', 'read a.ts');
+		await waitForStreamEnd(eventBus);
+		assert.strictEqual(client.submitCalls.length, 1);
+		assert.strictEqual(client.submitCalls[0].results[0].status, 'error');
+		assert.ok(client.submitCalls[0].results[0].error?.includes('超时'));
+	});
+
+	it('cancelling a running tool posts only one cancelled result despite late completion', async () => {
+		const { eventBus, client, manager } = setup('slow');
+		client.setScripts([seq(emitToolCall(call('c1')), endStream())]);
+		manager.sendMessage('s1', 'read a.ts');
+		await waitForToolState(eventBus, 'running');
+		const endPromise = waitForStreamEnd(eventBus);
+		manager.cancel('s1');
+		await endPromise;
+		await new Promise((resolve) => setTimeout(resolve, 75));
+		assert.strictEqual(client.submitCalls.length, 1);
+		assert.strictEqual(client.submitCalls[0].results[0].status, 'cancelled');
 	});
 });

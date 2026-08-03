@@ -22,6 +22,7 @@ import { resolveWithinRoots } from '../fs/pathGuard';
 import { PathGuardError, ToolValidationError } from '../../core/errors';
 import type { ToolSchema } from '../../core/types';
 import { createDiff, applyDiff } from '../diff/diffEngine';
+import { getFileVersion } from '../fs/fileVersion';
 import { DiffViewer } from '../diff/diffViewer';
 import type { ApprovalGateway } from '../../core/approvalGateway';
 
@@ -42,6 +43,7 @@ export class CodeEditTool extends BaseTool {
 				oldString: { type: 'string', description: '要替换的原字符串（须唯一出现）' },
 				newString: { type: 'string', description: '替换后的新字符串' },
 				patch: { type: 'string', description: 'unified diff patch（与 oldString/newString 二选一）' },
+				expectedVersion: { type: 'string', description: '可选：读取时获得的文件版本，用于检测并发修改' },
 			},
 			required: ['path'],
 		},
@@ -100,6 +102,9 @@ export class CodeEditTool extends BaseTool {
 			content = await fs.readFile(resolved.fsPath, 'utf8');
 		} catch {
 			return { status: 'error', error: `文件不存在或不可读: ${inputPath}` };
+		}
+		if (args.expectedVersion !== undefined && (typeof args.expectedVersion !== 'string' || await getFileVersion(resolved.fsPath) !== args.expectedVersion)) {
+			return { status: 'error', error: `文件已被并发修改，未应用编辑: ${inputPath}`, metadata: { retryable: false } };
 		}
 
 		// 3. 计算 proposed

@@ -3,6 +3,8 @@ import { ChatViewProvider } from './chatPanel';
 import { AIClient } from './aiClient';
 import { ToolRegistry } from './core/toolRegistry';
 import { ToolRouter } from './core/toolRouter';
+import { SecurityAudit } from './core/securityAudit';
+import { ReliabilityMetrics } from './core/reliabilityMetrics';
 import { EventBus } from './core/eventBus';
 import { SessionManager } from './core/sessionManager';
 import { ApprovalGateway } from './core/approvalGateway';
@@ -128,19 +130,22 @@ async function _activate(context: vscode.ExtensionContext) {
 	registry.register(new GitBranchTool());
 	registry.register(new GitStashTool());
 
-	const router = new ToolRouter(registry, approval);
+	const metrics = new ReliabilityMetrics();
+	const router = new ToolRouter(registry, approval, new SecurityAudit(metrics));
 
 	const sessionManager = new SessionManager({
 		client,
 		router,
 		eventBus,
 		approval,
+		metrics,
 		toolTimeoutMs: config.get<number>('toolTimeoutMs', 30_000),
 		getWorkspaceRoots: () => getWorkspaceRoots(),
 		getMaxFileSize: () =>
 			config.get<number>('maxFileSize', DEFAULT_MAX_FILE_SIZE),
 		getTerminalOutputLimit: () =>
 			config.get<number>('terminalOutputLimit', 10_000),
+		getToolResultLimit: () => config.get<number>('toolResultLimit', 10_000),
 		getToolTimeoutMs: (toolName) =>
 			toolName === 'terminal.exec'
 				? config.get<number>('terminalTimeoutMs', 300_000)

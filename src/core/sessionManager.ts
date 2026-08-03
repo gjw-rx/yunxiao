@@ -18,6 +18,7 @@ import type { SseCallbacks } from '../protocol/sseHandler';
 import type { ToolContext } from '../tools/baseTool';
 import { ToolTimeoutError } from './errors';
 import * as logger from '../logger';
+import { ReliabilityMetrics } from './reliabilityMetrics';
 
 /** 会话管理器驱动的流客户端（由 AIClient 实现）。 */
 export interface StreamClient {
@@ -39,10 +40,14 @@ export interface SessionManagerOptions {
 	readonly getMaxFileSize?: () => number | undefined;
 	/** 获取终端输出截断上限。 */
 	readonly getTerminalOutputLimit?: () => number | undefined;
+	/** 获取所有工具回传云端前的统一文本长度上限。 */
+	readonly getToolResultLimit?: () => number | undefined;
 	/** 按工具名获取自定义超时（毫秒），返回 undefined 则用默认 toolTimeoutMs。 */
 	readonly getToolTimeoutMs?: (toolName: string) => number | undefined;
 	/** 审批网关（可选，会话重置时清理其会话级允许记忆）。 */
 	readonly approval?: { clearSession(sessionId: string): void };
+	/** 本地安全与可靠性计数器。 */
+	readonly metrics?: ReliabilityMetrics;
 }
 
 /** 工具状态变更事件 payload。 */
@@ -60,6 +65,11 @@ export interface ToolStateChangePayload {
 interface SessionState {
 	abortController?: AbortController;
 	pendingToolCalls: ToolCall[];
+	activeToolCalls: Map<string, ToolCall>;
+	activeToolControllers: Map<string, AbortController>;
+	finalizedCallIds: Set<string>;
+	retryCounts: Map<string, number>;
+	cancelled: boolean;
 	running: boolean;
 }
 
@@ -78,6 +88,11 @@ export class SessionManager {
 	sendMessage(sessionId: string, text: string): void {
 		const state = this.getOrCreate(sessionId);
 		state.pendingToolCalls = [];
+		state.activeToolCalls.clear();
+		state.activeToolControllers.clear();
+		state.finalizedCallIds.clear();
+		state.retryCounts.clear();
+		state.cancelled = false;
 		state.running = true;
 		this.startMessageStream(sessionId, text);
 	}
@@ -90,15 +105,34 @@ export class SessionManager {
 		}
 		state.abortController?.abort();
 
-		// 为已收集的 pending 工具批量发 cancelled 结果（回调置空，忽略续流）
-		if (state.pendingToolCalls.length > 0) {
-			const results: ToolResult[] = state.pendingToolCalls.map((call) => {
-				this.emitToolState(sessionId, call, 'error', 'user cancelled');
-				return { call_id: call.call_id, status: 'cancelled', error: 'user cancelled' };
-			});
+		state.cancelled = true;
+		for (const controller of state.activeToolControllers.values()) {
+			controller.abort();
+		}
+
+		// pending 与 running 调用均只终结一次；回调置空，忽略取消后的续流。
+		const calls = new Map<string, ToolCall>();
+		for (const call of state.pendingToolCalls) {
+			calls.set(call.call_id, call);
+		}
+		for (const [id, call] of state.activeToolCalls) {
+			calls.set(id, call);
+		}
+		const results: ToolResult[] = [];
+		for (const call of calls.values()) {
+			if (!this.finalizeCall(state, call.call_id)) {
+				continue;
+			}
+			this.emitToolState(sessionId, call, 'cancelled', '用户取消执行');
+			results.push({ call_id: call.call_id, status: 'cancelled', error: '用户取消执行' });
+		}
+		if (results.length > 0) {
+			this.opts.metrics?.record('tool_cancelled');
 			this.opts.client.submitToolResult(results, sessionId, NOOP_CALLBACKS);
 		}
 		state.pendingToolCalls = [];
+		state.activeToolCalls.clear();
+		state.activeToolControllers.clear();
 		state.running = false;
 		state.abortController = undefined;
 		this.opts.eventBus.emit({ type: 'stream_end', sessionId, payload: null });
@@ -115,7 +149,15 @@ export class SessionManager {
 	private getOrCreate(sessionId: string): SessionState {
 		let state = this.sessions.get(sessionId);
 		if (!state) {
-			state = { pendingToolCalls: [], running: false };
+			state = {
+				pendingToolCalls: [],
+				activeToolCalls: new Map(),
+				activeToolControllers: new Map(),
+				finalizedCallIds: new Set(),
+				retryCounts: new Map(),
+				cancelled: false,
+				running: false,
+			};
 			this.sessions.set(sessionId, state);
 		}
 		return state;
@@ -144,8 +186,18 @@ export class SessionManager {
 		return {
 			onContent: (t) => emit('content', t),
 			onThought: (t) => emit('thought', t),
-			onToolStart: (name) => emit('tool_call', name),
-			onToolEnd: (output) => emit('tool_result', output),
+			onToolStart: (data) => emit('tool_state_change', {
+				call_id: data.run_id,
+				state: 'running',
+				tool: data.name,
+				args: data.input,
+			}),
+			onToolEnd: (data) => emit('tool_state_change', {
+				call_id: data.run_id,
+				state: 'success',
+				tool: data.name,
+				output: data.output,
+			}),
 			onToolCall: (e) => {
 				const call: ToolCall = { ...e };
 				state.pendingToolCalls.push(call);
@@ -178,15 +230,18 @@ export class SessionManager {
 			return;
 		}
 
-		// Phase 3：并行执行全部 pending 工具，收集结果后批量续流
+		// 默认顺序执行；仅在后续明确声明 canParallel 且无资源冲突时再开放并行。
 		const calls = state.pendingToolCalls.splice(0);
-		for (const call of calls) {
+		const runCall = async (call: ToolCall): Promise<ToolResult | undefined> => {
+			if (state.cancelled || state.finalizedCallIds.has(call.call_id)) {
+				return undefined;
+			}
 			this.emitToolState(sessionId, call, 'running');
-		}
-		const results = await Promise.all(
-			calls.map(async (call): Promise<ToolResult> => {
 				try {
 					const r = await this.executeWithTimeout(sessionId, call);
+					if (state.cancelled || !this.finalizeCall(state, call.call_id)) {
+						return undefined;
+					}
 					this.emitToolState(
 						sessionId,
 						call,
@@ -196,12 +251,24 @@ export class SessionManager {
 					);
 					return r;
 				} catch (err) {
+					if (state.cancelled || !this.finalizeCall(state, call.call_id)) {
+						return undefined;
+					}
 					const reason = err instanceof Error ? err.message : String(err);
 					this.emitToolState(sessionId, call, 'error', reason);
-					return { call_id: call.call_id, status: 'error', error: reason };
+					return { call_id: call.call_id, status: 'error', error: reason, metadata: { retryable: false } };
 				}
-			})
-		);
+		};
+		const parallel = calls.length > 1 && calls.every((call) => this.opts.router.canRunInParallel(call));
+		if (parallel) {
+			this.opts.metrics?.record('parallel_tool_batch');
+		}
+		const completed = parallel ? await Promise.all(calls.map(runCall)) : await runSequential(calls, runCall);
+		const results = completed.filter((result): result is ToolResult => result !== undefined);
+
+		if (state.cancelled || results.length === 0) {
+			return;
+		}
 
 		for (const result of results) {
 			this.opts.eventBus.emit({ type: 'tool_result', sessionId, payload: result });
@@ -213,7 +280,11 @@ export class SessionManager {
 
 	/** 带超时地执行工具（超时则发 error；底层工具 promise 被遗弃）。 */
 	private executeWithTimeout(sessionId: string, call: ToolCall): Promise<ToolResult> {
+		const state = this.getOrCreate(sessionId);
 		const effectiveTimeout = this.opts.getToolTimeoutMs?.(call.tool) ?? this.toolTimeoutMs;
+		const controller = new AbortController();
+		state.activeToolCalls.set(call.call_id, call);
+		state.activeToolControllers.set(call.call_id, controller);
 		const context: ToolContext = {
 			workspaceRoots: this.opts.getWorkspaceRoots(),
 			maxFileSize: this.opts.getMaxFileSize?.(),
@@ -221,22 +292,39 @@ export class SessionManager {
 			sessionId,
 			warn: (m) => this.opts.eventBus.emit({ type: 'error', sessionId, payload: m }),
 			terminalOutputLimit: this.opts.getTerminalOutputLimit?.(),
+			toolResultLimit: this.opts.getToolResultLimit?.(),
+			abortSignal: controller.signal,
 		};
 		return new Promise<ToolResult>((resolve, reject) => {
 			const timer = setTimeout(() => {
+				controller.abort();
+				this.opts.metrics?.record('tool_timeout');
 				reject(new ToolTimeoutError(call.tool, effectiveTimeout));
 			}, effectiveTimeout);
 			this.opts.router
 				.route(call, context)
 				.then((r) => {
 					clearTimeout(timer);
+					state.activeToolCalls.delete(call.call_id);
+					state.activeToolControllers.delete(call.call_id);
 					resolve(r);
 				})
 				.catch((e) => {
 					clearTimeout(timer);
+					state.activeToolCalls.delete(call.call_id);
+					state.activeToolControllers.delete(call.call_id);
 					reject(e);
 				});
 		});
+	}
+
+	private finalizeCall(state: SessionState, callId: string): boolean {
+		if (state.finalizedCallIds.has(callId)) {
+			this.opts.metrics?.record('duplicate_result_ignored');
+			return false;
+		}
+		state.finalizedCallIds.add(callId);
+		return true;
 	}
 
 	private emitToolState(
@@ -256,4 +344,15 @@ export class SessionManager {
 		};
 		this.opts.eventBus.emit({ type: 'tool_state_change', sessionId, payload });
 	}
+}
+
+async function runSequential<T>(
+	items: readonly T[],
+	run: (item: T) => Promise<ToolResult | undefined>
+): Promise<(ToolResult | undefined)[]> {
+	const results: (ToolResult | undefined)[] = [];
+	for (const item of items) {
+		results.push(await run(item));
+	}
+	return results;
 }

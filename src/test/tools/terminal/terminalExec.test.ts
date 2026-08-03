@@ -263,6 +263,21 @@ describe('TerminalExecTool', () => {
 		assert.throws(() => tool.validate({ command: 'ls', timeoutMs: 500 }));
 	});
 
+	it('可选参数为 null 时使用默认值', async () => {
+		const tool = new TerminalExecTool({
+			approval: makeMockApproval('allow'),
+			shellWhitelist: new ShellWhitelist(['ls']),
+		});
+		tool._setSpawnFn(makeMockSpawn({ exitCode: 0 }));
+
+		const result = await tool.execute(
+			{ command: 'ls', cwd: null, timeoutMs: null },
+			await makeContext()
+		);
+
+		assert.strictEqual(result.status, 'success');
+	});
+
 	it('cwd 解析到工作区子目录', async () => {
 		// Arrange
 		await fs.mkdir(path.join(workspace, 'subdir'), { recursive: true });

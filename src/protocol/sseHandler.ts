@@ -10,6 +10,8 @@
  */
 import type {
 	ToolCallEventData,
+	ToolStartEventData,
+	ToolEndEventData,
 	PlanEventData,
 	ProgressEventData,
 } from '../core/types';
@@ -18,8 +20,8 @@ import type {
 export interface SseCallbacks {
 	onContent?: (text: string) => void;
 	onThought?: (text: string) => void;
-	onToolStart?: (toolName: string) => void;
-	onToolEnd?: (output: string) => void;
+	onToolStart?: (data: ToolStartEventData) => void;
+	onToolEnd?: (data: ToolEndEventData) => void;
 	onToolCall?: (event: ToolCallEventData) => void;
 	onPlan?: (event: PlanEventData) => void;
 	onProgress?: (event: ProgressEventData) => void;
@@ -71,36 +73,54 @@ export function handleSseBlock(block: string, cbs: SseCallbacks): void {
 					cbs.onThought?.(evtData);
 				}
 				break;
-			case 'tool_start':
-				if (typeof evtData === 'string') {
-					cbs.onToolStart?.(evtData);
+			case 'tool_start': {
+				if (dataIsObject) {
+					const d = evtData as AnyRecord;
+					if (typeof d.run_id === 'string' && typeof d.name === 'string') {
+						cbs.onToolStart?.({
+							run_id: d.run_id,
+							name: d.name,
+							input: (d.input as Record<string, unknown>) ?? {},
+							tool_call_id: (d.tool_call_id as string | null) ?? null,
+						});
+					}
 				}
 				break;
-			case 'tool_end':
-				if (typeof evtData === 'string') {
-					cbs.onToolEnd?.(evtData);
+			}
+			case 'tool_end': {
+				if (dataIsObject) {
+					const d = evtData as AnyRecord;
+					if (typeof d.run_id === 'string' && typeof d.name === 'string') {
+						cbs.onToolEnd?.({
+							run_id: d.run_id,
+							name: d.name,
+							output: (d.output as string) ?? '',
+							tool_call_id: (d.tool_call_id as string | null) ?? null,
+						});
+					}
 				}
 				break;
+			}
 			case 'tool_call': {
-			// Phase 3：data 为对象数组，一次包含本轮全部 pending 本地工具调用
-			const arr = Array.isArray(evtData) ? evtData : null;
-			if (!arr) {
+				// Phase 3：data 为对象数组，一次包含本轮全部 pending 本地工具调用
+				const arr = Array.isArray(evtData) ? evtData : null;
+				if (!arr) {
+					break;
+				}
+				for (const item of arr) {
+					const d = item as AnyRecord;
+					if (typeof d.call_id === 'string' && typeof d.tool === 'string') {
+						cbs.onToolCall?.({
+							call_id: d.call_id as string,
+							tool: d.tool as string,
+							args: (d.args as ToolCallEventData['args']) ?? {},
+							site: (d.site as ToolCallEventData['site']) ?? 'local',
+							require_approval: d.require_approval as boolean | undefined,
+						});
+					}
+				}
 				break;
 			}
-			for (const item of arr) {
-				const d = item as AnyRecord;
-				if (typeof d.call_id === 'string' && typeof d.tool === 'string') {
-					cbs.onToolCall?.({
-						call_id: d.call_id as string,
-						tool: d.tool as string,
-						args: (d.args as ToolCallEventData['args']) ?? {},
-						site: (d.site as ToolCallEventData['site']) ?? 'local',
-						require_approval: d.require_approval as boolean | undefined,
-					});
-				}
-			}
-			break;
-		}
 			case 'plan': {
 				const d = (dataIsObject ? (evtData as AnyRecord) : parsed) as AnyRecord;
 				if (Array.isArray(d.steps)) {
@@ -133,7 +153,7 @@ export function handleSseBlock(block: string, cbs: SseCallbacks): void {
 export class SseStreamParser {
 	private buffer = '';
 
-	constructor(private readonly cbs: SseCallbacks) {}
+	constructor(private readonly cbs: SseCallbacks) { }
 
 	/** 投喂一个文本块，自动切分并分发完整事件。 */
 	feed(chunk: string): void {

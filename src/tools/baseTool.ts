@@ -21,6 +21,8 @@ export interface ToolContext {
 	readonly terminalOutputLimit?: number;
 	/** 取消信号（终端长任务用），触发时工具应中止并返回 cancelled。 */
 	readonly abortSignal?: AbortSignal;
+	/** 回传云端前允许的最大文本长度。 */
+	readonly toolResultLimit?: number;
 	/** 未来扩展：审批网关回调等（Phase 2+）。 */
 }
 
@@ -50,6 +52,49 @@ export abstract class BaseTool {
 	 * 默认 false：由路由层统一审批。true 时路由层跳过审批，工具在 execute 内自行弹窗。
 	 */
 	readonly handlesOwnApproval: boolean = false;
+
+	/**
+	 * 所有工具结果回传云端前的统一治理：跳过二进制、裁剪超大文本、脱敏高置信度密钥。
+	 * 工具仍可自行提供细粒度截断；该层是最后一道防线。
+	 */
+	governResult(result: ToolExecutionResult, context: ToolContext): ToolExecutionResult {
+		if (!result.result) {
+			return result;
+		}
+
+		const metadata = { ...result.metadata };
+		let value = result.result;
+		if (value.includes('\0')) {
+			return {
+				...result,
+				result: '<binary content>',
+				metadata: { ...metadata, truncated: true },
+			};
+		}
+
+		const redacted = redactSecrets(value);
+		if (redacted !== value) {
+			value = redacted;
+			metadata.redacted = true;
+		}
+
+		const limit = context.toolResultLimit ?? 10_000;
+		if (value.length > limit) {
+			const head = Math.min(2_000, Math.floor(limit / 2));
+			const tail = Math.max(0, limit - head);
+			value = `${value.slice(0, head)}\n...（结果已裁剪）...\n${value.slice(-tail)}`;
+			metadata.truncated = true;
+		}
+
+		return { ...result, result: value, metadata };
+	}
+}
+
+/** 仅处理 key=value / JSON key:value 等高置信度秘密模式，避免误伤普通文本。 */
+function redactSecrets(value: string): string {
+	return value
+		.replace(/((?:api[_-]?key|token|password|secret)\s*[=:]\s*["']?)[^\s"',;]+/gi, '$1***')
+		.replace(/("(?:api[_-]?key|token|password|secret)"\s*:\s*")[^"]+/gi, '$1***');
 }
 
 /** 校验参数为非空字符串，否则抛 ToolValidationError。供子类复用。 */

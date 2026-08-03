@@ -9,11 +9,13 @@ import type { ToolRegistry } from './toolRegistry';
 import type { ToolContext } from '../tools/baseTool';
 import type { ApprovalGateway } from './approvalGateway';
 import { ProtocolError } from './errors';
+import { SecurityAudit } from './securityAudit';
 
 export class ToolRouter {
 	constructor(
 		private readonly registry: ToolRegistry,
-		private readonly approval?: ApprovalGateway
+		private readonly approval?: ApprovalGateway,
+		private readonly audit = new SecurityAudit()
 	) {}
 
 	/** 路由并执行一个工具调用。仅处理 site=local；cloud 调用抛 ProtocolError。 */
@@ -25,6 +27,13 @@ export class ToolRouter {
 		}
 		const tool = this.registry.lookup(call.tool);
 		tool.validate(call.args);
+		const audit = this.audit.audit(call, tool, context);
+		if (!audit.allowed) {
+			return audit.rejection!;
+		}
+		if (audit.warning) {
+			context.warn?.(audit.warning);
+		}
 
 		// 审批门：write/execute/destructive 须经用户确认（read 直通）。
 		// handlesOwnApproval 的工具（如 code.edit 需先 diff 预览）由其在 execute 内自行审批，路由层跳过。
@@ -33,7 +42,11 @@ export class ToolRouter {
 			!tool.handlesOwnApproval
 		) {
 			const summary = this.buildApprovalSummary(call, tool.permission);
-			const decision = await this.approval.requestApproval(
+			const decision = tool.permission === 'destructive'
+				? await this.approval.requestDestructiveApproval(
+					call.tool, summary, context.sessionId, call.call_id
+				)
+				: await this.approval.requestApproval(
 				call.tool,
 				summary,
 				context.sessionId,
@@ -48,9 +61,18 @@ export class ToolRouter {
 			}
 		}
 
-		const partial = await tool.execute(call.args, context);
+		const partial = tool.governResult(await tool.execute(call.args, context), context);
 		// 路由层按 call_id 盖戳，工具实现无需关心 call_id
 		return { ...partial, call_id: call.call_id };
+	}
+
+	/** 仅明确声明可并行的只读本地工具允许在同一轮并发执行。 */
+	canRunInParallel(call: ToolCall): boolean {
+		if (call.site !== 'local') {
+			return false;
+		}
+		const tool = this.registry.lookup(call.tool);
+		return tool.permission === 'read' && tool.schema.canParallel === true;
 	}
 
 	/** 构造审批提示摘要：工具名 + 权限 + 参数。 */

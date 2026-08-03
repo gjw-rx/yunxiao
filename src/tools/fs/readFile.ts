@@ -62,6 +62,7 @@ export class ReadFileTool extends BaseTool {
 		},
 		permissions: 'read',
 		site: 'local',
+		canParallel: true,
 	};
 
 	validate(args: Record<string, unknown>): void {

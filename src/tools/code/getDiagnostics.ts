@@ -101,7 +101,7 @@ function resourceToFsPath(resource: unknown): string | undefined {
 /** 将绝对路径转为相对工作区根的路径（无匹配则返回原值）。 */
 function toRelativePath(fsPath: string, roots: string[]): string {
 	for (const root of roots) {
-		const rel = path.relative(root, fsPath);
+		const rel = path.relative(root, fsPath).split(path.sep).join('/');
 		if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
 			return rel;
 		}

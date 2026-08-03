@@ -170,14 +170,14 @@ export class GoToDefinitionTool extends BaseTool {
 			if (isLocationLink(item)) {
 				const link = item as VsCodeLocationLink;
 				results.push({
-					file: path.relative(workspaceRoot, link.targetUri.fsPath),
+					file: path.relative(workspaceRoot, link.targetUri.fsPath).split(path.sep).join('/'),
 					line: link.targetRange.start.line + 1,
 					column: link.targetRange.start.character + 1,
 				});
 			} else if (isLocation(item)) {
 				const loc = item as VsCodeLocation;
 				results.push({
-					file: path.relative(workspaceRoot, loc.uri.fsPath),
+					file: path.relative(workspaceRoot, loc.uri.fsPath).split(path.sep).join('/'),
 					line: loc.range.start.line + 1,
 					column: loc.range.start.character + 1,
 				});

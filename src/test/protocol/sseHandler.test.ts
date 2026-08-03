@@ -32,15 +32,46 @@ describe('handleSseBlock', () => {
 		assert.deepStrictEqual(cbs.calls.content, ['hello']);
 	});
 
-	it('parses thought / tool_start / tool_end events', () => {
+	it('parses thought / tool_start / tool_end events (object format)', () => {
 		const cbs = makeCallbacks();
 		handleSseBlock(
-			'data: {"type":"thought","data":"thinking"}\ndata: {"type":"tool_start","data":"kb.search"}\ndata: {"type":"tool_end","data":"result"}',
+			'data: {"type":"thought","data":"thinking"}\n' +
+			'data: {"type":"tool_start","data":{"run_id":"r1","name":"skills_list","input":{},"tool_call_id":"c1"}}\n' +
+			'data: {"type":"tool_end","data":{"run_id":"r1","name":"skills_list","output":"{\\"success\\":true}","tool_call_id":"c1"}}',
 			cbs
 		);
 		assert.deepStrictEqual(cbs.calls.thought, ['thinking']);
-		assert.deepStrictEqual(cbs.calls.tool_start, ['kb.search']);
-		assert.deepStrictEqual(cbs.calls.tool_end, ['result']);
+		assert.strictEqual(cbs.calls.tool_start.length, 1);
+		const startEvt = cbs.calls.tool_start[0] as { run_id: string; name: string; input: Record<string, unknown>; tool_call_id: string };
+		assert.strictEqual(startEvt.run_id, 'r1');
+		assert.strictEqual(startEvt.name, 'skills_list');
+		assert.deepStrictEqual(startEvt.input, {});
+		assert.strictEqual(startEvt.tool_call_id, 'c1');
+		assert.strictEqual(cbs.calls.tool_end.length, 1);
+		const endEvt = cbs.calls.tool_end[0] as { run_id: string; name: string; output: string; tool_call_id: string };
+		assert.strictEqual(endEvt.run_id, 'r1');
+		assert.strictEqual(endEvt.name, 'skills_list');
+		assert.strictEqual(endEvt.output, '{"success":true}');
+		assert.strictEqual(endEvt.tool_call_id, 'c1');
+	});
+
+	it('parses tool_start / tool_end with null tool_call_id and input args', () => {
+		const cbs = makeCallbacks();
+		handleSseBlock(
+			'data: {"type":"tool_start","data":{"run_id":"r2","name":"skill_view","input":{"name":"frontend-design"},"tool_call_id":null}}\n' +
+			'data: {"type":"tool_end","data":{"run_id":"r2","name":"skill_view","output":"skill content"}}',
+			cbs
+		);
+		assert.strictEqual(cbs.calls.tool_start.length, 1);
+		const startEvt = cbs.calls.tool_start[0] as { run_id: string; name: string; input: Record<string, unknown>; tool_call_id: string | null };
+		assert.strictEqual(startEvt.run_id, 'r2');
+		assert.strictEqual(startEvt.name, 'skill_view');
+		assert.strictEqual(startEvt.input.name, 'frontend-design');
+		assert.strictEqual(startEvt.tool_call_id, null);
+		assert.strictEqual(cbs.calls.tool_end.length, 1);
+		const endEvt = cbs.calls.tool_end[0] as { run_id: string; name: string; output: string; tool_call_id: string | null };
+		assert.strictEqual(endEvt.run_id, 'r2');
+		assert.strictEqual(endEvt.tool_call_id, null);
 	});
 
 	it('parses tool_call event with single-element data array', () => {

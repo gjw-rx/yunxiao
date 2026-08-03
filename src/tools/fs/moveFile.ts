@@ -13,6 +13,7 @@ import {
 import { resolveWithinRoots } from './pathGuard';
 import { PathGuardError } from '../../core/errors';
 import type { ToolSchema } from '../../core/types';
+import { hasVersionConflict } from './fileVersion';
 
 export class MoveFileTool extends BaseTool {
 	readonly schema: ToolSchema = {
@@ -23,6 +24,7 @@ export class MoveFileTool extends BaseTool {
 			properties: {
 				from: { type: 'string', description: '相对工作区根的源路径' },
 				to: { type: 'string', description: '相对工作区根的目标路径' },
+				expectedVersion: { type: 'string', description: '可选：源文件读取时获得的版本，用于检测并发修改' },
 			},
 			required: ['from', 'to'],
 		},
@@ -62,6 +64,9 @@ export class MoveFileTool extends BaseTool {
 			await fs.stat(fromResolved.fsPath);
 		} catch {
 			return { status: 'error', error: `源文件不存在: ${fromInput}` };
+		}
+		if (await hasVersionConflict(fromResolved.fsPath, args.expectedVersion)) {
+			return { status: 'error', error: `源文件已被并发修改，未移动: ${fromInput}`, metadata: { retryable: false } };
 		}
 
 		// 3. 覆盖检测

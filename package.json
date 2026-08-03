@@ -114,6 +114,12 @@
           "default": 10000,
           "description": "终端输出截断上限（字符），保留尾部",
           "scope": "window"
+        },
+        "yunxiaoAgent.toolResultLimit": {
+          "type": "number",
+          "default": 10000,
+          "description": "所有本地工具结果回传云端前的统一文本长度上限（字符）",
+          "scope": "window"
         }
       }
     }

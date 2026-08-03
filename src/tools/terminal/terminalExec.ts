@@ -104,11 +104,16 @@ export class TerminalExecTool extends BaseTool {
 
 	validate(args: Record<string, unknown>): void {
 		requireStringArg(args, 'command');
-		if (args.cwd !== undefined && (typeof args.cwd !== 'string' || args.cwd.length === 0)) {
+		if (
+			args.cwd !== undefined &&
+			args.cwd !== null &&
+			(typeof args.cwd !== 'string' || args.cwd.length === 0)
+		) {
 			throw new ToolValidationError('参数 cwd 必须为非空字符串');
 		}
 		if (
 			args.timeoutMs !== undefined &&
+			args.timeoutMs !== null &&
 			(typeof args.timeoutMs !== 'number' || args.timeoutMs < 1000 || !Number.isInteger(args.timeoutMs))
 		) {
 			throw new ToolValidationError('参数 timeoutMs 必须为 >= 1000 的整数');
@@ -214,6 +219,7 @@ export class TerminalExecTool extends BaseTool {
 			metadata: {
 				exitCode: runResult.exitCode,
 				duration_ms: Date.now() - startedAt,
+				truncated: runResult.truncated || undefined,
 			},
 		};
 	}

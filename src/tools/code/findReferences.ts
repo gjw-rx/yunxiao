@@ -142,7 +142,7 @@ export class FindReferencesTool extends BaseTool {
 		const workspaceRoot = context.workspaceRoots[0];
 		const rawLocations = Array.isArray(locations) ? (locations as VsCodeLocation[]) : [];
 		const mapped: ReferenceEntry[] = rawLocations.map((loc) => ({
-			file: path.relative(workspaceRoot, loc.uri.fsPath),
+			file: path.relative(workspaceRoot, loc.uri.fsPath).split(path.sep).join('/'),
 			line: loc.range.start.line + 1,
 			column: loc.range.start.character + 1,
 		}));

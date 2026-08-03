@@ -139,6 +139,26 @@ export class ApprovalGateway {
 		return 'deny';
 	}
 
+	/** destructive 操作在普通审批后要求一次不受会话/持久允许影响的二次确认。 */
+	async requestDestructiveApproval(
+		toolName: string,
+		summary: string,
+		sessionId?: string,
+		callId?: string
+	): Promise<ApprovalDecision> {
+		const first = await this.requestApproval(toolName, summary, sessionId, callId);
+		if (first === 'deny') {
+			return 'deny';
+		}
+		const confirm = await this.prompter.prompt({
+			toolName,
+			summary: `二次确认：此操作具有破坏性，执行后可能无法恢复。\n${summary}`,
+			sessionId,
+			callId,
+		});
+		return confirm === 'allow' || confirm === 'always' ? 'allow' : 'deny';
+	}
+
 	/** 清理会话级允许记忆（会话重置时调用）。 */
 	clearSession(sessionId: string): void {
 		this.sessionAllow.delete(sessionId);

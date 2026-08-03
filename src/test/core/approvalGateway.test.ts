@@ -137,4 +137,13 @@ describe('ApprovalGateway', () => {
 		assert.strictEqual(d2, 'deny');
 		assert.strictEqual(calls.length, 2);
 	});
+
+	it('destructive 操作即使已允许仍要求二次确认', async () => {
+		const { store } = mockStore();
+		const { prompter, calls } = mockPrompter(['allow', 'allow']);
+		const gw = new ApprovalGateway({ prompter, store });
+		const decision = await gw.requestDestructiveApproval('fs.delete_file', '删除 a', 'sess-1');
+		assert.strictEqual(decision, 'allow');
+		assert.strictEqual(calls.length, 2);
+	});
 });

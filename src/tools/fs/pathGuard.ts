@@ -142,7 +142,7 @@ export async function resolveWithinRoots(
 
 	return {
 		fsPath: finalPath,
-		relativePath: path.relative(matchedRoot, finalPath),
+		relativePath: path.relative(matchedRoot, finalPath).split(path.sep).join('/'),
 		root: matchedRoot,
 		sensitive: isSensitivePath(resolved),
 	};

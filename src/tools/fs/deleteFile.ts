@@ -13,6 +13,7 @@ import {
 import { resolveWithinRoots } from './pathGuard';
 import { PathGuardError } from '../../core/errors';
 import type { ToolSchema } from '../../core/types';
+import { hasVersionConflict } from './fileVersion';
 
 type VsCodeApi = typeof import('vscode');
 function vscodeApi(): VsCodeApi {
@@ -52,6 +53,7 @@ export class DeleteFileTool extends BaseTool {
 			properties: {
 				path: { type: 'string', description: '相对工作区根的目标路径' },
 				recursive: { type: 'boolean', description: '目录是否递归删除（默认 false）' },
+				expectedVersion: { type: 'string', description: '可选：读取时获得的文件版本，用于检测并发修改' },
 			},
 			required: ['path'],
 		},
@@ -96,6 +98,9 @@ export class DeleteFileTool extends BaseTool {
 			await fs.stat(resolved.fsPath);
 		} catch {
 			return { status: 'error', error: `文件不存在: ${inputPath}` };
+		}
+		if (await hasVersionConflict(resolved.fsPath, args.expectedVersion)) {
+			return { status: 'error', error: `文件已被并发修改，未删除: ${inputPath}`, metadata: { retryable: false } };
 		}
 
 		// 3. 删除

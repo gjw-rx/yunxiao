@@ -362,25 +362,25 @@ ${this._getJs()}
     return `
     /* ── Design tokens ── */
     :root {
-      --bg: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e));
-      --fg: var(--vscode-sideBar-foreground, var(--vscode-editor-foreground, #cccccc));
-      --input-bg: var(--vscode-input-background, #3c3c3c);
-      --input-fg: var(--vscode-input-foreground, #cccccc);
-      --input-border: var(--vscode-input-border, transparent);
-      --input-placeholder: var(--vscode-input-placeholderForeground, rgba(128,128,128,0.6));
-      --btn-bg: var(--vscode-button-background, #0e639c);
-      --btn-fg: var(--vscode-button-foreground, #ffffff);
-      --btn-hover: var(--vscode-button-hoverBackground, #1177bb);
-      --btn-secondary-bg: var(--vscode-button-secondaryBackground, var(--vscode-input-background, #3c3c3c));
-      --btn-secondary-fg: var(--vscode-button-secondaryForeground, var(--vscode-input-foreground, #cccccc));
+      --bg: #f7f8fa;
+      --fg: #20252d;
+      --input-bg: #ffffff;
+      --input-fg: #20252d;
+      --input-border: #e4e7ec;
+      --input-placeholder: #9aa1ad;
+      --btn-bg: #176b5e;
+      --btn-fg: #ffffff;
+      --btn-hover: #12584d;
+      --btn-secondary-bg: #ffffff;
+      --btn-secondary-fg: #20252d;
       --font: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
       --font-size: var(--vscode-font-size, 13px);
       --mono: var(--vscode-editor-font-family, 'SF Mono', Monaco, Menlo, Consolas, monospace);
-      --border: var(--vscode-panel-border, rgba(128,128,128,0.2));
-      --border-light: var(--vscode-widget-border, rgba(128,128,128,0.1));
+      --border: #e4e7ec;
+      --border-light: #eef0f3;
       --radius: 6px;
       --radius-lg: 8px;
-      --accent: var(--vscode-textLink-foreground, #3794ff);
+      --accent: #176b5e;
       /* 时间线轨道与步骤节点 */
       --rail: color-mix(in srgb, var(--fg) 16%, transparent);
       --rail-active: var(--accent);
@@ -390,10 +390,10 @@ ${this._getJs()}
       --success: var(--vscode-testing-iconPassed, #3fb950);
       --error: var(--vscode-errorForeground, #f85149);
       --warning: var(--vscode-editorWarning-foreground, #d29922);
-      --muted: var(--vscode-descriptionForeground, rgba(128,128,128,0.6));
-      --hover-bg: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.15));
-      --focus: var(--vscode-focusBorder, #007fd4);
-      --code-bg: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.12));
+      --muted: #7b8491;
+      --hover-bg: #f1f5f4;
+      --focus: #4ba998;
+      --code-bg: #f3f5f7;
       --diff-add-bg: var(--vscode-diffEditor-insertedTextBackground, rgba(46,160,67,0.15));
       --diff-del-bg: var(--vscode-diffEditor-removedTextBackground, rgba(248,81,73,0.15));
       --diff-add-line: var(--vscode-diffEditor-insertedLineBackground, rgba(46,160,67,0.1));
@@ -467,30 +467,55 @@ ${this._getJs()}
     .agent-compact-btn {
       display: flex;
       align-items: center;
-      gap: 5px;
-      padding: 3px 6px;
-      background: transparent;
+      justify-content: center;
+      gap: 8px;
+      min-width: 150px;
+      max-width: 210px;
+      height: 38px;
+      padding: 5px 12px;
+      background: #ffffff;
       color: var(--fg);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
+      border: 1px solid #e1e6e4;
+      border-radius: 8px;
       cursor: pointer;
       font-family: var(--font);
-      font-size: 11px;
-      transition: border-color 0.15s, background 0.15s;
+      font-size: 12px;
+      text-align: left;
+      transition: border-color 0.15s, background 0.15s, box-shadow 0.15s, transform 0.15s;
     }
-    .agent-compact-btn:hover { border-color: var(--muted); background: var(--hover-bg); }
-    .agent-compact-btn:focus { outline: none; border-color: var(--focus); }
-    .agent-compact-btn.open { border-color: var(--focus); }
+    .agent-compact-btn:hover {
+      border-color: #9bcfc3;
+      background: #fbfdfc;
+      box-shadow: 0 4px 12px rgba(30, 75, 65, 0.08);
+    }
+    .agent-compact-btn:active { transform: scale(0.98); }
+    .agent-compact-btn:focus-visible { outline: 1px solid var(--vscode-focusBorder, #bdbdbd); outline-offset: 2px; }
+    .agent-compact-btn.open {
+      border-color: #77bcae;
+      background: #fbfdfc;
+      box-shadow: 0 4px 12px rgba(30, 75, 65, 0.1);
+    }
 
     .agent-compact-btn .agent-icon-dot {
-      width: 16px;
-      height: 16px;
-      font-size: 9px;
+      display: none;
     }
 
     .agent-compact-name {
-      max-width: 80px;
+      min-width: 0;
+      max-width: 126px;
       white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-weight: 600;
+      letter-spacing: 0;
+    }
+
+    .agent-compact-model {
+      display: block;
+      margin-top: 1px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 400;
       overflow: hidden;
       text-overflow: ellipsis;
     }
@@ -498,6 +523,9 @@ ${this._getJs()}
     .agent-compact-btn .chevron {
       width: 10px;
       height: 10px;
+      flex: 0 0 auto;
+      color: var(--vscode-descriptionForeground, #8a8a8a);
+      opacity: 0.9;
     }
 
     /* Dropdown panel (shared) */
@@ -506,11 +534,11 @@ ${this._getJs()}
       bottom: calc(100% + 4px);
       right: 0;
       left: auto;
-      min-width: 220px;
-      background: var(--vscode-dropdown-background, var(--vscode-editor-background, #252526));
+      min-width: 240px;
+      background: #ffffff;
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      box-shadow: 0 12px 28px rgba(34, 48, 58, 0.14);
       z-index: 100;
       max-height: 280px;
       overflow-y: auto;
@@ -551,9 +579,10 @@ ${this._getJs()}
       border-bottom: 1px solid var(--border-light);
     }
     .agent-card:last-child { border-bottom: none; }
-    .agent-card:hover { background: var(--hover-bg); }
+    .agent-card:hover { background: #f5faf8; }
     .agent-card.selected {
-      background: var(--vscode-list-activeSelectionBackground, rgba(14,99,156,0.3));
+      background: #edf7f4;
+      box-shadow: inset 3px 0 0 #4ba998;
     }
 
     .agent-card .agent-icon-dot { width: 28px; height: 28px; font-size: 12px; }
@@ -1258,7 +1287,7 @@ ${this._getJs()}
       padding: 8px 10px 10px;
       border-top: 1px solid var(--border);
       flex-shrink: 0;
-      background: var(--bg);
+      background: #ffffff;
     }
 
     #filePicker {
@@ -1282,7 +1311,7 @@ ${this._getJs()}
       display: flex;
       align-items: flex-end;
       gap: 8px;
-      background: var(--input-bg);
+      background: #ffffff;
       border: 1px solid var(--input-border);
       border-radius: 10px;
       padding: 8px 10px;
@@ -1315,7 +1344,7 @@ ${this._getJs()}
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 6px 2px 0;
+      padding: 8px 2px 0;
       gap: 6px;
     }
     .toolbar-left, .toolbar-right {
@@ -1432,8 +1461,10 @@ ${this._getJs()}
       <div class="toolbar-right">
         <div id="agentSelectorCompact" class="agent-selector-compact">
           <button id="agentBtn" class="agent-compact-btn" aria-haspopup="listbox" title="选择 Agent">
-            <span class="agent-icon-dot" id="agentIcon" style="background: #6c757d;">?</span>
-            <span class="agent-compact-name" id="agentName">Agent</span>
+            <span class="agent-info">
+              <span class="agent-compact-name" id="agentName">Agent</span>
+              <span class="agent-compact-model" id="agentModel">--</span>
+            </span>
             <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
               <path d="M4 6l4 4 4-4H4z"/>
             </svg>
@@ -1473,8 +1504,8 @@ ${this._getJs()}
     const errorEl      = document.getElementById('error');
     const agentBtn     = document.getElementById('agentBtn');
     const agentDropdown= document.getElementById('agentDropdown');
-    const agentIcon    = document.getElementById('agentIcon');
     const agentName    = document.getElementById('agentName');
+    const agentModel   = document.getElementById('agentModel');
     const filePicker   = document.getElementById('filePicker');
     const filePickerList = document.getElementById('filePickerList');
 
@@ -1496,27 +1527,6 @@ ${this._getJs()}
     const toolEntries = new Map();   // call_id -> { stepEl, detailEl, state, tool }
     const approvalCards = new Map(); // call_id -> card element
     const diffCards = new Map();     // call_id -> card element
-
-    // ── Color palette for agent icons ──
-    const agentColors = [
-      '#e91e63', '#9c27b0', '#673ab7', '#3f51b5', '#2196f3',
-      '#03a9f4', '#00bcd4', '#009688', '#4caf50', '#8bc34a',
-      '#cddc39', '#ffc107', '#ff9800', '#ff5722', '#795548',
-      '#607d8b', '#f44336', '#e91e63'
-    ];
-
-    function getAgentColor(id, name) {
-      let hash = 0;
-      const str = id + name;
-      for (let i = 0; i < str.length; i++) {
-        hash = str.charCodeAt(i) + ((hash << 5) - hash);
-      }
-      return agentColors[Math.abs(hash) % agentColors.length];
-    }
-
-    function getAgentInitial(name) {
-      return name ? name.charAt(0).toUpperCase() : '?';
-    }
 
     // ── Tool icons ──
     function getToolIconSvg(toolName) {
@@ -1601,9 +1611,7 @@ ${this._getJs()}
         const card = document.createElement('div');
         card.className = 'agent-card' + (a.agent_id === selectedAgentId ? ' selected' : '');
         card.setAttribute('role', 'option');
-        const color = getAgentColor(a.agent_id, a.agent_name);
         card.innerHTML = \`
-          <span class="agent-icon-dot" style="background: \${color};">\${getAgentInitial(a.agent_name)}</span>
           <span class="agent-info">
             <span class="agent-name">\${escapeHtml(a.agent_name)}</span>
             <span class="agent-model">\${escapeHtml(a.model || '--')}</span>
@@ -1619,10 +1627,8 @@ ${this._getJs()}
       const agent = agents.find(a => a.agent_id === agentId);
       if (!agent) return;
       selectedAgentId = agentId;
-      const color = getAgentColor(agent.agent_id, agent.agent_name);
-      agentIcon.style.background = color;
-      agentIcon.textContent = getAgentInitial(agent.agent_name);
       agentName.textContent = agent.agent_name;
+      agentModel.textContent = agent.model || '--';
       closeAgentDropdown();
       renderAgentDropdown();
     }
