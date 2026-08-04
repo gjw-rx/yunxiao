@@ -237,6 +237,28 @@ describe('CodeEditTool', () => {
 		assert.ok(!dirEntries.some((entry) => entry.includes('code-edit-preview')));
 	});
 
+	it('审批等待期间取消后不得应用编辑', async () => {
+		await writeFile('a.ts', 'before\n');
+		const gate = deferredApproval();
+		const abortController = new AbortController();
+		const tool = new CodeEditTool({
+			approval: gate.approval,
+			diffViewer: mockDiffViewer().viewer,
+		});
+		const execution = tool.execute(
+			{ path: 'a.ts', oldString: 'before', newString: 'after' },
+			await makeContext({ abortSignal: abortController.signal })
+		);
+		await gate.requested;
+
+		abortController.abort();
+		gate.resolve('allow');
+		const result = await execution;
+
+		assert.strictEqual(result.status, 'cancelled');
+		assert.strictEqual(await fs.readFile(path.join(workspace, 'a.ts'), 'utf8'), 'before\n');
+	});
+
 	it('expectedVersion 不匹配时在审批前拒绝', async () => {
 		await writeFile('a.ts', 'hello\n');
 		let promptCount = 0;

@@ -22,6 +22,21 @@ function sseResponse(status: number, chunks: string[]): Response {
 	} as unknown as Response;
 }
 
+function interruptedSseResponse(): Response {
+	const encoder = new TextEncoder();
+	const stream = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(encoder.encode('data: {"type":"content","data":"partial"}\n\n'));
+			controller.error(new TypeError('socket closed'));
+		},
+	});
+	return {
+		status: 200,
+		body: stream,
+		headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+	} as unknown as Response;
+}
+
 function errorResponse(status: number, error: string): Response {
 	return {
 		status,
@@ -198,6 +213,19 @@ describe('streamToolResult', () => {
 		assert.strictEqual(cbs.errors.length, 1);
 		assert.ok(cbs.errors[0] instanceof ProtocolError);
 		assert.strictEqual(ff.calls.length, 3);
+	});
+
+	it('does not repost a tool result when an accepted SSE stream disconnects', async () => {
+		const ff = new FakeFetch();
+		ff.enqueue(interruptedSseResponse());
+		const cbs = makeCallbacks();
+
+		streamToolResult(RESULTS, 's1', { ...BASE, fetchImpl: ff.fetch }, cbs);
+		await waitForError(cbs);
+
+		assert.strictEqual(ff.calls.length, 1);
+		assert.ok(cbs.errors[0] instanceof TypeError);
+		assert.strictEqual(cbs.ended, false);
 	});
 
 	it('reports duplicate JSON through a distinct acknowledgement without SSE end', async () => {

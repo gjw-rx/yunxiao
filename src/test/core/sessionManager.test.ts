@@ -17,15 +17,21 @@ class FakeTool extends BaseTool {
 		permissions: 'read',
 		site: 'local',
 	};
-	constructor(private readonly behavior: 'success' | 'error' | 'slow' = 'success') {
+	lastAbortSignal?: AbortSignal;
+
+	constructor(private readonly behavior: 'success' | 'error' | 'slow' | 'slow_warn' = 'success') {
 		super();
 	}
-	async execute(args: Record<string, unknown>, _ctx: ToolContext): Promise<ToolExecutionResult> {
+	async execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolExecutionResult> {
+		this.lastAbortSignal = ctx.abortSignal;
 		if (this.behavior === 'error') {
 			throw new Error('boom');
 		}
-		if (this.behavior === 'slow') {
+		if (this.behavior === 'slow' || this.behavior === 'slow_warn') {
 			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		if (this.behavior === 'slow_warn') {
+			ctx.warn?.('stale warning');
 		}
 		return { status: 'success', result: `content of ${args.path ?? ''}` };
 	}
@@ -77,10 +83,14 @@ class FakeStreamClient implements StreamClient {
 	}
 }
 
-function setup(behavior: 'success' | 'error' | 'slow' = 'success', toolTimeoutMs = 1000) {
+function setup(
+	behavior: 'success' | 'error' | 'slow' | 'slow_warn' = 'success',
+	toolTimeoutMs = 1000
+) {
 	const eventBus = new EventBus();
 	const registry = new ToolRegistry();
-	registry.register(new FakeTool(behavior));
+	const tool = new FakeTool(behavior);
+	registry.register(tool);
 	const router = new ToolRouter(registry);
 	const client = new FakeStreamClient();
 	const manager = new SessionManager({
@@ -93,7 +103,7 @@ function setup(behavior: 'success' | 'error' | 'slow' = 'success', toolTimeoutMs
 	});
 	const events: AgentEvent[] = [];
 	eventBus.onAll((e) => events.push(e));
-	return { eventBus, client, manager, events };
+	return { eventBus, client, manager, events, tool };
 }
 
 function waitForStreamEnd(eventBus: EventBus, timeoutMs = 1000): Promise<void> {
@@ -333,6 +343,32 @@ describe('SessionManager', () => {
 
 		assert.ok(!events.some((event) => event.type === 'content' && event.payload === 'stale'));
 		assert.deepStrictEqual(terminalStates(events), ['completed']);
+	});
+
+	it('aborts active tools when the session is reset', async () => {
+		const { client, manager, eventBus, tool } = setup('slow');
+		client.setScripts([seq(emitToolCall(call('c1')), endStream())]);
+		manager.sendMessage('s1', 'old');
+		await waitForToolState(eventBus, 'running');
+
+		manager.reset('s1');
+
+		assert.strictEqual(tool.lastAbortSignal?.aborted, true);
+	});
+
+	it('ignores warnings emitted by a replaced tool run', async () => {
+		const { client, manager, eventBus, events } = setup('slow_warn');
+		client.setScripts([
+			seq(emitToolCall(call('c1')), endStream()),
+			seq(emitContent('current'), endStream()),
+		]);
+		manager.sendMessage('s1', 'old');
+		await waitForToolState(eventBus, 'running');
+		manager.sendMessage('s1', 'new');
+		await waitForStreamEnd(eventBus);
+		await new Promise((resolve) => setTimeout(resolve, 75));
+
+		assert.strictEqual(events.some((event) => event.payload === 'stale warning'), false);
 	});
 
 	it('emits completed once for a clean run and keeps legacy stream_end', async () => {
