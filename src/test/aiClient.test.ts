@@ -103,17 +103,19 @@ describe('AIClient', () => {
 		assert.strictEqual(agents[0].agent_id, 'a1');
 	});
 
-	it('createSession sends local_tools when provided', async () => {
-		await client.createSession('a1', [LOCAL_TOOL]);
+	it('createSession sends local_tools and workspace_root when provided', async () => {
+		await client.createSession('a1', [LOCAL_TOOL], 'D:\\workspace');
 		assert.strictEqual(mock.sessionBodies.length, 1);
 		assert.deepStrictEqual(mock.sessionBodies[0].local_tools, [LOCAL_TOOL]);
 		assert.strictEqual(mock.sessionBodies[0].agent_id, 'a1');
+		assert.strictEqual(mock.sessionBodies[0].workspace_root, 'D:\\workspace');
 	});
 
-	it('createSession omits local_tools when not provided (backward compat)', async () => {
+	it('createSession omits optional context when not provided (backward compat)', async () => {
 		await client.createSession('a1');
 		assert.strictEqual(mock.sessionBodies.length, 1);
 		assert.strictEqual('local_tools' in mock.sessionBodies[0], false);
+		assert.strictEqual('workspace_root' in mock.sessionBodies[0], false);
 	});
 
 	it('getHistory returns messages', async () => {

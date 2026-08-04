@@ -4,7 +4,7 @@
 TBD - created by archiving change phase1-local-tool-calling. Update Purpose after archive.
 ## Requirements
 ### Requirement: BaseTool contract
-The system SHALL define an abstract `BaseTool` that every local tool implements. It SHALL expose `execute(args, context)` returning a `ToolResult`, `validate(args)` checking arguments against the tool's schema before execution, and a `permission` level declaring whether the tool is read-only or requires approval. In Phase 1 only read-only tools are implemented, so no approval gateway is wired.
+The system SHALL define an abstract `BaseTool` that every local tool implements. It SHALL expose `execute(args, context)` returning a `ToolResult`, `validate(args)` checking arguments before execution, a `permission` level, and a common result-governance hook that bounds output, skips binary payloads, redacts secrets, and preserves conflict/error metadata before upload.
 
 #### Scenario: Validate rejects invalid arguments
 - **WHEN** `fs.read_file` is called without a `path` argument
@@ -111,9 +111,9 @@ The system SHALL implement `fs.move_file` (permission `write`, site `local`) tha
 - **THEN** the approval prompt indicates overwrite and, on approval, the destination is replaced
 
 ### Requirement: Path safety for all file tools
-Every `fs.*` tool introduced in Phase 2 SHALL resolve its target path(s) through the path guard before any filesystem operation, identical to `fs.read_file`. Path-guard rejection (traversal, symlink escape, no workspace) SHALL return `status: 'error'` with the guard's reason and SHALL NOT touch the filesystem.
+Every `fs.*` tool SHALL resolve target paths through the path guard and security audit before filesystem access. Traversal, symlink escape, sensitive-policy violations, and stale expected versions SHALL return an error with a clear reason and SHALL NOT touch the filesystem.
 
-#### Scenario: Out-of-workspace path rejected
-- **WHEN** any new `fs.*` tool is called with a path outside the workspace roots
-- **THEN** the path guard rejects it and the tool returns `status: 'error'` without filesystem access
+#### Scenario: Concurrent edit conflict is safe
+- **WHEN** a mutating file tool receives an expected version that no longer matches
+- **THEN** it returns a conflict error and does not modify the file
 

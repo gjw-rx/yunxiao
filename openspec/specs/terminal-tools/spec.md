@@ -1,6 +1,9 @@
 # terminal-tools Specification
 
-## ADDED Requirements
+## Purpose
+Provide controlled local terminal command execution with safety checks, approval, cancellation, timeout handling, and governed output.
+
+## Requirements
 
 ### Requirement: Terminal command execution with capture
 The system SHALL provide a `terminal.exec` tool (permission `execute`, site `local`) that executes a shell command via `child_process.spawn` in the workspace root, capturing stdout, stderr, and exit code. The tool SHALL set `handlesOwnApproval: true` so the router skips router-level approval and the tool orchestrates its own safety-then-approval flow inside `execute`.
@@ -73,25 +76,25 @@ The `ShellWhitelist` SHALL hardcode the following dangerous patterns (case-insen
 - **THEN** the result is `{ category: "dangerous" }` because the dangerous pattern is hardcoded and cannot be whitelisted
 
 ### Requirement: Execution timeout
-The `terminal.exec` tool SHALL enforce a timeout (`yunxiaoAgent.terminalTimeoutMs`, default 300000ms). On timeout, the tool SHALL kill the spawned process (SIGTERM, then SIGKILL after 2s grace) and return `{ status: "error", error: "命令执行超时（<N>s）" }`.
+The `terminal.exec` tool SHALL enforce a configurable timeout. On timeout it SHALL terminate the process with the existing grace period, return `status: "error"`, include partial output only after common result governance, and mark the failure retryable only when re-running the command is safe.
 
-#### Scenario: Long-running command times out
-- **WHEN** `terminal.exec` runs a command that exceeds the timeout
-- **THEN** the process is killed and the tool returns `{ status: "error", error: "命令执行超限" }` with partial stdout captured before kill
+#### Scenario: Timeout result is bounded
+- **WHEN** a command exceeds its timeout and produced a large partial output
+- **THEN** the process is terminated and the returned error result is bounded and carries a timeout reason
 
 ### Requirement: Execution cancellation
-The `terminal.exec` tool SHALL accept a cancellation signal (via `ToolContext` or AbortSignal). On cancellation, the tool SHALL kill the spawned process and return `{ status: "cancelled", error: "用户取消执行" }`.
+The `terminal.exec` tool SHALL accept a cancellation signal. On cancellation it SHALL terminate the process, return `status: "cancelled"`, and SHALL NOT be retried automatically by the session or cloud.
 
-#### Scenario: User cancels mid-execution
-- **WHEN** the user aborts the session while `terminal.exec` is running a command
-- **THEN** the spawned process is killed and the tool returns `{ status: "cancelled", error: "用户取消执行" }`
+#### Scenario: Cancelled command is not replayed
+- **WHEN** the user aborts a running terminal command
+- **THEN** the process is terminated, one cancelled result is returned, and the command is not spawned again
 
 ### Requirement: Output truncation
-The `terminal.exec` tool SHALL truncate stdout and stderr each to `yunxiaoAgent.terminalOutputLimit` (default 10000 characters), preserving the TAIL of the output (where errors typically appear). When truncated, the result SHALL include a `{ truncated: true, totalChars: N }` marker.
+The `terminal.exec` tool SHALL apply the common result-governance policy to stdout and stderr, preserving useful error context and marking `truncated` metadata when bounded.
 
-#### Scenario: Large output truncated
-- **WHEN** `terminal.exec` runs a command producing 50000 characters of stdout and `terminalOutputLimit` is 10000
-- **THEN** the returned result contains the last 10000 characters of stdout with a truncation marker
+#### Scenario: Large output carries marker
+- **WHEN** a command exceeds the configured output budget
+- **THEN** the result contains bounded output and an explicit truncation marker for the cloud Agent
 
 ### Requirement: Cross-platform shell selection
 The `terminal.exec` tool SHALL select the shell based on `process.platform`: on Windows use `cmd.exe /c` (or `process.env.ComSpec`), on macOS/Linux use `/bin/sh -c` (or `process.env.SHELL`). The command SHALL be passed as a single argument to the shell's `-c`/`/c` flag to preserve quoting.

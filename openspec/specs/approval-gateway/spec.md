@@ -4,26 +4,18 @@
 TBD
 ## Requirements
 ### Requirement: Approval gate before mutating operations
-The system SHALL provide an `ApprovalGateway` that gates execution of any tool whose `permissions` is `write`, `execute`, or `destructive`. Before such a tool's `execute` runs, the gateway SHALL be consulted; only on user approval (or an applicable allow rule) SHALL execution proceed. Tools with `permissions: read` SHALL bypass the gateway entirely and execute without prompting.
+The `ApprovalGateway` SHALL derive approval behavior from the registered tool permission matrix: `read` bypasses approval, `write` and `execute` require approval, and `destructive` requires approval plus a second confirmation when the operation is irreversible. This decision SHALL be enforced locally regardless of the cloud `require_approval` value.
 
-#### Scenario: Read tool bypasses approval
-- **WHEN** the router routes a `tool_call` for `fs.read_file` (permission `read`)
-- **THEN** no approval prompt is shown and the tool executes immediately
-
-#### Scenario: Write tool prompts for approval
-- **WHEN** the router routes a `tool_call` for `fs.write_file` (permission `write`)
-- **THEN** the gateway presents an approval prompt before `execute` runs
+#### Scenario: Destructive operation requires two confirmations
+- **WHEN** a destructive tool is routed without an applicable allow rule
+- **THEN** the gateway requests approval and a second confirmation before execution
 
 ### Requirement: Three approval outcomes
-The approval prompt SHALL offer exactly three choices: "允许" (allow this once / this session), "始终允许" (always allow, persisted to configuration), and "拒绝" (deny). Selecting "拒绝" SHALL cause the tool result to be `status: 'cancelled'` with a denial reason, and `execute` SHALL NOT run.
+The approval prompt SHALL offer allow, always allow, and deny. Deny SHALL return `status: 'cancelled'` with a reason, SHALL NOT execute the tool, and SHALL be classified as non-retryable for cloud continuation.
 
-#### Scenario: User denies a write
-- **WHEN** the user selects "拒绝" for an `fs.write_file` call
-- **THEN** the tool returns `{ status: 'cancelled', error: '用户拒绝执行' }` and the file is not written
-
-#### Scenario: User allows once
-- **WHEN** the user selects "允许" for an `fs.delete_file` call
-- **THEN** the tool executes, and the next `fs.delete_file` call in the same session still prompts
+#### Scenario: Denial does not cause a loop
+- **WHEN** the user denies a tool call
+- **THEN** the local plugin sends one cancelled result and the cloud does not automatically repeat the denied call
 
 ### Requirement: Session-level allow memory
 When the user selects "允许", the gateway SHALL remember the approval for that tool name within the current session, so subsequent calls to the same tool in that session proceed without re-prompting. Session-level allow SHALL NOT persist across sessions.

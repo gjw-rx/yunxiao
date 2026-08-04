@@ -92,11 +92,14 @@ export class AIClient {
 		return request<AgentInfo[]>(this.baseUrl, '/api/agent/config', 'GET');
 	}
 
-	/** 创建会话；localTools 提供时一并上报本地工具 schema 给云端装配。 */
-	createSession(agentId: string, localTools?: ToolSchema[]): Promise<SessionResult> {
+	/** 创建会话；可一并上报本地工具 schema 和工作区根目录给云端装配。 */
+	createSession(agentId: string, localTools?: ToolSchema[], workspaceRoot?: string): Promise<SessionResult> {
 		const body: Record<string, unknown> = { agent_id: agentId };
 		if (localTools && localTools.length > 0) {
 			body.local_tools = localTools;
+		}
+		if (workspaceRoot) {
+			body.workspace_root = workspaceRoot;
 		}
 		return request<SessionResult>(this.baseUrl, '/api/agent/invoke/session', 'POST', body);
 	}

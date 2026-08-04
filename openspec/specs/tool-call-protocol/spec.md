@@ -15,36 +15,32 @@ The cloud SHALL emit a new `tool_call` SSE event when the agent decides to invok
 - **THEN** the handler invokes the session manager to execute the named tool via the registry, keyed by `call_id`
 
 ### Requirement: tool_result HTTP endpoint contract
-The cloud SHALL expose `POST /api/agent/invoke/tool_result` accepting a body with `session_id`, `call_id`, `status` (`'success' | 'error' | 'cancelled'`), `result` (string, the tool output or JSON-stringified output), optional `error` (failure reason), and optional `metadata` (`affected_files`, `diff`, `duration_ms`). The response SHALL be an SSE stream: the cloud injects the tool result into the conversation state, re-invokes the agent (continuation), and streams subsequent events (content / thought / further `tool_call` / end) as the HTTP response body. A non-streaming 4xx error response SHALL use the standard API envelope (`{ success, error }`). The local plugin SHALL call this endpoint exactly once per `tool_call` it received; the returned stream IS the continuation (no separate continuation endpoint).
+The cloud SHALL expose `POST /api/agent/invoke/tool_result` accepting a body with `session_id`, `call_id`, `status` (`'success' | 'error' | 'cancelled'`), `result` (string, the tool output or JSON-stringified output), optional `error` (failure reason), and optional `metadata` (`affected_files`, `diff`, `duration_ms`, `retryable`, `truncated`, `redacted`). The cloud SHALL treat `(session_id, call_id)` as an idempotency key, SHALL inject at most one matching tool message, and SHALL return an SSE continuation for the first accepted result. A duplicate submission SHALL return a non-destructive idempotent response and SHALL NOT re-run the agent.
 
-#### Scenario: Successful result posted
-- **WHEN** the local plugin finishes `fs.read_file` with content
-- **THEN** it POSTs `{ session_id, call_id, status: 'success', result: '<content>', metadata: { duration_ms } }` and reads the SSE continuation stream returned by the cloud
+#### Scenario: Cancelled result is not retried
+- **WHEN** the plugin posts `status: 'cancelled'` for a denied or aborted call
+- **THEN** the cloud injects a matching tool message, resumes the agent once, and does not automatically issue the same call again
 
-#### Scenario: Cancelled result posted
-- **WHEN** the user denies or stops a tool call
-- **THEN** the local plugin POSTs `{ session_id, call_id, status: 'cancelled', error: 'user denied' }` and the cloud adjusts its strategy (streamed in the response) rather than retrying the same call
+#### Scenario: Duplicate result is deduplicated
+- **WHEN** the same `session_id` and `call_id` result is posted twice
+- **THEN** the cloud does not inject two tool messages or execute two continuations
 
 ### Requirement: Stream-interrupt plus HTTP-resume continuation
-When the cloud emits a `tool_call` for a local tool, the SSE stream SHALL end (after yielding the `tool_call` event). The local plugin SHALL execute the tool and POST the result to `/tool_result`; the cloud SHALL re-invoke the agent (continuation) with the tool result injected into the conversation state, returning a NEW SSE stream as the `/tool_result` response body for the same session. The local plugin SHALL treat both "user sends message" and "tool result posted" as triggers for a new SSE stream. No WebSocket is required.
+When the cloud emits a `tool_call` for a local tool, the SSE stream SHALL end after the event. The local plugin SHALL execute the tool and POST the result; the cloud SHALL return a new SSE continuation for the same session. The cloud SHALL preserve the result's `retryable`, `truncated`, and `redacted` metadata for logging and agent context, and SHALL enforce a session-level result budget before injecting the ToolMessage.
 
-#### Scenario: One continuation round
-- **WHEN** the agent issues one `tool_call`, the message stream ends, the result is posted, and the cloud resumes
-- **THEN** the `/tool_result` response is a new SSE stream that delivers the final content and ends; the local plugin renders the continuation under the same session
-
-#### Scenario: Continuation history includes tool messages
-- **WHEN** the cloud resumes after a tool_result
-- **THEN** the conversation state passed to the agent includes the prior assistant tool_call message and the matching tool result message, so the agent reasons over the tool output
+#### Scenario: Truncated result is acknowledged
+- **WHEN** the plugin posts a result marked `truncated: true`
+- **THEN** the cloud injects only the bounded result, records the marker, and the agent can request a narrower follow-up instead of receiving hidden omitted content
 
 ### Requirement: Local tool schema reporting at session creation
-The local plugin SHALL report its local tool schemas to the cloud when creating a session. The session-creation request (`POST /api/agent/invoke/session`) SHALL accept an optional `local_tools` field (array of tool schemas). The cloud SHALL merge these into the agent's tool set so the LLM is aware local tools exist. When `local_tools` is omitted, the cloud SHALL behave as before (no local tools, pure chat).
+The local plugin SHALL report its local tool schemas and current workspace root to the cloud when creating a session. The session-creation request (`POST /api/agent/invoke/session`) SHALL accept optional `local_tools` (array of tool schemas) and `workspace_root` (the filesystem path of the current workspace root) fields. The cloud SHALL merge `local_tools` into the agent's tool set so the LLM is aware local tools exist, and SHALL associate `workspace_root` with the created session as contextual metadata. The cloud MUST NOT treat `workspace_root` as a cloud-accessible filesystem path. When either optional field is omitted, the cloud SHALL create the session without that context and SHALL NOT return an error.
 
-#### Scenario: Tools reported on session creation
-- **WHEN** the plugin creates a session and has `fs.read_file` registered locally
-- **THEN** the request body includes `local_tools: [<fs.read_file schema>]` and the cloud makes the tool available to the agent
+#### Scenario: Tools and workspace root reported on session creation
+- **WHEN** the plugin creates a session with `fs.read_file` registered locally and an open workspace rooted at `D:\\workspace`
+- **THEN** it sends `local_tools` containing `fs.read_file` and `workspace_root` equal to `D:\\workspace`, and the cloud associates both with the created session
 
-#### Scenario: Backward compatibility without local_tools
-- **WHEN** a session is created without the `local_tools` field (e.g. older client)
+#### Scenario: Optional context omitted
+- **WHEN** a session is created without `local_tools` or `workspace_root` fields
 - **THEN** the cloud creates a normal chat-only session and does not error
 
 ### Requirement: Tool namespace isolation
@@ -62,17 +58,8 @@ The SSE protocol SHALL additionally support `plan` (data: `{ steps: string[] }`)
 - **THEN** the local SSE handler parses it and forwards it to the UI without treating it as content or an error
 
 ### Requirement: tool_result connect-time retry and cancel
-The local tool-result submission SHALL retry connect-time transient failures (network errors and 5xx responses, before any streaming begins) with exponential backoff (maximum 3 attempts). Non-transient failures (4xx) SHALL not be retried and SHALL surface a friendly error via `onError`. Once the SSE continuation stream has begun, no retry SHALL occur. The local plugin SHALL support cancelling an in-flight `/tool_result` stream via `AbortController` (user stop).
+The local tool-result submission SHALL retry only connect-time transient failures or failures explicitly classified as retryable, with exponential backoff and a maximum of three attempts. It SHALL NOT retry cancelled, validation, permission, path, or other non-retryable results. The local plugin SHALL support cancelling an in-flight continuation stream via `AbortController`.
 
-#### Scenario: Transient connect error retried
-- **WHEN** the `/tool_result` POST fails with a connection error before streaming begins
-- **THEN** the client retries up to 3 times with backoff before surfacing an error
-
-#### Scenario: 4xx not retried
-- **WHEN** the `/tool_result` POST returns a 400 with `{ success: false, error }`
-- **THEN** the client does not retry and surfaces the error message via `onError`
-
-#### Scenario: User cancels mid-stream
-- **WHEN** the user stops while the continuation stream is being read
-- **THEN** the AbortController aborts the stream, no `onEnd` is emitted, and no further events are processed
-
+#### Scenario: Non-retryable result is submitted once
+- **WHEN** a local tool returns a path, permission, or user-cancelled result
+- **THEN** the plugin submits it once and does not replay the tool execution

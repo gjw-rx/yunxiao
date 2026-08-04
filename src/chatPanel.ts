@@ -55,6 +55,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _baseUrl: string;
   private _configListener?: vscode.Disposable;
   private _currentSessionId?: string;
+  private _createSessionRequest = 0;
   private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
   private readonly _sessionNames = new Map<string, string>();
 
@@ -211,18 +212,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'createSession': {
+        const requestId = ++this._createSessionRequest;
         try {
-          // 重置旧会话状态
-          if (this._currentSessionId) {
-            this._sessionManager.reset(this._currentSessionId);
-          }
+          const previousSessionId = this._currentSessionId;
+          const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
           const result = await this._client.createSession(
             msg.agentId as string,
-            this._registry.localSchemas()
+            this._registry.localSchemas(),
+            workspaceRoot
           );
+          if (requestId !== this._createSessionRequest) {
+            break;
+          }
+          if (previousSessionId) {
+            this._sessionManager.reset(previousSessionId);
+          }
           this._currentSessionId = result.session_id;
           view.webview.postMessage({ command: 'sessionCreated', sessionId: result.session_id });
         } catch (err: unknown) {
+          if (requestId !== this._createSessionRequest) {
+            break;
+          }
           view.webview.postMessage({
             command: 'error',
             message: `创建会话失败: ${friendlyError(err, this._baseUrl)}`,
@@ -1626,11 +1636,13 @@ ${this._getJs()}
     function selectAgent(agentId) {
       const agent = agents.find(a => a.agent_id === agentId);
       if (!agent) return;
+      const changed = selectedAgentId && selectedAgentId !== agentId;
       selectedAgentId = agentId;
       agentName.textContent = agent.agent_name;
       agentModel.textContent = agent.model || '--';
       closeAgentDropdown();
       renderAgentDropdown();
+      if (changed) startNewSession();
     }
 
     // ══ 回合与过程时间线 ══
