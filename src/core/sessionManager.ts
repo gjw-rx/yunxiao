@@ -22,7 +22,7 @@ import type { ToolRouter } from './toolRouter';
 import type { EventBus, AgentEvent } from './eventBus';
 import type { SseCallbacks } from '../protocol/sseHandler';
 import type { ToolContext } from '../tools/baseTool';
-import { ToolTimeoutError } from './errors';
+import { ToolTimeoutError, TransportError } from './errors';
 import * as logger from '../logger';
 import { ReliabilityMetrics } from './reliabilityMetrics';
 
@@ -149,6 +149,9 @@ export class SessionManager {
 	reset(sessionId: string): void {
 		const state = this.sessions.get(sessionId);
 		state?.abortController?.abort();
+		for (const controller of state?.activeToolControllers.values() ?? []) {
+			controller.abort();
+		}
 		this.sessions.delete(sessionId);
 		this.opts.approval?.clearSession(sessionId);
 	}
@@ -242,7 +245,7 @@ export class SessionManager {
 				this.finishRun(
 					sessionId,
 					state,
-					err instanceof TypeError ? 'disconnected' : 'failed',
+					err instanceof TypeError || err instanceof TransportError ? 'disconnected' : 'failed',
 					err.message
 				);
 			},
@@ -354,7 +357,11 @@ export class SessionManager {
 			maxFileSize: this.opts.getMaxFileSize?.(),
 			toolTimeoutMs: effectiveTimeout,
 			sessionId,
-			warn: (m) => this.opts.eventBus.emit({ type: 'error', sessionId, payload: m }),
+			warn: (m) => {
+				if (this.isCurrentRun(sessionId, state)) {
+					this.opts.eventBus.emit({ type: 'error', sessionId, payload: m });
+				}
+			},
 			terminalOutputLimit: this.opts.getTerminalOutputLimit?.(),
 			toolResultLimit: this.opts.getToolResultLimit?.(),
 			abortSignal: controller.signal,

@@ -41,6 +41,14 @@ export class ProtocolError extends Error {
 	}
 }
 
+/** 已建立的流式连接意外中断。 */
+export class TransportError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'TransportError';
+	}
+}
+
 /** 工具参数校验错误。 */
 export class ToolValidationError extends Error {
 	constructor(message: string) {

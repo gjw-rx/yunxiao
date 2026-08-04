@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { streamToolResult } from '../../protocol/toolCallProtocol';
-import { ProtocolError } from '../../core/errors';
+import { ProtocolError, TransportError } from '../../core/errors';
 import type { ToolResult, ToolCallEventData } from '../../core/types';
 import type { SseCallbacks } from '../../protocol/sseHandler';
 
@@ -224,7 +224,7 @@ describe('streamToolResult', () => {
 		await waitForError(cbs);
 
 		assert.strictEqual(ff.calls.length, 1);
-		assert.ok(cbs.errors[0] instanceof TypeError);
+		assert.ok(cbs.errors[0] instanceof TransportError);
 		assert.strictEqual(cbs.ended, false);
 	});
 

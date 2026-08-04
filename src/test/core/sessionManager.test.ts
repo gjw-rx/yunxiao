@@ -6,7 +6,7 @@ import { ToolRouter } from '../../core/toolRouter';
 import { BaseTool, type ToolExecutionResult, type ToolContext } from '../../tools/baseTool';
 import type { SseCallbacks } from '../../protocol/sseHandler';
 import type { ToolCall, ToolResult, ToolSchema } from '../../core/types';
-import { ProtocolError } from '../../core/errors';
+import { ProtocolError, TransportError } from '../../core/errors';
 
 // ── 可配置的假工具 ──
 class FakeTool extends BaseTool {
@@ -407,7 +407,7 @@ describe('SessionManager', () => {
 
 	it('emits disconnected once for an unexpected transport error', async () => {
 		const { eventBus, client, manager, events } = setup();
-		client.setScripts([(callbacks) => callbacks.onError?.(new TypeError('fetch failed'))]);
+		client.setScripts([(callbacks) => callbacks.onError?.(new TransportError('socket closed'))]);
 		manager.sendMessage('s1', 'hello');
 		await waitForStreamEnd(eventBus);
 

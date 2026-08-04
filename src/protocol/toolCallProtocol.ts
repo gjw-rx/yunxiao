@@ -10,7 +10,7 @@
  */
 import { SseStreamParser, type SseCallbacks } from './sseHandler';
 import type { ToolResult } from '../core/types';
-import { ProtocolError } from '../core/errors';
+import { ProtocolError, TransportError } from '../core/errors';
 import * as logger from '../logger';
 
 export interface StreamToolResultOptions {
@@ -134,6 +134,7 @@ async function runStreamToolResult(
 	let attempt = 0;
 	while (true) {
 		attempt++;
+		let streamStarted = false;
 		try {
 			const res = await fetchImpl(url, {
 				method: 'POST',
@@ -171,6 +172,7 @@ async function runStreamToolResult(
 			}
 
 			// 流式传输开始，不再重试
+			streamStarted = true;
 			await pumpSse(res.body, callbacks, controller);
 			if (!controller.signal.aborted) {
 				callbacks.onEnd?.();
@@ -178,6 +180,13 @@ async function runStreamToolResult(
 			return;
 		} catch (err) {
 			if (controller.signal.aborted) {
+				return;
+			}
+			if (streamStarted) {
+				const reason = err instanceof Error ? err.message : String(err);
+				callbacks.onError?.(
+					err instanceof TransportError ? err : new TransportError(reason)
+				);
 				return;
 			}
 			// 4xx ProtocolError 不重试

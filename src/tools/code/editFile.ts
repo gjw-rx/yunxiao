@@ -173,11 +173,11 @@ export class CodeEditTool extends BaseTool {
 		);
 
 		// 8. 应用或取消
-		if (decision === 'deny') {
+		if (decision === 'deny' || context.abortSignal?.aborted) {
 			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => { });
 			return {
 				status: 'cancelled',
-				error: '用户拒绝执行',
+				error: context.abortSignal?.aborted ? '执行已取消' : '用户拒绝执行',
 				metadata: { duration_ms: Date.now() - startedAt },
 			};
 		}
@@ -198,6 +198,15 @@ export class CodeEditTool extends BaseTool {
 				status: 'error',
 				error: `文件已被并发修改或删除，未应用审批前生成的编辑: ${inputPath}`,
 				metadata: { retryable: false, duration_ms: Date.now() - startedAt },
+			};
+		}
+
+		if (context.abortSignal?.aborted) {
+			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => { });
+			return {
+				status: 'cancelled',
+				error: '执行已取消',
+				metadata: { duration_ms: Date.now() - startedAt },
 			};
 		}
 
