@@ -36,6 +36,10 @@ type EventScript = (cbs: SseCallbacks) => void;
 const emitToolCall = (call: ToolCall): EventScript => (cbs) => cbs.onToolCall?.(call);
 const emitContent = (text: string): EventScript => (cbs) => cbs.onContent?.(text);
 const endStream = (): EventScript => (cbs) => cbs.onEnd?.();
+const acknowledgeDuplicate = (): EventScript => (cbs) => {
+	const callbacks = cbs as SseCallbacks & { onDuplicateAcknowledged?: () => void };
+	callbacks.onDuplicateAcknowledged?.();
+};
 const seq = (...scripts: EventScript[]): EventScript => (cbs) => scripts.forEach((s) => s(cbs));
 
 class FakeStreamClient implements StreamClient {
@@ -372,5 +376,27 @@ describe('SessionManager', () => {
 		await waitForStreamEnd(eventBus);
 
 		assert.deepStrictEqual(terminalStates(events), ['disconnected']);
+	});
+
+	it('marks a duplicate tool-result acknowledgement disconnected without re-executing', async () => {
+		const { client, manager, events } = setup();
+		client.setScripts([
+			seq(emitToolCall(call('c1')), endStream()),
+			acknowledgeDuplicate(),
+		]);
+
+		manager.sendMessage('s1', 'read a.ts');
+		await new Promise((resolve) => setTimeout(resolve, 25));
+
+		assert.strictEqual(client.submitCalls.length, 1);
+		assert.deepStrictEqual(terminalStates(events), ['disconnected']);
+		assert.strictEqual(
+			events.filter((event) =>
+				event.type === 'tool_state_change'
+				&& (event.payload as { call_id?: string; state?: string }).call_id === 'c1'
+				&& (event.payload as { state?: string }).state === 'running'
+			).length,
+			1
+		);
 	});
 });

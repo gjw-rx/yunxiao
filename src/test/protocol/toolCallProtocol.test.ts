@@ -14,11 +14,28 @@ function sseResponse(status: number, chunks: string[]): Response {
 			controller.close();
 		},
 	});
-	return { status, body: stream, json: async () => ({}) } as unknown as Response;
+	return {
+		status,
+		body: stream,
+		headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+		json: async () => ({}),
+	} as unknown as Response;
 }
 
 function errorResponse(status: number, error: string): Response {
-	return { status, json: async () => ({ success: false, error }) } as unknown as Response;
+	return {
+		status,
+		headers: new Headers({ 'Content-Type': 'application/json' }),
+		json: async () => ({ success: false, error }),
+	} as unknown as Response;
+}
+
+function jsonResponse(data: unknown): Response {
+	return {
+		status: 200,
+		headers: new Headers({ 'Content-Type': 'application/json' }),
+		json: async () => data,
+	} as unknown as Response;
 }
 
 class FakeFetch {
@@ -50,11 +67,14 @@ function makeCallbacks(): SseCallbacks & {
 	content: string[];
 	toolCalls: ToolCallEventData[];
 	ended: boolean;
+	duplicates: number;
 	errors: Error[];
+	onDuplicateAcknowledged?: () => void;
 } {
 	const content: string[] = [];
 	const toolCalls: ToolCallEventData[] = [];
 	let ended = false;
+	let duplicates = 0;
 	const errors: Error[] = [];
 	return {
 		content,
@@ -62,11 +82,17 @@ function makeCallbacks(): SseCallbacks & {
 		get ended() {
 			return ended;
 		},
+		get duplicates() {
+			return duplicates;
+		},
 		errors,
 		onContent: (t) => content.push(t),
 		onToolCall: (e) => toolCalls.push(e),
 		onEnd: () => {
 			ended = true;
+		},
+		onDuplicateAcknowledged: () => {
+			duplicates++;
 		},
 		onError: (e) => errors.push(e),
 	};
@@ -173,6 +199,37 @@ describe('streamToolResult', () => {
 		assert.ok(cbs.errors[0] instanceof ProtocolError);
 		assert.strictEqual(ff.calls.length, 3);
 	});
+
+	it('reports duplicate JSON through a distinct acknowledgement without SSE end', async () => {
+		const ff = new FakeFetch();
+		ff.enqueue(jsonResponse({
+			success: true,
+			data: { duplicate: true, session_id: 's1', call_ids: ['c1'] },
+		}));
+		const cbs = makeCallbacks();
+
+		streamToolResult(RESULTS, 's1', { ...BASE, fetchImpl: ff.fetch }, cbs);
+		await waitFor(() => cbs.duplicates > 0 || cbs.errors.length > 0);
+
+		assert.strictEqual(cbs.duplicates, 1);
+		assert.strictEqual(cbs.ended, false);
+		assert.strictEqual(cbs.errors.length, 0);
+		assert.strictEqual(ff.calls.length, 1);
+	});
+
+	it('reports an unknown successful JSON response as a protocol error', async () => {
+		const ff = new FakeFetch();
+		ff.enqueue(jsonResponse({ success: true, data: { accepted: true } }));
+		const cbs = makeCallbacks();
+
+		streamToolResult(RESULTS, 's1', { ...BASE, fetchImpl: ff.fetch }, cbs);
+		await waitForError(cbs);
+
+		assert.strictEqual(cbs.errors.length, 1);
+		assert.ok(cbs.errors[0] instanceof ProtocolError);
+		assert.strictEqual(cbs.duplicates, 0);
+		assert.strictEqual(cbs.ended, false);
+	});
 });
 
 // 等待流结束（onEnd）的轮询助手
@@ -191,10 +248,14 @@ function waitForEnd(cbs: { ended: boolean }): Promise<void> {
 }
 
 function waitForError(cbs: { errors: Error[] }): Promise<void> {
+	return waitFor(() => cbs.errors.length > 0);
+}
+
+function waitFor(predicate: () => boolean): Promise<void> {
 	return new Promise((resolve) => {
 		const start = Date.now();
 		const tick = () => {
-			if (cbs.errors.length > 0 || Date.now() - start > 1000) {
+			if (predicate() || Date.now() - start > 1000) {
 				resolve();
 			} else {
 				setTimeout(tick, 5);
