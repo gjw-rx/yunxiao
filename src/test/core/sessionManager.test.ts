@@ -6,6 +6,7 @@ import { ToolRouter } from '../../core/toolRouter';
 import { BaseTool, type ToolExecutionResult, type ToolContext } from '../../tools/baseTool';
 import type { SseCallbacks } from '../../protocol/sseHandler';
 import type { ToolCall, ToolResult, ToolSchema } from '../../core/types';
+import { ProtocolError } from '../../core/errors';
 
 // ── 可配置的假工具 ──
 class FakeTool extends BaseTool {
@@ -42,17 +43,21 @@ class FakeStreamClient implements StreamClient {
 	private idx = 0;
 	readonly messageCalls: { sessionId: string; text: string }[] = [];
 	readonly submitCalls: { results: ToolResult[]; sessionId: string }[] = [];
+	readonly messageCallbacks: SseCallbacks[] = [];
+	readonly submitCallbacks: SseCallbacks[] = [];
 	setScripts(scripts: EventScript[]): void {
 		this.scripts = scripts;
 		this.idx = 0;
 	}
 	streamMessage(sessionId: string, text: string, cbs: SseCallbacks): AbortController {
 		this.messageCalls.push({ sessionId, text });
+		this.messageCallbacks.push(cbs);
 		this.runNext(cbs);
 		return new AbortController();
 	}
 	submitToolResult(results: ToolResult[], sessionId: string, cbs: SseCallbacks): AbortController {
 		this.submitCalls.push({ results, sessionId });
+		this.submitCallbacks.push(cbs);
 		this.runNext(cbs);
 		return new AbortController();
 	}
@@ -114,6 +119,17 @@ function waitForToolState(
 			}
 		});
 	});
+}
+
+function terminalStates(events: AgentEvent[]): string[] {
+	return events
+		.filter((event) => event.type === ('run_state_change' as AgentEvent['type']))
+		.map((event) => (event.payload as { state: string }).state)
+		.filter((state) => ['completed', 'cancelled', 'failed', 'disconnected'].includes(state));
+}
+
+async function flushMicrotasks(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 const call = (id: string): ToolCall => ({
@@ -267,5 +283,94 @@ describe('SessionManager', () => {
 		await new Promise((resolve) => setTimeout(resolve, 75));
 		assert.strictEqual(client.submitCalls.length, 1);
 		assert.strictEqual(client.submitCalls[0].results[0].status, 'cancelled');
+	});
+
+	it('ignores content, tool calls, and end callbacks from a replaced run', async () => {
+		const { eventBus, client, manager, events } = setup();
+		client.setScripts([
+			() => undefined,
+			seq(emitContent('current'), endStream()),
+		]);
+		manager.sendMessage('s1', 'old');
+		await flushMicrotasks();
+		const staleCallbacks = client.messageCallbacks[0];
+
+		manager.sendMessage('s1', 'new');
+		await waitForStreamEnd(eventBus);
+		staleCallbacks.onContent?.('stale');
+		staleCallbacks.onToolCall?.(call('stale-call'));
+		staleCallbacks.onEnd?.();
+		await flushMicrotasks();
+
+		assert.ok(events.some((event) => event.type === 'content' && event.payload === 'current'));
+		assert.ok(!events.some((event) => event.type === 'content' && event.payload === 'stale'));
+		assert.ok(!events.some((event) =>
+			event.type === 'tool_state_change'
+			&& (event.payload as { call_id?: string }).call_id === 'stale-call'
+		));
+		assert.strictEqual(client.submitCalls.length, 0);
+		assert.deepStrictEqual(terminalStates(events), ['completed']);
+	});
+
+	it('ignores callbacks from a reset state after the session id is reused', async () => {
+		const { eventBus, client, manager, events } = setup();
+		client.setScripts([() => undefined]);
+		manager.sendMessage('s1', 'old');
+		await flushMicrotasks();
+		const staleCallbacks = client.messageCallbacks[0];
+
+		manager.reset('s1');
+		client.setScripts([seq(emitContent('current'), endStream())]);
+		manager.sendMessage('s1', 'new');
+		await waitForStreamEnd(eventBus);
+		staleCallbacks.onContent?.('stale');
+		staleCallbacks.onEnd?.();
+		await flushMicrotasks();
+
+		assert.ok(!events.some((event) => event.type === 'content' && event.payload === 'stale'));
+		assert.deepStrictEqual(terminalStates(events), ['completed']);
+	});
+
+	it('emits completed once for a clean run and keeps legacy stream_end', async () => {
+		const { eventBus, client, manager, events } = setup();
+		client.setScripts([endStream()]);
+		manager.sendMessage('s1', 'hello');
+		await waitForStreamEnd(eventBus);
+
+		assert.deepStrictEqual(terminalStates(events), ['completed']);
+		assert.strictEqual(events.filter((event) => event.type === 'stream_end').length, 1);
+	});
+
+	it('emits cancelled once and ignores a later end callback', async () => {
+		const { eventBus, client, manager, events } = setup();
+		client.setScripts([() => undefined]);
+		manager.sendMessage('s1', 'hello');
+		await flushMicrotasks();
+		const callbacks = client.messageCallbacks[0];
+		const endPromise = waitForStreamEnd(eventBus);
+		manager.cancel('s1');
+		await endPromise;
+		callbacks.onEnd?.();
+		await flushMicrotasks();
+
+		assert.deepStrictEqual(terminalStates(events), ['cancelled']);
+	});
+
+	it('emits failed once for a protocol error', async () => {
+		const { eventBus, client, manager, events } = setup();
+		client.setScripts([(callbacks) => callbacks.onError?.(new ProtocolError('bad response', 400))]);
+		manager.sendMessage('s1', 'hello');
+		await waitForStreamEnd(eventBus);
+
+		assert.deepStrictEqual(terminalStates(events), ['failed']);
+	});
+
+	it('emits disconnected once for an unexpected transport error', async () => {
+		const { eventBus, client, manager, events } = setup();
+		client.setScripts([(callbacks) => callbacks.onError?.(new TypeError('fetch failed'))]);
+		manager.sendMessage('s1', 'hello');
+		await waitForStreamEnd(eventBus);
+
+		assert.deepStrictEqual(terminalStates(events), ['disconnected']);
 	});
 });
