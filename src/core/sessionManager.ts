@@ -29,12 +29,26 @@ import { RunStore, type StoredRun } from './runStore';
 
 /** 会话管理器驱动的流客户端（由 AIClient 实现）。 */
 export interface StreamClient {
+	/** 创建持久化 Run。 */
+	createRun(
+		sessionId: string,
+		text: string,
+		clientRequestId: string,
+	): Promise<{ run_id: string; session_id: string; status: string }>;
+	/** 提交指定 Run 的本地工具结果。 */
+	submitRunToolResult(runId: string, results: ToolResult[]): Promise<void>;
+	/** 从排他游标订阅持久化 Run。 */
+	subscribeRun(
+		runId: string,
+		afterSequence: number,
+		onEvent: (event: { sequence: number; type: string; payload: unknown }) => void,
+		onError: (error: Error) => void,
+	): AbortController;
 	/** 发起用户消息 SSE 流。 */
 	streamMessage(sessionId: string, text: string, callbacks: SseCallbacks): AbortController;
 	/** 批量提交工具结果并读取 SSE 续流。 */
 	submitToolResult(results: ToolResult[], sessionId: string, callbacks: SseCallbacks): AbortController;
 	/** 订阅持久化 Run；旧客户端不实现时不会启用恢复。 */
-	subscribeRun?(runId: string, afterSequence: number, onEvent: (event: { sequence: number; type: string; payload: unknown }) => void, onError: (error: Error) => void): AbortController;
 }
 
 export interface SessionManagerOptions {
@@ -76,6 +90,7 @@ export interface ToolStateChangePayload {
 interface SessionState {
 	readonly generation: number;
 	runId?: string;
+	cursor: number;
 	abortController?: AbortController;
 	pendingToolCalls: ToolCall[];
 	activeToolCalls: Map<string, ToolCall>;
@@ -88,8 +103,6 @@ interface SessionState {
 }
 
 const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
-const NOOP_CALLBACKS: SseCallbacks = {};
-
 export class SessionManager {
 	private readonly sessions = new Map<string, SessionState>();
 	private readonly toolTimeoutMs: number;
@@ -109,7 +122,7 @@ export class SessionManager {
 		const state = this.createState();
 		this.sessions.set(sessionId, state);
 		this.emitRunState(sessionId, state, 'running');
-		this.startMessageStream(sessionId, text, state);
+		void this.startRun(sessionId, text, state);
 	}
 
 	/** 取消当前轮次：abort 流 + 为 pending 工具发 cancelled 结果。 */
@@ -141,9 +154,9 @@ export class SessionManager {
 			this.emitToolState(sessionId, call, 'cancelled', '用户取消执行');
 			results.push({ call_id: call.call_id, status: 'cancelled', error: '用户取消执行' });
 		}
-		if (results.length > 0) {
+		if (results.length > 0 && state.runId) {
 			this.opts.metrics?.record('tool_cancelled');
-			this.opts.client.submitToolResult(results, sessionId, NOOP_CALLBACKS);
+			void this.opts.client.submitRunToolResult(state.runId, results);
 		}
 		state.pendingToolCalls = [];
 		state.activeToolCalls.clear();
@@ -165,11 +178,12 @@ export class SessionManager {
 
 	/** 恢复云端未终态 Run；已持久化的工具调用绝不在恢复时自动执行。 */
 	restoreRun(run: StoredRun): void {
-		if (!this.opts.client.subscribeRun || this.sessions.has(run.sessionId)) {
+		if (this.sessions.has(run.sessionId)) {
 			return;
 		}
 		const state = this.createState();
 		state.runId = run.runId;
+		state.cursor = run.cursor;
 		this.sessions.set(run.sessionId, state);
 		for (const event of run.events) {
 			if (isAgentEventType(event.type)) {
@@ -207,6 +221,7 @@ export class SessionManager {
 	private createState(): SessionState {
 		return {
 			generation: ++this.nextGeneration,
+			cursor: 0,
 			pendingToolCalls: [],
 			activeToolCalls: new Map(),
 			activeToolControllers: new Map(),
@@ -217,18 +232,31 @@ export class SessionManager {
 		};
 	}
 
-	private startMessageStream(sessionId: string, text: string, state: SessionState): void {
-		state.pendingToolCalls = [];
-		const controller = this.opts.client.streamMessage(
-			sessionId,
-			text,
-			this.makeCallbacks(sessionId, state)
-		);
-		if (this.isCurrentRun(sessionId, state)) {
-			state.abortController = controller;
-			return;
+	private async startRun(sessionId: string, text: string, state: SessionState): Promise<void> {
+		try {
+			const run = await this.opts.client.createRun(
+				sessionId,
+				text,
+				`${sessionId}-${state.generation}-${Date.now()}`,
+			);
+			if (!this.isCurrentRun(sessionId, state)) {
+				return;
+			}
+			state.runId = run.run_id;
+			await this.opts.runStore?.save({
+				sessionId,
+				runId: run.run_id,
+				cursor: 0,
+				status: 'running',
+				workspaceRoots: this.opts.getWorkspaceRoots(),
+				events: [],
+				timeline: [],
+			});
+			this.startRunSubscription(sessionId, state);
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			this.finishRun(sessionId, state, 'failed', reason);
 		}
-		controller.abort();
 	}
 
 	private startContinuationStream(
@@ -239,17 +267,116 @@ export class SessionManager {
 		if (!this.isCurrentRun(sessionId, state)) {
 			return;
 		}
+		if (!state.runId) {
+			this.finishRun(sessionId, state, 'failed', 'Run ID 缺失');
+			return;
+		}
 		state.pendingToolCalls = [];
-		const controller = this.opts.client.submitToolResult(
-			results,
-			sessionId,
-			this.makeCallbacks(sessionId, state)
+		state.abortController?.abort();
+		void this.opts.client.submitRunToolResult(state.runId, results)
+			.then(() => {
+				if (this.isCurrentRun(sessionId, state)) {
+					this.startRunSubscription(sessionId, state);
+				}
+			})
+			.catch((error: Error) => {
+				this.finishRun(sessionId, state, 'failed', error.message);
+			});
+	}
+
+	private startRunSubscription(sessionId: string, state: SessionState): void {
+		if (!state.runId || !this.isCurrentRun(sessionId, state)) {
+			return;
+		}
+		const controller = this.opts.client.subscribeRun(
+			state.runId,
+			state.cursor,
+			(event) => { void this.consumeRunEvent(sessionId, state, event); },
+			(error) => this.finishRun(
+				sessionId,
+				state,
+				error instanceof TransportError || error instanceof TypeError ? 'disconnected' : 'failed',
+				error.message,
+			),
 		);
 		if (this.isCurrentRun(sessionId, state)) {
 			state.abortController = controller;
 			return;
 		}
 		controller.abort();
+	}
+
+	private async consumeRunEvent(
+		sessionId: string,
+		state: SessionState,
+		event: { sequence: number; type: string; payload: unknown },
+	): Promise<void> {
+		if (!this.isCurrentRun(sessionId, state) || event.sequence <= state.cursor) {
+			return;
+		}
+		if (event.sequence !== state.cursor + 1) {
+			this.finishRun(sessionId, state, 'disconnected', 'Run 事件序号不连续');
+			return;
+		}
+		state.cursor = event.sequence;
+		if (this.opts.runStore) {
+			const result = await this.opts.runStore.append(sessionId, event);
+			if (result.kind === 'gap') {
+				this.finishRun(sessionId, state, 'disconnected', 'Run 事件序号不连续');
+				return;
+			}
+		}
+		if (event.type === 'run_status') {
+			this.handleRunStatus(sessionId, state, event.payload);
+			return;
+		}
+		this.dispatchRunEvent(sessionId, state, event);
+	}
+
+	private handleRunStatus(sessionId: string, state: SessionState, payload: unknown): void {
+		const data = readEventData(payload);
+		const status = isRecord(data) && typeof data.status === 'string' ? data.status : '';
+		if (status === 'interrupted') {
+			void this.opts.runStore?.updateStatus(sessionId, 'interrupted');
+			this.handleStreamEnd(sessionId, state).catch((error) => {
+				const reason = error instanceof Error ? error.message : String(error);
+				this.finishRun(sessionId, state, 'failed', reason);
+			});
+			return;
+		}
+		if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+			void this.opts.runStore?.updateStatus(sessionId, status);
+			this.finishRun(sessionId, state, status);
+		}
+	}
+
+	private dispatchRunEvent(
+		sessionId: string,
+		state: SessionState,
+		event: { type: string; payload: unknown },
+	): void {
+		const data = readEventData(event.payload);
+		if (event.type === 'content' && typeof data === 'string') {
+			this.opts.eventBus.emit({ type: 'content', sessionId, payload: data });
+			return;
+		}
+		if (event.type === 'thought' && typeof data === 'string') {
+			this.opts.eventBus.emit({ type: 'thought', sessionId, payload: data });
+			return;
+		}
+		if (event.type === 'tool_call' && Array.isArray(data)) {
+			for (const item of data) {
+				if (!isToolCall(item)) {
+					continue;
+				}
+				state.pendingToolCalls.push(item);
+				this.emitToolState(sessionId, item, 'pending');
+			}
+			return;
+		}
+		if (event.type === 'plan' || event.type === 'progress') {
+			this.opts.eventBus.emit({ type: event.type, sessionId, payload: data });
+		}
 	}
 
 	/** 构造一轮 SSE 流的回调：转发事件到事件总线，收集 tool_call，结束时驱动续流。 */
@@ -518,4 +645,26 @@ async function runSequential<T>(
 
 function isAgentEventType(type: string): type is AgentEvent['type'] {
 	return ['content', 'content_batch', 'thought', 'tool_call', 'tool_result', 'plan', 'progress', 'stream_end', 'error', 'tool_state_change', 'run_state_change', 'budget_update', 'budget_exhausted'].includes(type);
+}
+
+function readEventData(payload: unknown): unknown {
+	if (!payload || typeof payload !== 'object') {
+		return undefined;
+	}
+	return (payload as { data?: unknown }).data;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isToolCall(value: unknown): value is ToolCall {
+	if (!value || typeof value !== 'object') {
+		return false;
+	}
+	const call = value as Partial<ToolCall>;
+	return typeof call.call_id === 'string'
+		&& typeof call.tool === 'string'
+		&& call.args !== undefined
+		&& typeof call.args === 'object';
 }

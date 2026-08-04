@@ -53,6 +53,7 @@ interface MockOptions {
 class MockCloud {
 	private server!: http.Server;
 	private queueIndex = 0;
+	private sequence = 0;
 	readonly toolResults: { call_id: string; status: string; result?: string; error?: string }[] = [];
 	readonly messages: { session_id: string; text: string }[] = [];
 	port = 0;
@@ -82,6 +83,40 @@ class MockCloud {
 		req.on('data', (c) => (body += c));
 		req.on('end', () => {
 			const parsed = body ? (JSON.parse(body) as Record<string, unknown>) : {};
+			if (req.url === '/api/v2/agent/run' && req.method === 'POST') {
+				this.messages.push(parsed as unknown as { session_id: string; text: string });
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({
+					success: true,
+					data: { run_id: 'run-1', session_id: parsed.session_id, status: 'pending' },
+				}));
+				return;
+			}
+			if (req.url === '/api/v2/agent/run/run-1/tool-result' && req.method === 'POST') {
+				const results = (parsed as unknown as { results?: { call_id: string; status: string; result?: string; error?: string }[] }).results ?? [];
+				this.toolResults.push(...results);
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({ success: true, data: null }));
+				return;
+			}
+			if (req.url?.startsWith('/api/v2/agent/run/run-1/events') && req.method === 'GET') {
+				res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+				const toolCall = this.nextToolCall();
+				if (toolCall) {
+					this.writeRunEvent(res, 'tool_call', { type: 'tool_call', data: [toolCall] });
+					if (!this.opts.holdMessageStream) {
+						this.writeRunEvent(res, 'run_status', { type: 'run_status', data: { status: 'interrupted' } });
+						res.end();
+					}
+					return;
+				}
+				if (this.opts.toolResultContent) {
+					this.writeRunEvent(res, 'content', { type: 'content', data: this.opts.toolResultContent });
+				}
+				this.writeRunEvent(res, 'run_status', { type: 'run_status', data: { status: 'completed' } });
+				res.end();
+				return;
+			}
 			if (req.url === '/api/agent/invoke/message/stream') {
 				this.messages.push(parsed as unknown as { session_id: string; text: string });
 				res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -110,6 +145,31 @@ class MockCloud {
 			res.writeHead(404);
 			res.end();
 		});
+	}
+
+	private nextToolCall(): ToolCall | undefined {
+		if (this.opts.toolCallQueue && this.queueIndex < this.opts.toolCallQueue.length) {
+			return this.opts.toolCallQueue[this.queueIndex++];
+		}
+		if (this.opts.toolCall && this.queueIndex === 0) {
+			this.queueIndex += 1;
+			return this.opts.toolCall;
+		}
+		return undefined;
+	}
+
+	private writeRunEvent(
+		res: http.ServerResponse,
+		eventType: string,
+		payload: Record<string, unknown>,
+	): void {
+		this.sequence += 1;
+		res.write(`data: ${JSON.stringify({
+			run_id: 'run-1',
+			sequence: this.sequence,
+			event_type: eventType,
+			payload,
+		})}\n\n`);
 	}
 }
 

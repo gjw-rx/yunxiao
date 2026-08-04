@@ -82,19 +82,44 @@ class FakeStreamClient implements StreamClient {
 	}
 	submitRunToolResult(runId: string, results: ToolResult[]): Promise<void> {
 		this.submitRunResultCalls.push({ runId, results });
+		this.submitCalls.push({ results, sessionId: 'run-session' });
 		return Promise.resolve();
 	}
 	subscribeRun(
 		runId: string,
 		afterSequence: number,
 		onEvent: (event: { sequence: number; type: string; payload: unknown }) => void,
+		onError: (error: Error) => void,
 	): AbortController {
 		this.subscriptions.push({ runId, afterSequence });
 		this.runEventCallbacks.push(onEvent);
+		let interrupted = false;
+		const callbacks: SseCallbacks = {
+			onContent: (content) => onEvent(this.nextRunEvent('content', { type: 'content', data: content })),
+			onToolCall: (call) => {
+				interrupted = true;
+				onEvent(this.nextRunEvent('tool_call', { type: 'tool_call', data: [call] }));
+			},
+			onError,
+			onEnd: () => onEvent(this.nextRunEvent('run_status', {
+				type: 'run_status',
+				data: { status: interrupted ? 'interrupted' : 'completed' },
+			})),
+		};
+		(callbacks as SseCallbacks & { onDuplicateAcknowledged?: () => void }).onDuplicateAcknowledged = () => {
+			onError(new TransportError('duplicate acknowledgement'));
+		};
+		this.messageCallbacks.push(callbacks);
+		this.runNext(callbacks);
 		return new AbortController();
 	}
 	emitRunEvent(event: { sequence: number; type: string; payload: unknown }): void {
 		this.runEventCallbacks.at(-1)?.(event);
+	}
+	private nextSequence = 0;
+	private nextRunEvent(type: string, payload: unknown): { sequence: number; type: string; payload: unknown } {
+		this.nextSequence += 1;
+		return { sequence: this.nextSequence, type, payload };
 	}
 	private runNext(cbs: SseCallbacks): void {
 		const script = this.scripts[this.idx++];
@@ -187,6 +212,7 @@ const call = (id: string): ToolCall => ({
 describe('SessionManager', () => {
 	it('uses the Run API for a new message and renders persisted content', async () => {
 		const { client, manager, events } = setup();
+		client.setScripts([() => undefined]);
 
 		manager.sendMessage('s1', 'hello');
 		await flushMicrotasks();

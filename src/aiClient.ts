@@ -20,6 +20,14 @@ export interface RunEvent {
 	payload: unknown;
 }
 
+interface RunEventEnvelope {
+	run_id?: string;
+	sequence?: number;
+	event_type?: string;
+	type?: string;
+	payload?: unknown;
+}
+
 // ---------- 类型定义 ----------
 
 export interface AgentInfo {
@@ -169,7 +177,19 @@ export class AIClient {
 					const lines = buffer.split('\n');
 					buffer = lines.pop() ?? '';
 					for (const line of lines) {
-						if (line.startsWith('data:')) { onEvent(JSON.parse(line.slice(5).trim()) as RunEvent); }
+						if (line.startsWith('data:')) {
+							const envelope = JSON.parse(line.slice(5).trim()) as RunEventEnvelope;
+							const eventType = envelope.event_type ?? envelope.type;
+							if (typeof envelope.run_id !== 'string' || typeof envelope.sequence !== 'number' || typeof eventType !== 'string') {
+								throw new Error('Run 事件格式不合法');
+							}
+							onEvent({
+								run_id: envelope.run_id,
+								sequence: envelope.sequence,
+								type: eventType,
+								payload: envelope.payload,
+							});
+						}
 					}
 				}
 			})
