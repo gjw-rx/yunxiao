@@ -4,7 +4,7 @@
 TBD
 ## Requirements
 ### Requirement: Approval gate before mutating operations
-The `ApprovalGateway` SHALL derive approval behavior from the registered tool permission matrix: `read` bypasses approval, `write` and `execute` require approval, and `destructive` requires approval plus a second confirmation when the operation is irreversible. This decision SHALL be enforced locally regardless of the cloud `require_approval` value.
+The `ApprovalGateway` SHALL derive approval behavior from the registered tool permission matrix: `read` bypasses approval, `write` and `execute` require approval, and `destructive` requires approval plus a second confirmation when the operation is irreversible. It SHALL require a matching local scoped grant before bypassing a prompt, and SHALL enforce this locally regardless of the cloud `require_approval` value.
 
 #### Scenario: Destructive operation requires two confirmations
 - **WHEN** a destructive tool is routed without an applicable allow rule
@@ -24,12 +24,12 @@ When the user selects "允许", the gateway SHALL remember the approval for that
 - **WHEN** the user allowed `fs.write_file` once this session and a second `fs.write_file` call arrives
 - **THEN** the second call executes without an approval prompt
 
-### Requirement: Persistent always-allow via configuration
-When the user selects "始终允许", the gateway SHALL add the tool name to the `yunxiaoAgent.alwaysAllowTools` configuration array, so the tool is auto-approved in future sessions. On gateway construction, tools already present in `alwaysAllowTools` SHALL be auto-approved without prompting.
+### Requirement: Persistent scoped approval via configuration
+When the user selects "始终允许", the gateway SHALL persist an expiring record containing workspace identity, tool name, normalized resource pattern, optional command pattern, and policy version. A record SHALL auto-approve only matching future requests. Existing `alwaysAllowTools` entries MAY be read for compatibility but SHALL NOT be written for new approvals.
 
-#### Scenario: Always-allow persists across sessions
-- **WHEN** the user selects "始终允许" for `fs.move_file` and a new session is created later
-- **THEN** `fs.move_file` calls in the new session execute without prompting because the name is in `alwaysAllowTools`
+#### Scenario: Scoped always-allow persists across sessions
+- **WHEN** the user selects "始终允许" for `fs.move_file` on a resource and a new session is created later
+- **THEN** only the same workspace and resource scope execute without prompting while unrelated resources still require approval
 
 #### Scenario: Pre-configured always-allow auto-approves
 - **WHEN** `yunxiaoAgent.alwaysAllowTools` contains `fs.write_file` and a write call arrives

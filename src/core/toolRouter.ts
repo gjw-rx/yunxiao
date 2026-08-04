@@ -46,13 +46,14 @@ export class ToolRouter {
 			const summary = this.buildApprovalSummary(call, tool.permission);
 			const decision = tool.permission === 'destructive'
 				? await this.approval.requestDestructiveApproval(
-					call.tool, summary, context.sessionId, call.call_id
+					call.tool, summary, context.sessionId, call.call_id, this.approvalScope(call, context)
 				)
 				: await this.approval.requestApproval(
 				call.tool,
 				summary,
 				context.sessionId,
-				call.call_id
+				call.call_id,
+				this.approvalScope(call, context)
 			);
 			if (decision === 'deny') {
 				return {
@@ -123,5 +124,13 @@ export class ToolRouter {
 	/** Run ID 不可用的旧流以会话 ID 隔离回执。 */
 	private executionIdentity(call: ToolCall, context: ToolContext): ToolExecutionIdentity {
 		return { scopeId: context.runId ?? context.sessionId ?? 'unknown-session', callId: call.call_id };
+	}
+
+	/** 从受本地路径守卫约束的调用参数构造最小审批范围。 */
+	private approvalScope(call: ToolCall, context: ToolContext): { workspaceId: string; resourcePattern: string } {
+		const resource = ['path', 'from', 'to', 'cwd']
+			.map((key) => call.args[key])
+			.find((value): value is string => typeof value === 'string') ?? '*';
+		return { workspaceId: context.workspaceRoots.join('|'), resourcePattern: resource };
 	}
 }

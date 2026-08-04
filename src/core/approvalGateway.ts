@@ -22,6 +22,22 @@ export interface ApprovalPromptContext {
 	readonly callId?: string;
 }
 
+/** 本地审批范围：所有字段均由插件本地上下文生成，不信任云端输入。 */
+export interface ApprovalScope {
+	readonly workspaceId: string;
+	readonly resourcePattern: string;
+	readonly commandPattern?: string;
+	readonly expiresAt?: string;
+	readonly policyVersion?: number;
+}
+
+/** 持久化范围授权记录。 */
+export interface ScopedApproval extends ApprovalScope {
+	readonly toolName: string;
+	readonly expiresAt: string;
+	readonly policyVersion: number;
+}
+
 export interface ApprovalPrompter {
 	prompt(ctx: ApprovalPromptContext): Promise<ApprovalDecision | undefined>;
 }
@@ -30,6 +46,8 @@ export interface ApprovalPrompter {
 export interface ApprovalConfigStore {
 	getAlwaysAllow(): string[];
 	addAlwaysAllow(name: string): Promise<void>;
+	getScopedApprovals?(): ScopedApproval[];
+	addScopedApproval?(approval: ScopedApproval): Promise<void>;
 }
 
 /** ApprovalGateway 构造选项。 */
@@ -45,6 +63,9 @@ function vscodeApi(): VsCodeApi {
 
 const CONFIG_SECTION = 'yunxiaoAgent';
 const CONFIG_KEY = 'alwaysAllowTools';
+const SCOPED_CONFIG_KEY = 'scopedApprovals';
+const POLICY_VERSION = 1;
+const GRANT_DURATION_MS = 24 * 60 * 60 * 1000;
 
 /** 默认提示器：用 vscode.window.showWarningMessage 三按钮。 */
 const defaultPrompter: ApprovalPrompter = {
@@ -84,6 +105,16 @@ const defaultStore: ApprovalConfigStore = {
 			);
 		}
 	},
+	getScopedApprovals(): ScopedApproval[] {
+		return vscodeApi().workspace.getConfiguration(CONFIG_SECTION)
+			.get<ScopedApproval[]>(SCOPED_CONFIG_KEY, []);
+	},
+	async addScopedApproval(approval: ScopedApproval): Promise<void> {
+		const cfg = vscodeApi().workspace.getConfiguration(CONFIG_SECTION);
+		const current = cfg.get<ScopedApproval[]>(SCOPED_CONFIG_KEY, []);
+		const filtered = current.filter((entry) => !sameScope(entry, approval));
+		await cfg.update(SCOPED_CONFIG_KEY, [...filtered, approval], vscodeApi().ConfigurationTarget.Workspace);
+	},
 };
 
 export class ApprovalGateway {
@@ -109,14 +140,20 @@ export class ApprovalGateway {
 		toolName: string,
 		summary: string,
 		sessionId?: string,
-		callId?: string
+		callId?: string,
+		scope: ApprovalScope = defaultScope()
 	): Promise<ApprovalDecision> {
+		const normalizedScope = normalizeScope(scope);
 		// 1. 持久允许（配置）
+		if (this.matchesScopedApproval(toolName, normalizedScope)) {
+			return 'allow';
+		}
+		// 兼容历史配置：只读，不再写入该宽泛设置。
 		if (this.store.getAlwaysAllow().includes(toolName)) {
 			return 'allow';
 		}
 		// 2. 会话级允许（内存）
-		if (sessionId && this.sessionAllow.get(sessionId)?.has(toolName)) {
+		if (sessionId && this.sessionAllow.get(sessionId)?.has(scopeKey(toolName, normalizedScope))) {
 			return 'allow';
 		}
 		// 3. 弹窗
@@ -128,12 +165,12 @@ export class ApprovalGateway {
 					set = new Set();
 					this.sessionAllow.set(sessionId, set);
 				}
-				set.add(toolName);
+				set.add(scopeKey(toolName, normalizedScope));
 			}
 			return 'allow';
 		}
 		if (decision === 'always') {
-			await this.store.addAlwaysAllow(toolName);
+			await this.addScopedApproval(toolName, normalizedScope);
 			return 'always';
 		}
 		return 'deny';
@@ -144,9 +181,10 @@ export class ApprovalGateway {
 		toolName: string,
 		summary: string,
 		sessionId?: string,
-		callId?: string
+		callId?: string,
+		scope?: ApprovalScope
 	): Promise<ApprovalDecision> {
-		const first = await this.requestApproval(toolName, summary, sessionId, callId);
+		const first = await this.requestApproval(toolName, summary, sessionId, callId, scope);
 		if (first === 'deny') {
 			return 'deny';
 		}
@@ -163,4 +201,50 @@ export class ApprovalGateway {
 	clearSession(sessionId: string): void {
 		this.sessionAllow.delete(sessionId);
 	}
+
+	private matchesScopedApproval(toolName: string, scope: ApprovalScope): boolean {
+		return (this.store.getScopedApprovals?.() ?? []).some((approval) =>
+			approval.toolName === toolName &&
+			approval.policyVersion === POLICY_VERSION &&
+			Date.parse(approval.expiresAt) > Date.now() &&
+			sameScope(normalizeScope(approval), scope)
+		);
+	}
+
+	private async addScopedApproval(toolName: string, scope: ApprovalScope): Promise<void> {
+		const approval: ScopedApproval = {
+			...scope,
+			toolName,
+			expiresAt: new Date(Date.now() + GRANT_DURATION_MS).toISOString(),
+			policyVersion: POLICY_VERSION,
+		};
+		if (this.store.addScopedApproval) {
+			await this.store.addScopedApproval(approval);
+			return;
+		}
+		await this.store.addAlwaysAllow(toolName);
+	}
+}
+
+/** 规范化本地范围，避免路径分隔符和大小写造成错误复用。 */
+function normalizeScope(scope: ApprovalScope): ApprovalScope {
+	return {
+		workspaceId: scope.workspaceId.replace(/\\/g, '/').toLowerCase(),
+		resourcePattern: scope.resourcePattern.replace(/\\/g, '/').toLowerCase(),
+		commandPattern: scope.commandPattern?.trim().replace(/\s+/g, ' '),
+	};
+}
+
+function defaultScope(): ApprovalScope {
+	return { workspaceId: 'unknown-workspace', resourcePattern: '*' };
+}
+
+function scopeKey(toolName: string, scope: ApprovalScope): string {
+	return `${toolName}:${scope.workspaceId}:${scope.resourcePattern}:${scope.commandPattern ?? ''}`;
+}
+
+function sameScope(left: ApprovalScope, right: ApprovalScope): boolean {
+	return left.workspaceId === right.workspaceId &&
+		left.resourcePattern === right.resourcePattern &&
+		left.commandPattern === right.commandPattern;
 }

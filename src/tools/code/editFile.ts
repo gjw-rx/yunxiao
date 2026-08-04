@@ -22,7 +22,7 @@ import { resolveWithinRoots } from '../fs/pathGuard';
 import { PathGuardError, ToolValidationError } from '../../core/errors';
 import type { ToolSchema } from '../../core/types';
 import { createDiff, applyDiff } from '../diff/diffEngine';
-import { getFileVersion } from '../fs/fileVersion';
+import { getFileVersion, getFileVersionFromContent } from '../fs/fileVersion';
 import { DiffViewer } from '../diff/diffViewer';
 import type { ApprovalGateway } from '../../core/approvalGateway';
 
@@ -103,7 +103,8 @@ export class CodeEditTool extends BaseTool {
 		} catch {
 			return { status: 'error', error: `文件不存在或不可读: ${inputPath}` };
 		}
-		if (args.expectedVersion !== undefined && (typeof args.expectedVersion !== 'string' || await getFileVersion(resolved.fsPath) !== args.expectedVersion)) {
+		const baseVersion = getFileVersionFromContent(content);
+		if (args.expectedVersion !== undefined && (typeof args.expectedVersion !== 'string' || baseVersion !== args.expectedVersion)) {
 			return { status: 'error', error: `文件已被并发修改，未应用编辑: ${inputPath}`, metadata: { retryable: false } };
 		}
 
@@ -169,7 +170,9 @@ export class CodeEditTool extends BaseTool {
 		const decision = await this.approval.requestApproval(
 			'code.edit',
 			summary,
-			context.sessionId
+			context.sessionId,
+			undefined,
+			{ workspaceId: context.workspaceRoots.join('|'), resourcePattern: resolved.relativePath }
 		);
 
 		// 8. 应用或取消
@@ -226,6 +229,8 @@ export class CodeEditTool extends BaseTool {
 			result: `已应用 1 处编辑: ${inputPath}`,
 			metadata: {
 				diff,
+				base_version: baseVersion,
+				applied_version: await getFileVersion(resolved.fsPath),
 				affected_files: [resolved.relativePath],
 				duration_ms: Date.now() - startedAt,
 			},

@@ -163,7 +163,9 @@ export class TerminalExecTool extends BaseTool {
 			const decision = await this.approval.requestApproval(
 				'terminal.exec',
 				summary,
-				context.sessionId
+				context.sessionId,
+				undefined,
+				{ workspaceId: context.workspaceRoots.join('|'), resourcePattern: 'command', commandPattern: command }
 			);
 			if (decision === 'deny') {
 				return {

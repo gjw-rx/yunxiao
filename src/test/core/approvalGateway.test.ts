@@ -104,6 +104,36 @@ describe('ApprovalGateway', () => {
 		assert.strictEqual(d2, 'allow');
 	});
 
+	it('范围授权不得跨工作区、资源或有效期复用', async () => {
+		const approvals = [{
+			toolName: 'code.edit',
+			workspaceId: 'c:/repo',
+			resourcePattern: 'src/a.ts',
+			expiresAt: new Date(Date.now() + 60_000).toISOString(),
+			policyVersion: 1,
+		}];
+		const { prompter, calls } = mockPrompter(['deny', 'deny', 'deny']);
+		const gw = new ApprovalGateway({
+			prompter,
+			store: {
+				getAlwaysAllow: () => [],
+				addAlwaysAllow: async () => {},
+				getScopedApprovals: () => approvals,
+				addScopedApproval: async () => {},
+			},
+		});
+		const exact = await gw.requestApproval('code.edit', '编辑', 's1', undefined, {
+			workspaceId: 'C:\\repo', resourcePattern: 'src\\a.ts',
+		});
+		assert.strictEqual(exact, 'allow');
+		assert.strictEqual(calls.length, 0);
+		await gw.requestApproval('code.edit', '编辑', 's1', undefined, { workspaceId: 'c:/repo', resourcePattern: 'src/b.ts' });
+		await gw.requestApproval('code.edit', '编辑', 's1', undefined, { workspaceId: 'c:/other', resourcePattern: 'src/a.ts' });
+		approvals[0] = { ...approvals[0], expiresAt: new Date(Date.now() - 1).toISOString() };
+		await gw.requestApproval('code.edit', '编辑', 's1', undefined, { workspaceId: 'c:/repo', resourcePattern: 'src/a.ts' });
+		assert.strictEqual(calls.length, 3);
+	});
+
 	it('用户拒绝（deny/关闭）返回 deny', async () => {
 		const { store } = mockStore();
 		const { prompter } = mockPrompter([undefined]); // 关闭弹窗

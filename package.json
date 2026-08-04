@@ -79,6 +79,13 @@
           "description": "无需审批直接放行的本地工具名列表（如 fs.write_file）；只读工具本就免审批",
           "scope": "window"
         },
+        "yunxiaoAgent.scopedApprovals": {
+          "type": "array",
+          "items": { "type": "object" },
+          "default": [],
+          "description": "本地工具的范围授权记录（工作区、工具、资源、有效期）；由扩展维护",
+          "scope": "window"
+        },
         "yunxiaoAgent.shellWhitelist": {
           "type": "array",
           "items": {

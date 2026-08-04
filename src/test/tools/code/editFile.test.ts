@@ -100,6 +100,9 @@ describe('CodeEditTool', () => {
 		assert.ok(written.includes('getServiceUrl'));
 		assert.ok(!written.includes('getServiceBaseUrl'));
 		assert.ok(result.metadata?.diff);
+		assert.ok(result.metadata?.base_version);
+		assert.ok(result.metadata?.applied_version);
+		assert.notStrictEqual(result.metadata?.base_version, result.metadata?.applied_version);
 		assert.deepStrictEqual(result.metadata?.affected_files, ['ext.ts']);
 	});
 

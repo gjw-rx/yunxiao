@@ -42,7 +42,7 @@ The system SHALL support a patch mode invoked with `{ path, patch }` where `patc
 
 #### Scenario: Approved preview remains current
 - **WHEN** the user approves the edit and the target version still equals the preview baseline
-- **THEN** `code.edit` applies the approved proposed content and returns its normal success metadata
+- **THEN** `code.edit` applies the approved proposed content and returns success metadata containing `base_version` and `applied_version`
 
 ### Requirement: Diff preview before apply
 `code.edit` SHALL present a diff preview (original vs proposed content via the VSCode diff editor) and require user approval through the approval gateway before writing. The approval prompt SHALL indicate the file path and that a code edit is being applied.

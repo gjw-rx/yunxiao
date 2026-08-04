@@ -56,6 +56,10 @@ export interface ToolResultMetadata {
 	readonly redacted?: boolean;
 	/** 本地执行已开始但结果未确认，禁止自动重放。 */
 	readonly execution_state?: 'unknown';
+	/** code.edit 预览所依据的文件内容版本。 */
+	readonly base_version?: string;
+	/** code.edit 成功写入后的文件内容版本。 */
+	readonly applied_version?: string;
 }
 
 /** 本地执行后回传云端的工具结果。 */
