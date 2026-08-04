@@ -199,8 +199,11 @@ async function runStreamToolResult(
 				continue;
 			}
 			const reason = err instanceof Error ? err.message : String(err);
+			const message = `tool_result 提交失败（已重试 ${attempt} 次）: ${reason}`;
 			callbacks.onError?.(
-				new ProtocolError(`tool_result 提交失败（已重试 ${attempt} 次）: ${reason}`)
+				err instanceof TypeError || err instanceof TransportError
+					? new TransportError(message)
+					: new ProtocolError(message)
 			);
 			return;
 		}
