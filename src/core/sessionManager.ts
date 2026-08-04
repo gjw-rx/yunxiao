@@ -75,6 +75,7 @@ export interface ToolStateChangePayload {
 
 interface SessionState {
 	readonly generation: number;
+	runId?: string;
 	abortController?: AbortController;
 	pendingToolCalls: ToolCall[];
 	activeToolCalls: Map<string, ToolCall>;
@@ -168,6 +169,7 @@ export class SessionManager {
 			return;
 		}
 		const state = this.createState();
+		state.runId = run.runId;
 		this.sessions.set(run.sessionId, state);
 		state.abortController = this.opts.client.subscribeRun(
 			run.runId,
@@ -398,6 +400,7 @@ export class SessionManager {
 			maxFileSize: this.opts.getMaxFileSize?.(),
 			toolTimeoutMs: effectiveTimeout,
 			sessionId,
+			runId: state.runId,
 			warn: (m) => {
 				if (this.isCurrentRun(sessionId, state)) {
 					this.opts.eventBus.emit({ type: 'error', sessionId, payload: m });

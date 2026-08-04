@@ -9,6 +9,8 @@ import {
 	type ToolExecutionResult,
 } from '../../tools/baseTool';
 import type { ToolCall, ToolSchema } from '../../core/types';
+import { ToolExecutionJournal } from '../../core/toolExecutionJournal';
+import type { WorkspaceState } from '../../core/runStore';
 
 /** 测试用本地写工具：记录是否被执行。 */
 class FakeWriteTool extends BaseTool {
@@ -35,6 +37,12 @@ class FakeWriteTool extends BaseTool {
 }
 
 const CTX: ToolContext = { workspaceRoots: [], sessionId: 'sess-1' };
+
+class MemoryState implements WorkspaceState {
+	private readonly values = new Map<string, unknown>();
+	get<T>(key: string): T | undefined { return this.values.get(key) as T | undefined; }
+	async update(key: string, value: unknown): Promise<void> { this.values.set(key, value); }
+}
 
 describe('ToolRouter approval gating', () => {
 	it('write 工具审批通过后执行', async () => {
@@ -158,5 +166,53 @@ describe('ToolRouter approval gating', () => {
 		// Assert
 		assert.strictEqual(result.status, 'success'); // 直通执行
 		assert.deepStrictEqual(tool.executed, ['a.ts']);
+	});
+
+	it('复用已完成的副作用工具结果而不重复执行', async () => {
+		const reg = new ToolRegistry();
+		const tool = new FakeWriteTool();
+		reg.register(tool);
+		const router = new ToolRouter(reg, undefined, undefined, new ToolExecutionJournal(new MemoryState()));
+		const call: ToolCall = { call_id: 'c6', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' }, site: 'local' };
+		const first = await router.route(call, { ...CTX, runId: 'run-1' });
+		const second = await router.route(call, { ...CTX, runId: 'run-1' });
+		assert.deepStrictEqual(second, first);
+		assert.deepStrictEqual(tool.executed, ['a.ts']);
+	});
+
+	it('对未确认的副作用工具调用返回 unknown 且不重放', async () => {
+		const reg = new ToolRegistry();
+		const tool = new FakeWriteTool();
+		reg.register(tool);
+		const journal = new ToolExecutionJournal(new MemoryState());
+		await journal.begin({ scopeId: 'run-1', callId: 'c7' }, 'fs.write_file');
+		const router = new ToolRouter(reg, undefined, undefined, journal);
+		const result = await router.route(
+			{ call_id: 'c7', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' }, site: 'local' },
+			{ ...CTX, runId: 'run-1' },
+		);
+		assert.strictEqual(result.status, 'error');
+		assert.strictEqual(result.metadata?.execution_state, 'unknown');
+		assert.strictEqual(result.metadata?.retryable, false);
+		assert.deepStrictEqual(tool.executed, []);
+	});
+
+	it('超时后的迟到结果保留 started 回执', async () => {
+		const reg = new ToolRegistry();
+		const tool = new (class extends FakeWriteTool {
+			async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				return super.execute(args);
+			}
+		})();
+		reg.register(tool);
+		const journal = new ToolExecutionJournal(new MemoryState());
+		const router = new ToolRouter(reg, undefined, undefined, journal);
+		const controller = new AbortController();
+		const call: ToolCall = { call_id: 'c8', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' }, site: 'local' };
+		const pending = router.route(call, { ...CTX, runId: 'run-1', abortSignal: controller.signal });
+		controller.abort();
+		await pending;
+		assert.deepStrictEqual(await journal.begin({ scopeId: 'run-1', callId: 'c8' }, 'fs.write_file'), { kind: 'unknown' });
 	});
 });

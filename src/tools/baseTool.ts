@@ -15,6 +15,8 @@ export interface ToolContext {
 	readonly toolTimeoutMs?: number;
 	/** 当前会话 ID（供审批网关做会话级允许记忆）。 */
 	readonly sessionId?: string;
+	/** 当前云端 Run ID；旧 v1 流可能缺失。 */
+	readonly runId?: string;
 	/** 用户警告回调（如敏感文件访问），由会话层桥接到 UI。 */
 	readonly warn?: (message: string) => void;
 	/** 终端输出截断上限（字符），保留尾部。 */

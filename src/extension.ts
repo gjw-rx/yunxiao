@@ -8,6 +8,7 @@ import { ReliabilityMetrics } from './core/reliabilityMetrics';
 import { EventBus } from './core/eventBus';
 import { SessionManager } from './core/sessionManager';
 import { RunStore } from './core/runStore';
+import { ToolExecutionJournal } from './core/toolExecutionJournal';
 import { ApprovalGateway } from './core/approvalGateway';
 import { ReadFileTool, DEFAULT_MAX_FILE_SIZE } from './tools/fs/readFile';
 import { WriteFileTool } from './tools/fs/writeFile';
@@ -133,7 +134,8 @@ async function _activate(context: vscode.ExtensionContext) {
 
 	const metrics = new ReliabilityMetrics();
 	const runStore = new RunStore(context.workspaceState);
-	const router = new ToolRouter(registry, approval, new SecurityAudit(metrics));
+	const journal = new ToolExecutionJournal(context.workspaceState);
+	const router = new ToolRouter(registry, approval, new SecurityAudit(metrics), journal);
 
 	const sessionManager = new SessionManager({
 		client,

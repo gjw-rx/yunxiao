@@ -10,12 +10,14 @@ import type { ToolContext } from '../tools/baseTool';
 import type { ApprovalGateway } from './approvalGateway';
 import { ProtocolError } from './errors';
 import { SecurityAudit } from './securityAudit';
+import { ToolExecutionJournal, type ToolExecutionIdentity } from './toolExecutionJournal';
 
 export class ToolRouter {
 	constructor(
 		private readonly registry: ToolRegistry,
 		private readonly approval?: ApprovalGateway,
-		private readonly audit = new SecurityAudit()
+		private readonly audit = new SecurityAudit(),
+		private readonly journal?: ToolExecutionJournal,
 	) {}
 
 	/** 路由并执行一个工具调用。仅处理 site=local；cloud 调用抛 ProtocolError。 */
@@ -61,9 +63,43 @@ export class ToolRouter {
 			}
 		}
 
-		const partial = tool.governResult(await tool.execute(call.args, context), context);
-		// 路由层按 call_id 盖戳，工具实现无需关心 call_id
-		return { ...partial, call_id: call.call_id };
+		if (tool.permission === 'read' || !this.journal) {
+			const partial = tool.governResult(await tool.execute(call.args, context), context);
+			return { ...partial, call_id: call.call_id };
+		}
+
+		const identity = this.executionIdentity(call, context);
+		const receipt = await this.journal.begin(identity, call.tool);
+		if (receipt.kind === 'completed') {
+			return receipt.result;
+		}
+		if (receipt.kind === 'unknown') {
+			return {
+				call_id: call.call_id,
+				status: 'error',
+				error: '本地工具执行结果未知，禁止自动重放',
+				metadata: { retryable: false, execution_state: 'unknown' },
+			};
+		}
+
+		try {
+			const partial = tool.governResult(await tool.execute(call.args, context), context);
+			const result = { ...partial, call_id: call.call_id };
+			if (!context.abortSignal?.aborted) {
+				await this.journal.complete(identity, result);
+			}
+			return result;
+		} catch (error) {
+			if (!context.abortSignal?.aborted) {
+				await this.journal.complete(identity, {
+					call_id: call.call_id,
+					status: 'error',
+					error: error instanceof Error ? error.message : String(error),
+					metadata: { retryable: false },
+				});
+			}
+			throw error;
+		}
 	}
 
 	/** 仅明确声明可并行的只读本地工具允许在同一轮并发执行。 */
@@ -82,5 +118,10 @@ export class ToolRouter {
 	): string {
 		const argsJson = JSON.stringify(call.args);
 		return `工具 ${call.tool}（${permission} 权限）将执行：\n${argsJson}`;
+	}
+
+	/** Run ID 不可用的旧流以会话 ID 隔离回执。 */
+	private executionIdentity(call: ToolCall, context: ToolContext): ToolExecutionIdentity {
+		return { scopeId: context.runId ?? context.sessionId ?? 'unknown-session', callId: call.call_id };
 	}
 }

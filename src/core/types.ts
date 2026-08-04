@@ -54,6 +54,8 @@ export interface ToolResultMetadata {
 	readonly truncated?: boolean;
 	/** 结果中的高置信度敏感值已被脱敏。 */
 	readonly redacted?: boolean;
+	/** 本地执行已开始但结果未确认，禁止自动重放。 */
+	readonly execution_state?: 'unknown';
 }
 
 /** 本地执行后回传云端的工具结果。 */
