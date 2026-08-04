@@ -25,6 +25,7 @@ import type { ToolContext } from '../tools/baseTool';
 import { ToolTimeoutError, TransportError } from './errors';
 import * as logger from '../logger';
 import { ReliabilityMetrics } from './reliabilityMetrics';
+import { RunStore, type StoredRun } from './runStore';
 
 /** 会话管理器驱动的流客户端（由 AIClient 实现）。 */
 export interface StreamClient {
@@ -32,6 +33,8 @@ export interface StreamClient {
 	streamMessage(sessionId: string, text: string, callbacks: SseCallbacks): AbortController;
 	/** 批量提交工具结果并读取 SSE 续流。 */
 	submitToolResult(results: ToolResult[], sessionId: string, callbacks: SseCallbacks): AbortController;
+	/** 订阅持久化 Run；旧客户端不实现时不会启用恢复。 */
+	subscribeRun?(runId: string, afterSequence: number, onEvent: (event: { sequence: number; type: string; payload: unknown }) => void, onError: (error: Error) => void): AbortController;
 }
 
 export interface SessionManagerOptions {
@@ -54,6 +57,8 @@ export interface SessionManagerOptions {
 	readonly approval?: { clearSession(sessionId: string): void };
 	/** 本地安全与可靠性计数器。 */
 	readonly metrics?: ReliabilityMetrics;
+	/** 工作区 Run 快照，用于扩展宿主重启后的只读恢复。 */
+	readonly runStore?: RunStore;
 }
 
 /** 工具状态变更事件 payload。 */
@@ -154,6 +159,42 @@ export class SessionManager {
 		}
 		this.sessions.delete(sessionId);
 		this.opts.approval?.clearSession(sessionId);
+		void this.opts.runStore?.remove(sessionId);
+	}
+
+	/** 恢复云端未终态 Run；已持久化的工具调用绝不在恢复时自动执行。 */
+	restoreRun(run: StoredRun): void {
+		if (!this.opts.client.subscribeRun || this.sessions.has(run.sessionId)) {
+			return;
+		}
+		const state = this.createState();
+		this.sessions.set(run.sessionId, state);
+		state.abortController = this.opts.client.subscribeRun(
+			run.runId,
+			run.cursor,
+			(event) => { void this.consumeStoredEvent(run.sessionId, state, event); },
+			(error) => this.finishRun(run.sessionId, state, 'disconnected', error.message),
+		);
+	}
+
+	private async consumeStoredEvent(
+		sessionId: string,
+		state: SessionState,
+		event: { sequence: number; type: string; payload: unknown },
+	): Promise<void> {
+		if (!this.isCurrentRun(sessionId, state) || !this.opts.runStore) {
+			return;
+		}
+		const result = await this.opts.runStore.append(sessionId, event);
+		if (result.kind === 'gap') {
+			state.abortController?.abort();
+			this.sessions.delete(sessionId);
+			this.restoreRun(result.run);
+			return;
+		}
+		if (result.kind === 'appended' && isAgentEventType(event.type)) {
+			this.opts.eventBus.emit({ type: event.type, sessionId, payload: event.payload });
+		}
 	}
 
 	private createState(): SessionState {
@@ -465,4 +506,8 @@ async function runSequential<T>(
 		results.push(await run(item));
 	}
 	return results;
+}
+
+function isAgentEventType(type: string): type is AgentEvent['type'] {
+	return ['content', 'thought', 'tool_call', 'tool_result', 'plan', 'progress', 'stream_end', 'error', 'tool_state_change', 'run_state_change'].includes(type);
 }

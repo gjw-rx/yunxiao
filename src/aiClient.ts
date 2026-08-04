@@ -5,6 +5,21 @@ import { SseStreamParser, type SseCallbacks } from './protocol/sseHandler';
 import { streamToolResult } from './protocol/toolCallProtocol';
 import type { ToolResult, ToolSchema } from './core/types';
 
+/** 云端持久化 Run 的最小快照。 */
+export interface RunInfo {
+	run_id: string;
+	session_id: string;
+	status: 'pending' | 'running' | 'interrupted' | 'completed' | 'failed' | 'cancelled';
+}
+
+/** 云端 Run 事件，sequence 由云端分配且仅在同一 Run 内单调递增。 */
+export interface RunEvent {
+	run_id: string;
+	sequence: number;
+	type: string;
+	payload: unknown;
+}
+
 // ---------- 类型定义 ----------
 
 export interface AgentInfo {
@@ -121,6 +136,45 @@ export class AIClient {
 	/** 批量提交工具结果并读取续流，返回 AbortController 用于中断。 */
 	submitToolResult(results: ToolResult[], sessionId: string, cbs: SseCallbacks): AbortController {
 		return streamToolResult(results, sessionId, { baseUrl: this.baseUrl }, cbs);
+	}
+
+	/** 创建 v2 持久化 Run；调用方随后以事件订阅消费计算结果。 */
+	createRun(sessionId: string, text: string, clientRequestId: string): Promise<RunInfo> {
+		return request<RunInfo>(this.baseUrl, '/api/v2/agent/run', 'POST', {
+			session_id: sessionId,
+			text,
+			client_request_id: clientRequestId,
+		});
+	}
+
+	/** 向指定 Run 提交本地工具结果，不把该请求当作计算生命周期所有者。 */
+	submitRunToolResult(runId: string, results: ToolResult[]): Promise<void> {
+		return request<void>(this.baseUrl, `/api/v2/agent/run/${encodeURIComponent(runId)}/tool-result`, 'POST', { results });
+	}
+
+	/** 从排他游标订阅 v2 Run 事件，断线恢复由调用方使用同一游标重新订阅。 */
+	subscribeRun(runId: string, afterSequence: number, onEvent: (event: RunEvent) => void, onError: (error: Error) => void): AbortController {
+		const controller = new AbortController();
+		const url = `${this.baseUrl}/api/v2/agent/run/${encodeURIComponent(runId)}/events?after_sequence=${afterSequence}`;
+		fetch(url, { headers: { Accept: 'text/event-stream' }, signal: controller.signal })
+			.then(async (response) => {
+				if (!response.ok || !response.body) { throw new Error(`服务返回状态码 ${response.status}`); }
+				const reader = response.body.getReader();
+				const decoder = new TextDecoder('utf-8');
+				let buffer = '';
+				while (!controller.signal.aborted) {
+					const { done, value } = await reader.read();
+					if (done) { break; }
+					buffer += decoder.decode(value, { stream: true });
+					const lines = buffer.split('\n');
+					buffer = lines.pop() ?? '';
+					for (const line of lines) {
+						if (line.startsWith('data:')) { onEvent(JSON.parse(line.slice(5).trim()) as RunEvent); }
+					}
+				}
+			})
+			.catch((error: Error) => { if (error.name !== 'AbortError') { onError(error); } });
+		return controller;
 	}
 
 	/** 通用：POST 一个 SSE 端点并读取流，分发到回调。 */

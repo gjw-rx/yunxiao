@@ -8,6 +8,8 @@ class MockServer {
 	private server!: http.Server;
 	port = 0;
 	readonly sessionBodies: Record<string, unknown>[] = [];
+	readonly runBodies: Record<string, unknown>[] = [];
+	lastRunEventsUrl?: string;
 	/** /message/stream 行为：'sse' 正常流 | 'httpError' 返回错误状态 | 'jsonError' 返回 JSON 错误信封。 */
 	messageMode: 'sse' | 'httpError' | 'jsonError' = 'sse';
 
@@ -68,6 +70,23 @@ class MockServer {
 				res.writeHead(200, { 'Content-Type': 'text/event-stream' });
 				res.write('data: {"type":"content","data":"summary"}\n\n');
 				res.end();
+				return;
+			}
+			if (req.url === '/api/v2/agent/run' && req.method === 'POST') {
+				this.runBodies.push(parsed);
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({ success: true, data: { run_id: 'r1', session_id: 's1', status: 'running' } }));
+				return;
+			}
+			if (req.url === '/api/v2/agent/run/r1/tool-result' && req.method === 'POST') {
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({ success: true, data: null }));
+				return;
+			}
+			if (req.url?.startsWith('/api/v2/agent/run/r1/events') && req.method === 'GET') {
+				this.lastRunEventsUrl = req.url;
+				res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+				res.end('data: {"run_id":"r1","sequence":3,"type":"content","payload":"hi"}\n');
 				return;
 			}
 			res.writeHead(404);
@@ -185,5 +204,19 @@ describe('AIClient', () => {
 		});
 		assert.deepStrictEqual(contents, ['summary']);
 		assert.strictEqual(ended, true);
+	});
+
+	it('creates a v2 Run with an idempotency key', async () => {
+		const run = await client.createRun('s1', 'hello', 'request-1');
+		assert.strictEqual(run.run_id, 'r1');
+		assert.deepStrictEqual(mock.runBodies[0], { session_id: 's1', text: 'hello', client_request_id: 'request-1' });
+	});
+
+	it('subscribes to a Run after the supplied exclusive cursor', async () => {
+		const event = await new Promise<{ sequence: number }>((resolve, reject) => {
+			client.subscribeRun('r1', 2, resolve, reject);
+		});
+		assert.strictEqual(event.sequence, 3);
+		assert.strictEqual(mock.lastRunEventsUrl, '/api/v2/agent/run/r1/events?after_sequence=2');
 	});
 });

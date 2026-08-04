@@ -7,6 +7,7 @@ import { SecurityAudit } from './core/securityAudit';
 import { ReliabilityMetrics } from './core/reliabilityMetrics';
 import { EventBus } from './core/eventBus';
 import { SessionManager } from './core/sessionManager';
+import { RunStore } from './core/runStore';
 import { ApprovalGateway } from './core/approvalGateway';
 import { ReadFileTool, DEFAULT_MAX_FILE_SIZE } from './tools/fs/readFile';
 import { WriteFileTool } from './tools/fs/writeFile';
@@ -131,6 +132,7 @@ async function _activate(context: vscode.ExtensionContext) {
 	registry.register(new GitStashTool());
 
 	const metrics = new ReliabilityMetrics();
+	const runStore = new RunStore(context.workspaceState);
 	const router = new ToolRouter(registry, approval, new SecurityAudit(metrics));
 
 	const sessionManager = new SessionManager({
@@ -139,6 +141,7 @@ async function _activate(context: vscode.ExtensionContext) {
 		eventBus,
 		approval,
 		metrics,
+		runStore,
 		toolTimeoutMs: config.get<number>('toolTimeoutMs', 30_000),
 		getWorkspaceRoots: () => getWorkspaceRoots(),
 		getMaxFileSize: () =>
@@ -151,6 +154,9 @@ async function _activate(context: vscode.ExtensionContext) {
 				? config.get<number>('terminalTimeoutMs', 300_000)
 				: undefined,
 	});
+	for (const run of runStore.listRestorable()) {
+		sessionManager.restoreRun(run);
+	}
 
 	// 回填 provider 的依赖（解决循环依赖：provider -> approval -> provider）
 	(provider as unknown as { _registry: ToolRegistry; _sessionManager: SessionManager })._registry = registry;
