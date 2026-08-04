@@ -57,6 +57,9 @@ class FakeStreamClient implements StreamClient {
 	readonly messageCallbacks: SseCallbacks[] = [];
 	readonly submitCallbacks: SseCallbacks[] = [];
 	readonly subscriptions: { runId: string; afterSequence: number }[] = [];
+	readonly createRunCalls: { sessionId: string; text: string; clientRequestId: string }[] = [];
+	readonly submitRunResultCalls: { runId: string; results: ToolResult[] }[] = [];
+	private readonly runEventCallbacks: ((event: { sequence: number; type: string; payload: unknown }) => void)[] = [];
 	setScripts(scripts: EventScript[]): void {
 		this.scripts = scripts;
 		this.idx = 0;
@@ -73,9 +76,25 @@ class FakeStreamClient implements StreamClient {
 		this.runNext(cbs);
 		return new AbortController();
 	}
-	subscribeRun(runId: string, afterSequence: number): AbortController {
+	createRun(sessionId: string, text: string, clientRequestId: string): Promise<{ run_id: string; session_id: string; status: 'pending' }> {
+		this.createRunCalls.push({ sessionId, text, clientRequestId });
+		return Promise.resolve({ run_id: 'run-1', session_id: sessionId, status: 'pending' });
+	}
+	submitRunToolResult(runId: string, results: ToolResult[]): Promise<void> {
+		this.submitRunResultCalls.push({ runId, results });
+		return Promise.resolve();
+	}
+	subscribeRun(
+		runId: string,
+		afterSequence: number,
+		onEvent: (event: { sequence: number; type: string; payload: unknown }) => void,
+	): AbortController {
 		this.subscriptions.push({ runId, afterSequence });
+		this.runEventCallbacks.push(onEvent);
 		return new AbortController();
+	}
+	emitRunEvent(event: { sequence: number; type: string; payload: unknown }): void {
+		this.runEventCallbacks.at(-1)?.(event);
 	}
 	private runNext(cbs: SseCallbacks): void {
 		const script = this.scripts[this.idx++];
@@ -166,6 +185,18 @@ const call = (id: string): ToolCall => ({
 });
 
 describe('SessionManager', () => {
+	it('uses the Run API for a new message and renders persisted content', async () => {
+		const { client, manager, events } = setup();
+
+		manager.sendMessage('s1', 'hello');
+		await flushMicrotasks();
+		client.emitRunEvent({ sequence: 1, type: 'content', payload: { type: 'content', data: 'hello' } });
+
+		assert.strictEqual(client.createRunCalls.length, 1);
+		assert.strictEqual(client.messageCalls.length, 0);
+		assert.ok(events.some((event) => event.type === 'content' && event.payload === 'hello'));
+	});
+
 	it('completes a pure-chat turn with no tool calls', async () => {
 		// Arrange
 		const { eventBus, client, manager, events } = setup();
