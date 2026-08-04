@@ -171,6 +171,11 @@ export class SessionManager {
 		const state = this.createState();
 		state.runId = run.runId;
 		this.sessions.set(run.sessionId, state);
+		for (const event of run.events) {
+			if (isAgentEventType(event.type)) {
+				this.opts.eventBus.emit({ type: event.type, sessionId: run.sessionId, payload: event.payload });
+			}
+		}
 		state.abortController = this.opts.client.subscribeRun(
 			run.runId,
 			run.cursor,
@@ -512,5 +517,5 @@ async function runSequential<T>(
 }
 
 function isAgentEventType(type: string): type is AgentEvent['type'] {
-	return ['content', 'thought', 'tool_call', 'tool_result', 'plan', 'progress', 'stream_end', 'error', 'tool_state_change', 'run_state_change'].includes(type);
+	return ['content', 'content_batch', 'thought', 'tool_call', 'tool_result', 'plan', 'progress', 'stream_end', 'error', 'tool_state_change', 'run_state_change', 'budget_update', 'budget_exhausted'].includes(type);
 }

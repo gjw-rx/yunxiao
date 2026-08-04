@@ -12,6 +12,19 @@ export interface StoredRunEvent {
 	readonly payload: unknown;
 }
 
+/** 云端确认的 Run 累计预算快照。 */
+export interface RunBudgetSnapshot {
+	readonly usage: Record<string, number>;
+	readonly limits: Record<string, number>;
+}
+
+/** 供 Webview 恢复展示的轻量时间线条目。 */
+export interface StoredTimelineEntry {
+	readonly sequence: number;
+	readonly type: 'content_batch' | 'budget_update' | 'budget_exhausted';
+	readonly payload: unknown;
+}
+
 export interface StoredRun {
 	readonly sessionId: string;
 	readonly runId: string;
@@ -19,6 +32,8 @@ export interface StoredRun {
 	readonly status: StoredRunStatus;
 	readonly workspaceRoots: readonly string[];
 	readonly events: readonly StoredRunEvent[];
+	readonly timeline: readonly StoredTimelineEntry[];
+	readonly budget?: RunBudgetSnapshot;
 }
 
 export type AppendResult =
@@ -37,11 +52,14 @@ export class RunStore {
 	) {}
 
 	get(sessionId: string): StoredRun | undefined {
-		return this.readAll()[sessionId];
+		const run = this.readAll()[sessionId];
+		return run ? this.normalize(run) : undefined;
 	}
 
 	listRestorable(): StoredRun[] {
-		return Object.values(this.readAll()).filter((run) => !TERMINAL_STATUSES.has(run.status));
+		return Object.values(this.readAll())
+			.map((run) => this.normalize(run))
+			.filter((run) => !TERMINAL_STATUSES.has(run.status));
 	}
 
 	async save(run: StoredRun): Promise<void> {
@@ -72,6 +90,8 @@ export class RunStore {
 			...run,
 			cursor: event.sequence,
 			events: [...run.events, event],
+			timeline: this.appendTimeline(run.timeline, event),
+			budget: event.type === 'budget_update' ? parseBudget(event.payload) ?? run.budget : run.budget,
 		});
 		await this.save(updated);
 		return { kind: 'appended', run: updated };
@@ -96,6 +116,39 @@ export class RunStore {
 			...run,
 			workspaceRoots: [...run.workspaceRoots],
 			events: run.events.slice(-this.maxEvents),
+			timeline: (run.timeline ?? []).slice(-this.maxEvents),
 		};
 	}
+
+	private appendTimeline(
+		timeline: readonly StoredTimelineEntry[] | undefined,
+		event: StoredRunEvent,
+	): StoredTimelineEntry[] {
+		if (!isTimelineEvent(event.type)) {
+			return [...(timeline ?? [])];
+		}
+		return [...(timeline ?? []), { sequence: event.sequence, type: event.type, payload: event.payload }];
+	}
+}
+
+function isTimelineEvent(type: string): type is StoredTimelineEntry['type'] {
+	return type === 'content_batch' || type === 'budget_update' || type === 'budget_exhausted';
+}
+
+function parseBudget(payload: unknown): RunBudgetSnapshot | undefined {
+	if (!payload || typeof payload !== 'object') {
+		return undefined;
+	}
+	const candidate = payload as { usage?: unknown; limits?: unknown };
+	if (!isNumberRecord(candidate.usage) || !isNumberRecord(candidate.limits)) {
+		return undefined;
+	}
+	return { usage: candidate.usage, limits: candidate.limits };
+}
+
+function isNumberRecord(value: unknown): value is Record<string, number> {
+	if (!value || typeof value !== 'object') {
+		return false;
+	}
+	return Object.values(value).every((item) => typeof item === 'number' && Number.isFinite(item));
 }

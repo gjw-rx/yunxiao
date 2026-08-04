@@ -124,6 +124,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'content':
         view.webview.postMessage({ command: 'replyChunk', text: e.payload as string });
         break;
+		case 'content_batch': {
+			const payload = e.payload as { content?: unknown };
+			if (typeof payload.content === 'string') {
+				view.webview.postMessage({ command: 'replyChunk', text: payload.content });
+			}
+			break;
+		}
+		case 'budget_update':
+		case 'budget_exhausted':
+			view.webview.postMessage({ command: 'budgetEvent', type: e.type, payload: e.payload });
+			break;
       case 'stream_end':
         view.webview.postMessage({ command: 'replyEnd' });
         break;
@@ -2179,6 +2190,21 @@ ${this._getJs()}
       addStep(step);
     }
 
+    /** 将云端确认的预算状态作为时间线步骤展示，不在客户端估算用量。 */
+    function showBudgetEvent(type, payload) {
+      const step = document.createElement('div');
+      step.className = 'step ' + (type === 'budget_exhausted' ? 'error' : 'progress');
+      const exhausted = type === 'budget_exhausted';
+      step.innerHTML = '<span class="step-dot"></span><div class="step-head"><span class="step-icon">' +
+        (exhausted ? '!' : '◷') + '</span><span class="step-name">' +
+        (exhausted ? '预算已耗尽' : '预算状态') + '</span></div>';
+      const body = document.createElement('div');
+      body.className = 'step-body';
+      body.textContent = JSON.stringify(payload);
+      step.appendChild(body);
+      addStep(step);
+    }
+
     function showError(msg) {
       errorEl.textContent = msg;
       setTimeout(() => { if (errorEl.textContent === msg) errorEl.textContent = ''; }, 5000);
@@ -2234,6 +2260,9 @@ ${this._getJs()}
           break;
         case 'plan':
           showPlan(msg.steps);
+          break;
+        case 'budgetEvent':
+          showBudgetEvent(msg.type, msg.payload);
           break;
         case 'historyLoaded':
           resetConversation();

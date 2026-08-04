@@ -8,7 +8,7 @@ class MemoryState implements WorkspaceState {
 }
 
 function run(): StoredRun {
-	return { sessionId: 's1', runId: 'r1', cursor: 0, status: 'running', workspaceRoots: ['D:/work'], events: [] };
+	return { sessionId: 's1', runId: 'r1', cursor: 0, status: 'running', workspaceRoots: ['D:/work'], events: [], timeline: [] };
 }
 
 describe('RunStore', () => {
@@ -45,5 +45,26 @@ describe('RunStore', () => {
 		await store.save(run());
 		await store.save({ ...run(), sessionId: 's2', runId: 'r2', status: 'completed' });
 		assert.deepStrictEqual(store.listRestorable().map((item) => item.sessionId), ['s1']);
+	});
+
+	it('projects accepted budget and content-batch events into the bounded timeline', async () => {
+		const store = new RunStore(new MemoryState(), 2);
+		await store.save(run());
+		await store.append('s1', { sequence: 1, type: 'content_batch', payload: { content: 'first' } });
+		await store.append('s1', { sequence: 2, type: 'budget_update', payload: { usage: { tokens: 3 }, limits: { tokens: 10 } } });
+		await store.append('s1', { sequence: 3, type: 'budget_exhausted', payload: { dimension: 'tokens' } });
+		const saved = store.get('s1');
+		assert.deepStrictEqual(saved?.timeline.map((event) => event.sequence), [2, 3]);
+		assert.deepStrictEqual(saved?.budget, { usage: { tokens: 3 }, limits: { tokens: 10 } });
+	});
+
+	it('normalizes legacy snapshots without timeline data', async () => {
+		const state = new MemoryState();
+		await state.update('yunxiaoAgent.runStore.v1', {
+			s1: { sessionId: 's1', runId: 'r1', cursor: 0, status: 'running', workspaceRoots: [], events: [] },
+		});
+		const store = new RunStore(state);
+		assert.deepStrictEqual(store.get('s1')?.timeline, []);
+		assert.strictEqual(store.get('s1')?.budget, undefined);
 	});
 });

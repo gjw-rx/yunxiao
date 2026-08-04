@@ -7,6 +7,7 @@ import { BaseTool, type ToolExecutionResult, type ToolContext } from '../../tool
 import type { SseCallbacks } from '../../protocol/sseHandler';
 import type { ToolCall, ToolResult, ToolSchema } from '../../core/types';
 import { ProtocolError, TransportError } from '../../core/errors';
+import { RunStore, type WorkspaceState } from '../../core/runStore';
 
 // ── 可配置的假工具 ──
 class FakeTool extends BaseTool {
@@ -55,6 +56,7 @@ class FakeStreamClient implements StreamClient {
 	readonly submitCalls: { results: ToolResult[]; sessionId: string }[] = [];
 	readonly messageCallbacks: SseCallbacks[] = [];
 	readonly submitCallbacks: SseCallbacks[] = [];
+	readonly subscriptions: { runId: string; afterSequence: number }[] = [];
 	setScripts(scripts: EventScript[]): void {
 		this.scripts = scripts;
 		this.idx = 0;
@@ -69,6 +71,10 @@ class FakeStreamClient implements StreamClient {
 		this.submitCalls.push({ results, sessionId });
 		this.submitCallbacks.push(cbs);
 		this.runNext(cbs);
+		return new AbortController();
+	}
+	subscribeRun(runId: string, afterSequence: number): AbortController {
+		this.subscriptions.push({ runId, afterSequence });
 		return new AbortController();
 	}
 	private runNext(cbs: SseCallbacks): void {
@@ -104,6 +110,12 @@ function setup(
 	const events: AgentEvent[] = [];
 	eventBus.onAll((e) => events.push(e));
 	return { eventBus, client, manager, events, tool };
+}
+
+class MemoryWorkspaceState implements WorkspaceState {
+	private readonly values = new Map<string, unknown>();
+	get<T>(key: string): T | undefined { return this.values.get(key) as T | undefined; }
+	async update(key: string, value: unknown): Promise<void> { this.values.set(key, value); }
 }
 
 function waitForStreamEnd(eventBus: EventBus, timeoutMs = 1000): Promise<void> {
@@ -434,5 +446,28 @@ describe('SessionManager', () => {
 			).length,
 			1
 		);
+	});
+
+	it('replays stored timeline events without deriving a lifecycle state', async () => {
+		const { eventBus, client, events } = setup();
+		const store = new RunStore(new MemoryWorkspaceState());
+		await store.save({
+			sessionId: 's1', runId: 'r1', cursor: 2, status: 'running', workspaceRoots: [],
+			events: [
+				{ sequence: 1, type: 'content_batch', payload: { content: 'saved' } },
+				{ sequence: 2, type: 'budget_update', payload: { usage: { tokens: 2 }, limits: { tokens: 10 } } },
+			],
+			timeline: [],
+		});
+		const restored = store.get('s1');
+		assert.ok(restored);
+		const restoredManager = new SessionManager({
+			client, router: new ToolRouter(new ToolRegistry()), eventBus, getWorkspaceRoots: () => [], runStore: store,
+		});
+		restoredManager.restoreRun(restored!);
+		assert.ok(events.some((event) => event.type === 'content_batch'));
+		assert.ok(events.some((event) => event.type === 'budget_update'));
+		assert.strictEqual(events.some((event) => event.type === 'run_state_change'), false);
+		assert.deepStrictEqual(client.subscriptions, [{ runId: 'r1', afterSequence: 2 }]);
 	});
 });

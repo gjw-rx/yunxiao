@@ -14,7 +14,10 @@ export type EventType =
 	| 'stream_end'
 	| 'error'
 	| 'tool_state_change'
-	| 'run_state_change';
+	| 'run_state_change'
+	| 'content_batch'
+	| 'budget_update'
+	| 'budget_exhausted';
 
 /** 事件对象。 */
 export interface AgentEvent {
@@ -57,6 +60,9 @@ export class EventBus {
 			'error',
 			'tool_state_change',
 			'run_state_change',
+			'content_batch',
+			'budget_update',
+			'budget_exhausted',
 		];
 		const unsubs = allTypes.map((t) => this.on(t, listener));
 		return () => unsubs.forEach((u) => u());
