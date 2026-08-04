@@ -46,6 +46,25 @@ async function readErrorBody(res: Response): Promise<string> {
 	}
 }
 
+async function handleJsonSuccess(
+	res: Response,
+	callbacks: ToolResultCallbacks
+): Promise<void> {
+	try {
+		const payload = (await res.json()) as {
+			success?: boolean;
+			data?: { duplicate?: boolean };
+		};
+		if (payload.success === true && payload.data?.duplicate === true) {
+			callbacks.onDuplicateAcknowledged?.();
+			return;
+		}
+		callbacks.onError?.(new ProtocolError('tool_result 返回未知 JSON 成功响应'));
+	} catch {
+		callbacks.onError?.(new ProtocolError('tool_result JSON 响应解析失败'));
+	}
+}
+
 /** 读取 SSE 流并喂给 parser，支持取消。 */
 async function pumpSse(
 	body: ReadableStream<Uint8Array>,
@@ -134,6 +153,17 @@ async function runStreamToolResult(
 			// 5xx：服务端错误，可重试
 			if (res.status >= 500) {
 				throw new ProtocolError(`服务端错误 ${res.status}`, res.status);
+			}
+			const contentType = res.headers.get('content-type')?.toLowerCase() ?? '';
+			if (contentType.includes('application/json')) {
+				await handleJsonSuccess(res, callbacks);
+				return;
+			}
+			if (!contentType.includes('text/event-stream')) {
+				callbacks.onError?.(
+					new ProtocolError(`tool_result 返回不支持的 Content-Type: ${contentType || 'missing'}`)
+				);
+				return;
 			}
 			if (!res.body) {
 				callbacks.onError?.(new ProtocolError('tool_result 响应无 body'));

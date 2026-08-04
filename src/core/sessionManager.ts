@@ -246,6 +246,12 @@ export class SessionManager {
 					err.message
 				);
 			},
+			onDuplicateAcknowledged: () => {
+				if (!this.isCurrentRun(sessionId, state)) {
+					return;
+				}
+				this.finishRun(sessionId, state, 'disconnected');
+			},
 			onEnd: () => {
 				if (!this.isCurrentRun(sessionId, state)) {
 					return;

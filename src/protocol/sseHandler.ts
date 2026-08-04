@@ -27,6 +27,8 @@ export interface SseCallbacks {
 	onProgress?: (event: ProgressEventData) => void;
 	/** 流级错误（网络/服务端/{success:false} 信封）。 */
 	onError?: (err: Error) => void;
+	/** tool_result 已被云端接纳，但原续流已由另一请求消费。 */
+	onDuplicateAcknowledged?: () => void;
 	/** 流正常结束（reader done）。 */
 	onEnd?: () => void;
 }
