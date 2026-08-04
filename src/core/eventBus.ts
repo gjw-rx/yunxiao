@@ -13,7 +13,8 @@ export type EventType =
 	| 'progress'
 	| 'stream_end'
 	| 'error'
-	| 'tool_state_change';
+	| 'tool_state_change'
+	| 'run_state_change';
 
 /** 事件对象。 */
 export interface AgentEvent {
@@ -55,6 +56,7 @@ export class EventBus {
 			'stream_end',
 			'error',
 			'tool_state_change',
+			'run_state_change',
 		];
 		const unsubs = allTypes.map((t) => this.on(t, listener));
 		return () => unsubs.forEach((u) => u());

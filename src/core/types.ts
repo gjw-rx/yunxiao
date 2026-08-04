@@ -15,6 +15,21 @@ export type ToolCallStatus = 'success' | 'error' | 'cancelled';
 /** 工具调用生命周期状态（会话状态机用）。 */
 export type ToolLifecycleState = 'pending' | 'running' | 'success' | 'error' | 'cancelled';
 
+/** 单次本地运行生命周期状态。 */
+export type RunLifecycleState =
+	| 'running'
+	| 'completed'
+	| 'cancelled'
+	| 'failed'
+	| 'disconnected';
+
+/** 运行状态变更事件 payload。 */
+export interface RunStateChangePayload {
+	readonly generation: number;
+	readonly state: RunLifecycleState;
+	readonly error?: string;
+}
+
 /** 云端下发的工具调用请求。 */
 export interface ToolCall {
 	readonly call_id: string;
