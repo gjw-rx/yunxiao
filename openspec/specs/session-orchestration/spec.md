@@ -19,15 +19,23 @@ The session manager SHALL maintain, per `sessionId`, the active run generation, 
 - **THEN** the manager-lifetime generation check rejects the stale callback
 
 ### Requirement: Multi-round SSE continuation
-A single user message MAY trigger multiple SSE streams: when the cloud emits a `tool_call` event the current stream ends, the local tool executes, its result is posted via `/tool_result`, and the cloud responds with a new SSE stream that the session manager SHALL attach to the same session. The session manager SHALL treat both "user sends message" and "tool result posted" as entry points that start a new SSE stream for the session.
+A single user message MAY trigger multiple graph computation rounds under one stable cloud `run_id`: when the cloud persists a `tool_call` event, the Run becomes `interrupted`; after the local tool result is posted for that Run, cloud computation resumes in the background. The session manager SHALL persist and consume ordered Run events through a session-owned exclusive sequence cursor and SHALL treat both "user sends message" and "tool result posted" as commands followed by subscription, not as ownership of cloud computation. A reconnect or extension-host restoration SHALL subscribe after the stored cursor and SHALL NOT execute a restored local tool call automatically.
 
 #### Scenario: Tool call triggers continuation
-- **WHEN** the cloud stream emits a `tool_call` for `fs.read_file` and then ends
-- **THEN** the session manager executes the local tool, posts the result via `/tool_result`, and attaches the cloud's continuation stream to the same session
+- **WHEN** the cloud Run persists a `tool_call` for `fs.read_file` and becomes `interrupted`
+- **THEN** the session manager executes the local tool, posts the result for the same `run_id`, and subscribes after its last consumed sequence
 
 #### Scenario: Multiple sequential tool calls in one turn
-- **WHEN** the agent issues tool call A, then after its result another tool call B, before producing a final answer
-- **THEN** the session manager runs two continuation rounds (A then B), each as a distinct SSE stream, all under the same session
+- **WHEN** the Run issues tool call A, then after its result another tool call B, before producing a final answer
+- **THEN** both continuation commands target the same `run_id`, and the session manager advances one ordered sequence cursor across all rounds
+
+#### Scenario: Subscription disconnects between rounds
+- **WHEN** the event subscription disconnects after a tool result command has been accepted
+- **THEN** cloud computation continues independently and the session manager can reconnect after its last consumed sequence
+
+#### Scenario: Extension host restores an interrupted Run
+- **WHEN** the extension host restarts with an interrupted Run and a stored cursor
+- **THEN** the session manager subscribes after that cursor and leaves any stored local tool call pending for user-safe recovery
 
 ### Requirement: Tool call lifecycle
 The session manager SHALL track each tool call through `pending` -> `running` -> `success` | `error` states. The current state SHALL be queryable so the UI can render tool-call status. A tool call that errors SHALL still produce a `tool_result` with `status: 'error'` so the cloud can adjust its strategy.
@@ -70,25 +78,24 @@ When the user selects an Agent different from the one currently bound to the act
 - **THEN** the plugin preserves the previous active session and reports the error
 
 ### Requirement: Explicit local run terminal states
-The session manager SHALL expose exactly one terminal outcome for each current local run: `completed`, `cancelled`, `failed`, or `disconnected`. A clean final SSE end with no pending tool calls SHALL produce `completed`; an explicit user cancellation SHALL produce `cancelled`; a server, protocol, or local orchestration error SHALL produce `failed`; and an unexpected transport loss or duplicate acknowledgement without a continuation stream SHALL produce `disconnected`. The legacy `stream_end` event MAY remain for compatibility but SHALL NOT be the source used to infer the terminal outcome.
+The session manager SHALL expose exactly one terminal outcome for each current local subscription attempt: `completed`, `cancelled`, `failed`, or `disconnected`. A cloud `run_status=completed` event followed by a caught-up stream SHALL produce `completed`; an explicit user cancellation SHALL produce `cancelled`; a cloud failed status, server error, or non-recoverable protocol error SHALL produce `failed`; and an unexpected transport loss before observing a cloud terminal status SHALL produce `disconnected`. A local `disconnected` outcome SHALL NOT imply that the cloud Run stopped or failed.
 
-#### Scenario: Clean stream completes
-- **WHEN** the current SSE stream ends cleanly after producing the final response and no local tool calls remain
-- **THEN** the run emits one `completed` terminal state
+#### Scenario: Cloud Run completes
+- **WHEN** the subscriber receives the cloud Run's `completed` status event and consumes all events through that sequence
+- **THEN** the local run emits one `completed` terminal state
 
-#### Scenario: User cancels current run
-- **WHEN** the user cancels the current run
-- **THEN** the run emits one `cancelled` terminal state and SHALL NOT later emit `completed`
+#### Scenario: User cancels current subscription
+- **WHEN** the user cancels the current local run
+- **THEN** the local run emits one `cancelled` terminal state and SHALL NOT infer that cloud computation was cancelled
 
-#### Scenario: Server rejects the run
-- **WHEN** the current run receives a server error envelope or a non-recoverable protocol error
-- **THEN** the run emits one `failed` terminal state containing a user-readable reason
+#### Scenario: Cloud Run fails
+- **WHEN** the subscriber receives the cloud Run's `failed` status event
+- **THEN** the local run emits one `failed` terminal state containing a user-readable reason
 
 #### Scenario: Transport disconnects unexpectedly
-- **WHEN** the current run loses its network stream without a clean end, explicit cancellation, or server terminal error
-- **THEN** the run emits one `disconnected` terminal state and SHALL NOT claim successful completion
+- **WHEN** the current subscription loses its network stream before a cloud terminal status is observed
+- **THEN** the local run emits one `disconnected` terminal state and retains its last consumed sequence for replay
 
-#### Scenario: Duplicate result has no continuation
-- **WHEN** a tool result submission receives a valid duplicate acknowledgement instead of the original continuation stream
-- **THEN** the result is treated as accepted and the local run emits `disconnected` rather than `completed` or `failed`
-
+#### Scenario: Duplicate result has no continuation response
+- **WHEN** a tool result submission receives a valid duplicate acknowledgement rather than owning a continuation stream
+- **THEN** the session manager reconnects to the existing `run_id` after its last consumed sequence instead of claiming completion
