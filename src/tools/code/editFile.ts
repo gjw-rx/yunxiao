@@ -183,6 +183,25 @@ export class CodeEditTool extends BaseTool {
 		}
 
 		try {
+			const currentContent = await fs.readFile(resolved.fsPath, 'utf8');
+			if (currentContent !== content) {
+				await fs.rm(previewPath, { force: true, recursive: true }).catch(() => { });
+				return {
+					status: 'error',
+					error: `文件已被并发修改，未应用审批前生成的编辑: ${inputPath}`,
+					metadata: { retryable: false, duration_ms: Date.now() - startedAt },
+				};
+			}
+		} catch {
+			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => { });
+			return {
+				status: 'error',
+				error: `文件已被并发修改或删除，未应用审批前生成的编辑: ${inputPath}`,
+				metadata: { retryable: false, duration_ms: Date.now() - startedAt },
+			};
+		}
+
+		try {
 			// 原子应用：rename 预览文件到目标
 			await fs.rename(previewPath, resolved.fsPath);
 		} catch (err) {
