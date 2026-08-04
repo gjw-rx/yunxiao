@@ -126,13 +126,15 @@ describe('AIClient', () => {
 	it('streamMessage parses content and ends', async () => {
 		const contents: string[] = [];
 		let ended = false;
-		client.streamMessage('s1', 'hello', {
-			onContent: (t) => contents.push(t),
-			onEnd: () => {
-				ended = true;
-			},
+		await new Promise<void>((resolve) => {
+			client.streamMessage('s1', 'hello', {
+				onContent: (t) => contents.push(t),
+				onEnd: () => {
+					ended = true;
+					resolve();
+				},
+			});
 		});
-		await new Promise((resolve) => setTimeout(resolve, 200));
 		assert.deepStrictEqual(contents, ['hi']);
 		assert.strictEqual(ended, true);
 	});
@@ -140,33 +142,47 @@ describe('AIClient', () => {
 	it('streamMessage reports http error via onError', async () => {
 		mock.messageMode = 'httpError';
 		const errors: string[] = [];
-		client.streamMessage('s1', 'hello', { onError: (e) => errors.push(e.message) });
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await new Promise<void>((resolve) => {
+			client.streamMessage('s1', 'hello', {
+				onError: (e) => {
+					errors.push(e.message);
+					resolve();
+				},
+			});
+		});
 		assert.ok(errors.some((m) => m.includes('服务内部错误')));
 	});
 
 	it('streamMessage reports json error envelope via onError', async () => {
 		mock.messageMode = 'jsonError';
 		const errors: string[] = [];
-		client.streamMessage('s1', 'hello', { onError: (e) => errors.push(e.message) });
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await new Promise<void>((resolve) => {
+			client.streamMessage('s1', 'hello', {
+				onError: (e) => {
+					errors.push(e.message);
+					resolve();
+				},
+			});
+		});
 		assert.ok(errors.some((m) => m.includes('会话不存在')));
 	});
 
 	it('submitToolResult pumps the continuation stream', async () => {
 		const contents: string[] = [];
 		let ended = false;
-		client.submitToolResult(
-			[{ call_id: 'c1', status: 'success', result: 'x' }],
-			's1',
-			{
-				onContent: (t) => contents.push(t),
-				onEnd: () => {
-					ended = true;
-				},
-			}
-		);
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await new Promise<void>((resolve) => {
+			client.submitToolResult(
+				[{ call_id: 'c1', status: 'success', result: 'x' }],
+				's1',
+				{
+					onContent: (t) => contents.push(t),
+					onEnd: () => {
+						ended = true;
+						resolve();
+					},
+				}
+			);
+		});
 		assert.deepStrictEqual(contents, ['summary']);
 		assert.strictEqual(ended, true);
 	});
