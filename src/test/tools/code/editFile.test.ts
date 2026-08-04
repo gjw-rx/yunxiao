@@ -16,6 +16,34 @@ function mockApproval(decision: 'allow' | 'always' | 'deny'): ApprovalGateway {
 	});
 }
 
+function deferredApproval(): {
+	approval: ApprovalGateway;
+	requested: Promise<void>;
+	resolve: (decision: 'allow' | 'always' | 'deny') => void;
+} {
+	let markRequested!: () => void;
+	let resolve!: (decision: 'allow' | 'always' | 'deny') => void;
+	const requested = new Promise<void>((done) => {
+		markRequested = done;
+	});
+	const approval = new ApprovalGateway({
+		prompter: {
+			prompt: async () => {
+				markRequested();
+				return new Promise((done) => {
+					resolve = done;
+				});
+			},
+		},
+		store: { getAlwaysAllow: () => [], addAlwaysAllow: async () => {} },
+	});
+	return {
+		approval,
+		requested,
+		resolve: (decision) => resolve(decision),
+	};
+}
+
 /** 构造 mock DiffViewer（不真正打开 diff，记录调用）。 */
 function mockDiffViewer(): { viewer: DiffViewer; calls: string[] } {
 	const calls: string[] = [];
@@ -179,6 +207,67 @@ describe('CodeEditTool', () => {
 		assert.strictEqual(written, 'hello\n'); // 未变
 		const dirEntries = await fs.readdir(workspace);
 		assert.ok(!dirEntries.some((e) => e.includes('code-edit-preview')));
+	});
+
+	it('审批期间文件变化时拒绝过期 diff 并清理预览', async () => {
+		await writeFile('a.ts', 'const value = "old";\n');
+		const gate = deferredApproval();
+		const tool = new CodeEditTool({
+			approval: gate.approval,
+			diffViewer: mockDiffViewer().viewer,
+		});
+		const execution = tool.execute(
+			{ path: 'a.ts', oldString: '"old"', newString: '"agent"' },
+			await makeContext()
+		);
+		await gate.requested;
+		await writeFile('a.ts', 'const value = "user";\n');
+
+		gate.resolve('allow');
+		const result = await execution;
+
+		assert.strictEqual(result.status, 'error');
+		assert.ok(result.error?.includes('并发修改'));
+		assert.strictEqual(result.metadata?.retryable, false);
+		assert.strictEqual(
+			await fs.readFile(path.join(workspace, 'a.ts'), 'utf8'),
+			'const value = "user";\n'
+		);
+		const dirEntries = await fs.readdir(workspace);
+		assert.ok(!dirEntries.some((entry) => entry.includes('code-edit-preview')));
+	});
+
+	it('expectedVersion 不匹配时在审批前拒绝', async () => {
+		await writeFile('a.ts', 'hello\n');
+		let promptCount = 0;
+		const approval = new ApprovalGateway({
+			prompter: {
+				prompt: async () => {
+					promptCount++;
+					return 'allow';
+				},
+			},
+			store: { getAlwaysAllow: () => [], addAlwaysAllow: async () => {} },
+		});
+		const tool = new CodeEditTool({
+			approval,
+			diffViewer: mockDiffViewer().viewer,
+		});
+
+		const result = await tool.execute(
+			{
+				path: 'a.ts',
+				oldString: 'hello',
+				newString: 'world',
+				expectedVersion: 'stale-version',
+			},
+			await makeContext()
+		);
+
+		assert.strictEqual(result.status, 'error');
+		assert.strictEqual(result.metadata?.retryable, false);
+		assert.strictEqual(promptCount, 0);
+		assert.strictEqual(await fs.readFile(path.join(workspace, 'a.ts'), 'utf8'), 'hello\n');
 	});
 
 	it('diff 预览在应用前打开', async () => {
