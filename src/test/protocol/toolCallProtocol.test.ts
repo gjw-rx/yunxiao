@@ -204,14 +204,14 @@ describe('streamToolResult', () => {
 	it('reports error after exhausting retries', async () => {
 		// Arrange
 		const ff = new FakeFetch();
-		ff.enqueue(new Error('fail'), new Error('fail'), new Error('fail'));
+		ff.enqueue(new TypeError('fail'), new TypeError('fail'), new TypeError('fail'));
 		const cbs = makeCallbacks();
 		// Act
 		streamToolResult(RESULTS, 's1', { ...BASE, fetchImpl: ff.fetch, maxRetries: 3 }, cbs);
 		await waitForError(cbs);
 		// Assert
 		assert.strictEqual(cbs.errors.length, 1);
-		assert.ok(cbs.errors[0] instanceof ProtocolError);
+		assert.ok(cbs.errors[0] instanceof TransportError);
 		assert.strictEqual(ff.calls.length, 3);
 	});
 
