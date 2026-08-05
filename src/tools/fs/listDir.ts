@@ -58,7 +58,7 @@ export class ListDirTool extends BaseTool {
 	validate(args: Record<string, unknown>): void {
 		requireStringArg(args, 'path');
 		const t = args.type;
-		if (t !== undefined && t !== 'file' && t !== 'dir' && t !== 'all') {
+		if (t !== undefined && t !== null && t !== 'file' && t !== 'dir' && t !== 'all') {
 			throw new Error('参数 type 必须为 file | dir | all');
 		}
 	}

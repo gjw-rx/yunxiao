@@ -295,6 +295,33 @@ describe('CodeEditTool', () => {
 		assert.strictEqual(await fs.readFile(path.join(workspace, 'a.ts'), 'utf8'), 'hello\n');
 	});
 
+	it('expectedVersion 为 null 时按未提供版本处理', async () => {
+		// 准备
+		await writeFile('a.ts', 'hello\n');
+		const tool = new CodeEditTool({
+			approval: mockApproval('allow'),
+			diffViewer: mockDiffViewer().viewer,
+		});
+
+		// 执行
+		const result = await tool.execute(
+			{
+				path: 'a.ts',
+				oldString: 'hello',
+				newString: 'world',
+				expectedVersion: null,
+			},
+			await makeContext()
+		);
+
+		// 断言
+		assert.strictEqual(result.status, 'success');
+		assert.strictEqual(
+			await fs.readFile(path.join(workspace, 'a.ts'), 'utf8'),
+			'world\n'
+		);
+	});
+
 	it('diff 预览在应用前打开', async () => {
 		// Arrange
 		await writeFile('a.ts', 'hello\n');

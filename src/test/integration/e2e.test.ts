@@ -163,10 +163,10 @@ class MockCloud {
 		eventType: string,
 		payload: Record<string, unknown>,
 	): void {
-		this.sequence += 1;
+		// v2.1: content 事件 sequence 为 null（瞬态，不落库）；其他事件为单调递增整数
+		const sequence = eventType === 'content' ? null : ++this.sequence;
 		res.write(`data: ${JSON.stringify({
-			run_id: 'run-1',
-			sequence: this.sequence,
+			sequence,
 			event_type: eventType,
 			payload,
 		})}\n\n`);
@@ -736,17 +736,17 @@ describe('E2E: Phase 4 terminal & git tools vs mock cloud', () => {
 		}
 	});
 
-	it('terminal.exec blocks a dangerous command (cancelled, no spawn)', async function () {
+	it('terminal.exec executes a flagged command after approval', async function () {
 		this.timeout(5000);
-		// Arrange
+		// Arrange：stderr 重定向会被标记为危险模式，但命令本身只读取 Node 版本
 		const mock = new MockCloud({
 			toolCall: {
 				call_id: 'c1',
 				tool: 'terminal.exec',
-				args: { command: 'rm -rf /' },
+				args: { command: 'node -v 2>&1' },
 				site: 'local',
 			},
-			toolResultContent: 'recovered after block',
+			toolResultContent: 'done: flagged command approved',
 		});
 		await mock.start();
 
@@ -771,13 +771,14 @@ describe('E2E: Phase 4 terminal & git tools vs mock cloud', () => {
 
 		try {
 			// Act
-			manager.sendMessage('s1', 'run rm -rf');
+			manager.sendMessage('s1', 'run node -v with stderr redirect');
 			await waitForStreamEnd(eventBus);
 
-			// Assert：危险命令被拦截，回传 cancelled
+			// Assert：用户允许后执行并回传成功
 			assert.strictEqual(mock.toolResults.length, 1);
-			assert.strictEqual(mock.toolResults[0].status, 'cancelled');
-			assert.ok(mock.toolResults[0].error?.includes('危险命令已被拦截'));
+			assert.strictEqual(mock.toolResults[0].status, 'success');
+			const payload = JSON.parse(mock.toolResults[0].result!);
+			assert.strictEqual(payload.exitCode, 0);
 		} finally {
 			await mock.close();
 		}

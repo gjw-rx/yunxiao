@@ -24,10 +24,10 @@ export class SecurityAudit {
 		}
 
 		if (call.tool === 'terminal.exec' && typeof call.args.command === 'string' && DANGEROUS_COMMAND.test(call.args.command)) {
-			this.metrics.record('audit_rejected');
+			this.metrics.record('audit_allowed');
 			return {
-				allowed: false,
-				rejection: { call_id: call.call_id, status: 'cancelled', error: '危险命令已被拦截（安全审计）' },
+				allowed: true,
+				warning: '检测到危险命令，将交由用户确认是否执行',
 			};
 		}
 

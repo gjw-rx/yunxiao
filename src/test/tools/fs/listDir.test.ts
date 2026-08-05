@@ -58,6 +58,24 @@ describe('ListDirTool', () => {
 		assert.ok(entries.every((e: { type: string }) => e.type === 'dir'));
 	});
 
+	it('type 为 null 时按默认 all 处理', async () => {
+		// 准备
+		await writeFile('a.ts', 'x');
+		await fs.mkdir(path.join(workspace, 'lib'));
+
+		// 执行
+		tool.validate({ path: '.', type: null });
+		const result = await tool.execute(
+			{ path: '.', type: null },
+			await makeContext()
+		);
+
+		// 断言
+		const entries = JSON.parse(result.result as string);
+		assert.ok(entries.some((entry: { type: string }) => entry.type === 'file'));
+		assert.ok(entries.some((entry: { type: string }) => entry.type === 'dir'));
+	});
+
 	it('排除内置忽略目录（node_modules）', async () => {
 		// Arrange
 		await fs.mkdir(path.join(workspace, 'node_modules'));

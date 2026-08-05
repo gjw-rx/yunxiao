@@ -104,7 +104,11 @@ export class CodeEditTool extends BaseTool {
 			return { status: 'error', error: `文件不存在或不可读: ${inputPath}` };
 		}
 		const baseVersion = getFileVersionFromContent(content);
-		if (args.expectedVersion !== undefined && (typeof args.expectedVersion !== 'string' || baseVersion !== args.expectedVersion)) {
+		if (
+			args.expectedVersion !== undefined &&
+			args.expectedVersion !== null &&
+			(typeof args.expectedVersion !== 'string' || baseVersion !== args.expectedVersion)
+		) {
 			return { status: 'error', error: `文件已被并发修改，未应用编辑: ${inputPath}`, metadata: { retryable: false } };
 		}
 

@@ -2,7 +2,7 @@
  * terminal.exec - 受控终端执行（execute 权限，自行处理审批）。
  *
  * 流程：ShellWhitelist.classify ->
- *   dangerous -> cancelled（不弹审批不 spawn）
+ *   dangerous -> ApprovalGateway 审批 -> 允许则执行，拒绝则 cancelled
  *   whitelisted -> 直接执行
  *   unknown -> ApprovalGateway 审批 -> 允许则执行，拒绝则 cancelled
  *
@@ -55,7 +55,7 @@ export class TerminalExecTool extends BaseTool {
 	readonly schema: ToolSchema = {
 		name: 'terminal.exec',
 		description:
-			'在工作区执行 shell 命令，捕获 stdout/stderr/exitCode。危险命令（rm -rf、管道、重定向等）自动拦截；白名单命令（npm test 等）自动放行；其余需用户审批。用于运行测试/构建/lint。',
+			'在工作区执行 shell 命令，捕获 stdout/stderr/exitCode。危险命令（rm -rf、管道、重定向等）和未知命令需用户审批；白名单命令（npm test 等）自动放行。用于运行测试/构建/lint。',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -150,16 +150,15 @@ export class TerminalExecTool extends BaseTool {
 		const classifyResult = this.shellWhitelist.classify(command);
 
 		if (classifyResult.category === 'dangerous') {
-			logger.log(`# [Terminal] 危险命令拦截 - command=${command.slice(0, 100)}, reason=${classifyResult.reason}`);
-			return {
-				status: 'cancelled',
-				error: `危险命令已被拦截: ${classifyResult.reason}`,
-			};
+			logger.log(`# [Terminal] 危险命令待审批 - command=${command.slice(0, 100)}, reason=${classifyResult.reason}`);
 		}
 
-		// 3. unknown -> 审批
-		if (classifyResult.category === 'unknown') {
-			const summary = `terminal.exec 将执行：\n${command}`;
+		// 3. 危险或未知命令交由用户审批
+		if (classifyResult.category !== 'whitelisted') {
+			const risk = classifyResult.category === 'dangerous'
+				? `检测到危险模式：${classifyResult.reason}\n`
+				: '';
+			const summary = `${risk}terminal.exec 将执行：\n${command}`;
 			const decision = await this.approval.requestApproval(
 				'terminal.exec',
 				summary,

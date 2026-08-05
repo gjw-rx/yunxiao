@@ -1,8 +1,6 @@
 import * as http from 'http';
 import * as https from 'https';
 import { URL } from 'url';
-import { SseStreamParser, type SseCallbacks } from './protocol/sseHandler';
-import { streamToolResult } from './protocol/toolCallProtocol';
 import type { ToolResult, ToolSchema } from './core/types';
 
 /** 云端持久化 Run 的最小快照。 */
@@ -12,17 +10,16 @@ export interface RunInfo {
 	status: 'pending' | 'running' | 'interrupted' | 'completed' | 'failed' | 'cancelled';
 }
 
-/** 云端 Run 事件，sequence 由云端分配且仅在同一 Run 内单调递增。 */
+/** 云端 Run 事件。content 事件的 sequence 为 null（瞬态，不落库）；其他事件为单调递增整数。 */
 export interface RunEvent {
-	run_id: string;
-	sequence: number;
+	sequence: number | null;
 	type: string;
 	payload: unknown;
 }
 
+/** v2 SSE 信封结构：{sequence, event_type, payload: {type, data}}。content 的 sequence 为 null。 */
 interface RunEventEnvelope {
-	run_id?: string;
-	sequence?: number;
+	sequence?: number | null;
 	event_type?: string;
 	type?: string;
 	payload?: unknown;
@@ -58,9 +55,6 @@ interface SessionResult {
 	session_id: string;
 	agent_id: string;
 }
-
-/** 流式回调（与 sseHandler.SseCallbacks 一致，含 Phase 1 新增 onToolCall/onPlan/onProgress）。 */
-export type StreamCallbacks = SseCallbacks;
 
 // ---------- 通用 JSON 请求 ----------
 
@@ -109,7 +103,7 @@ function request<T>(baseUrl: string, path: string, method: string, body?: unknow
 // ---------- AIClient ----------
 
 export class AIClient {
-	constructor(private baseUrl: string) {}
+	constructor(private baseUrl: string) { }
 
 	listAgents(): Promise<AgentInfo[]> {
 		return request<AgentInfo[]>(this.baseUrl, '/api/agent/config', 'GET');
@@ -132,20 +126,6 @@ export class AIClient {
 		return request<MessageInfo[]>(this.baseUrl, `/api/agent/invoke/history${qs}`, 'GET');
 	}
 
-	/** 流式发消息，返回 AbortController 用于中断。事件经 SseStreamParser 解析后分发到回调。 */
-	streamMessage(sessionId: string, text: string, cbs: SseCallbacks): AbortController {
-		return this.openSseStream(
-			'/api/agent/invoke/message/stream',
-			{ session_id: sessionId, text },
-			cbs
-		);
-	}
-
-	/** 批量提交工具结果并读取续流，返回 AbortController 用于中断。 */
-	submitToolResult(results: ToolResult[], sessionId: string, cbs: SseCallbacks): AbortController {
-		return streamToolResult(results, sessionId, { baseUrl: this.baseUrl }, cbs);
-	}
-
 	/** 创建 v2 持久化 Run；调用方随后以事件订阅消费计算结果。 */
 	createRun(sessionId: string, text: string, clientRequestId: string): Promise<RunInfo> {
 		return request<RunInfo>(this.baseUrl, '/api/v2/agent/run', 'POST', {
@@ -155,13 +135,19 @@ export class AIClient {
 		});
 	}
 
-	/** 向指定 Run 提交本地工具结果，不把该请求当作计算生命周期所有者。 */
+	/** 向指定 Run 提交本地工具结果，触发续算。返回 JSON（非 SSE）。 */
 	submitRunToolResult(runId: string, results: ToolResult[]): Promise<void> {
 		return request<void>(this.baseUrl, `/api/v2/agent/run/${encodeURIComponent(runId)}/tool-result`, 'POST', { results });
 	}
 
-	/** 从排他游标订阅 v2 Run 事件，断线恢复由调用方使用同一游标重新订阅。 */
-	subscribeRun(runId: string, afterSequence: number, onEvent: (event: RunEvent) => void, onError: (error: Error) => void): AbortController {
+	/** 从排他游标订阅 v2 Run 事件。SSE 流结束时调用 onEnd，断线恢复由调用方使用同一游标重新订阅。 */
+	subscribeRun(
+		runId: string,
+		afterSequence: number,
+		onEvent: (event: RunEvent) => void,
+		onError: (error: Error) => void,
+		onEnd: () => void,
+	): AbortController {
 		const controller = new AbortController();
 		const url = `${this.baseUrl}/api/v2/agent/run/${encodeURIComponent(runId)}/events?after_sequence=${afterSequence}`;
 		fetch(url, { headers: { Accept: 'text/event-stream' }, signal: controller.signal })
@@ -178,97 +164,43 @@ export class AIClient {
 					buffer = lines.pop() ?? '';
 					for (const line of lines) {
 						if (line.startsWith('data:')) {
-							const envelope = JSON.parse(line.slice(5).trim()) as RunEventEnvelope;
-							const eventType = envelope.event_type ?? envelope.type;
-							if (typeof envelope.run_id !== 'string' || typeof envelope.sequence !== 'number' || typeof eventType !== 'string') {
-								throw new Error('Run 事件格式不合法');
-							}
-							onEvent({
-								run_id: envelope.run_id,
-								sequence: envelope.sequence,
-								type: eventType,
-								payload: envelope.payload,
-							});
+							this.dispatchSseLine(line.slice(5).trim(), onEvent, onError);
 						}
 					}
+				}
+				// flush 剩余缓冲（服务端可能未以 \n\n 结尾）
+				if (!controller.signal.aborted && buffer.trim().startsWith('data:')) {
+					this.dispatchSseLine(buffer.slice(5).trim(), onEvent, onError);
+				}
+				if (!controller.signal.aborted) {
+					onEnd();
 				}
 			})
 			.catch((error: Error) => { if (error.name !== 'AbortError') { onError(error); } });
 		return controller;
 	}
 
-	/** 通用：POST 一个 SSE 端点并读取流，分发到回调。 */
-	private openSseStream(
-		pathStr: string,
-		body: unknown,
-		cbs: SseCallbacks
-	): AbortController {
-		const controller = new AbortController();
-		const url = `${this.baseUrl}${pathStr}`;
-
-		fetch(url, {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				Accept: 'text/event-stream',
-			},
-			body: JSON.stringify(body),
-			signal: controller.signal,
-		})
-			.then(async (res) => {
-				if (!res.ok) {
-					try {
-						const parsed = (await res.json()) as ApiResponse<unknown>;
-						cbs.onError?.(new Error(parsed.error ?? `服务返回状态码 ${res.status}`));
-					} catch {
-						cbs.onError?.(new Error(`服务返回状态码 ${res.status}`));
-					}
-					return;
-				}
-
-				// Content-Type 为 application/json 表示流建立前失败（如会话不存在）
-				const ct = res.headers.get('content-type') ?? '';
-				if (ct.includes('application/json')) {
-					try {
-						const parsed = (await res.json()) as ApiResponse<unknown>;
-						cbs.onError?.(new Error(parsed.error ?? '请求失败'));
-					} catch {
-						cbs.onError?.(new Error('响应解析失败'));
-					}
-					return;
-				}
-
-				if (!res.body) {
-					cbs.onError?.(new Error('不支持 ReadableStream'));
-					return;
-				}
-
-				const reader = res.body.getReader();
-				const decoder = new TextDecoder('utf-8');
-				const parser = new SseStreamParser(cbs);
-
-				while (true) {
-					const { done, value } = await reader.read();
-					if (done) {
-						break;
-					}
-					parser.feed(decoder.decode(value, { stream: true }));
-					if (controller.signal.aborted) {
-						break;
-					}
-				}
-				if (!controller.signal.aborted) {
-					parser.flush();
-					cbs.onEnd?.();
-				}
-			})
-			.catch((err: Error) => {
-				// AbortError 静默处理（用户主动中断）
-				if (err.name !== 'AbortError') {
-					cbs.onError?.(err);
-				}
+	/** 解析单条 SSE data 行并分发。content 事件的 sequence 为 null（瞬态），其他事件为整数。 */
+	private dispatchSseLine(
+		jsonStr: string,
+		onEvent: (event: RunEvent) => void,
+		onError: (error: Error) => void,
+	): void {
+		if (!jsonStr) { return; }
+		try {
+			const envelope = JSON.parse(jsonStr) as RunEventEnvelope;
+			const eventType = envelope.event_type ?? envelope.type;
+			// sequence 为 null（content 瞬态事件）或 number（持久事件）；event_type 必须为 string
+			if (typeof eventType !== 'string' || (envelope.sequence !== null && typeof envelope.sequence !== 'number')) {
+				throw new Error('Run 事件格式不合法');
+			}
+			onEvent({
+				sequence: envelope.sequence ?? null,
+				type: eventType,
+				payload: envelope.payload,
 			});
-
-		return controller;
+		} catch (err) {
+			onError(err instanceof Error ? err : new Error(String(err)));
+		}
 	}
 }

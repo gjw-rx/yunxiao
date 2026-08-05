@@ -146,11 +146,43 @@ describe('TerminalExecTool', () => {
 		assert.ok(payload.stderr.includes('AssertionError'));
 	});
 
-	it('危险命令拦截不 spawn', async () => {
-		// Arrange
+	it('危险命令经用户允许后执行', async () => {
+		// 准备
+		let approvalCalled = false;
+		let spawnCalled = false;
+		const approval = makeMockApproval('allow');
+		approval.requestApproval = async (): Promise<ApprovalDecision> => {
+			approvalCalled = true;
+			return 'allow';
+		};
+		const tool = new TerminalExecTool({
+			approval,
+			shellWhitelist: new ShellWhitelist(),
+		});
+		tool._setSpawnFn(() => {
+			spawnCalled = true;
+			const proc = new MockChildProcess({});
+			proc.start();
+			return proc as unknown as ChildProcess;
+		});
+
+		// 执行
+		const result = await tool.execute(
+			{ command: 'openspec list --json 2>&1' },
+			await makeContext()
+		);
+
+		// 断言
+		assert.strictEqual(result.status, 'success');
+		assert.strictEqual(approvalCalled, true);
+		assert.strictEqual(spawnCalled, true);
+	});
+
+	it('危险命令经用户拒绝后不执行', async () => {
+		// 准备
 		let spawnCalled = false;
 		const tool = new TerminalExecTool({
-			approval: makeMockApproval('allow'),
+			approval: makeMockApproval('deny'),
 			shellWhitelist: new ShellWhitelist(),
 		});
 		tool._setSpawnFn(() => {
@@ -158,12 +190,12 @@ describe('TerminalExecTool', () => {
 			return new MockChildProcess({}) as unknown as ChildProcess;
 		});
 
-		// Act
+		// 执行
 		const result = await tool.execute({ command: 'rm -rf /' }, await makeContext());
 
-		// Assert
+		// 断言
 		assert.strictEqual(result.status, 'cancelled');
-		assert.ok(result.error?.includes('危险命令已被拦截'));
+		assert.strictEqual(result.error, '用户拒绝执行');
 		assert.strictEqual(spawnCalled, false);
 	});
 

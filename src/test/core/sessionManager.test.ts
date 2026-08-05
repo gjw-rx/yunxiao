@@ -38,61 +38,54 @@ class FakeTool extends BaseTool {
 	}
 }
 
-// ── 脚本化假流客户端 ──
+// ── 脚本化假流客户端（内部使用 v1 风格 SseCallbacks 驱动，转换为 v2 事件）──
 type EventScript = (cbs: SseCallbacks) => void;
 const emitToolCall = (call: ToolCall): EventScript => (cbs) => cbs.onToolCall?.(call);
 const emitContent = (text: string): EventScript => (cbs) => cbs.onContent?.(text);
 const endStream = (): EventScript => (cbs) => cbs.onEnd?.();
-const acknowledgeDuplicate = (): EventScript => (cbs) => {
-	const callbacks = cbs as SseCallbacks & { onDuplicateAcknowledged?: () => void };
-	callbacks.onDuplicateAcknowledged?.();
-};
 const seq = (...scripts: EventScript[]): EventScript => (cbs) => scripts.forEach((s) => s(cbs));
+
+/** v2 subscribeRun 的回调集合，用于测试中模拟旧轮次事件。 */
+interface V2Callbacks {
+	onEvent: (event: { sequence: number | null; type: string; payload: unknown }) => void;
+	onError: (error: Error) => void;
+	onEnd: () => void;
+}
 
 class FakeStreamClient implements StreamClient {
 	private scripts: EventScript[] = [];
 	private idx = 0;
-	readonly messageCalls: { sessionId: string; text: string }[] = [];
 	readonly submitCalls: { results: ToolResult[]; sessionId: string }[] = [];
-	readonly messageCallbacks: SseCallbacks[] = [];
-	readonly submitCallbacks: SseCallbacks[] = [];
 	readonly subscriptions: { runId: string; afterSequence: number }[] = [];
 	readonly createRunCalls: { sessionId: string; text: string; clientRequestId: string }[] = [];
 	readonly submitRunResultCalls: { runId: string; results: ToolResult[] }[] = [];
-	private readonly runEventCallbacks: ((event: { sequence: number; type: string; payload: unknown }) => void)[] = [];
+	private readonly callbackQueue: V2Callbacks[] = [];
+	private nextSequence = 0;
+
 	setScripts(scripts: EventScript[]): void {
 		this.scripts = scripts;
 		this.idx = 0;
 	}
-	streamMessage(sessionId: string, text: string, cbs: SseCallbacks): AbortController {
-		this.messageCalls.push({ sessionId, text });
-		this.messageCallbacks.push(cbs);
-		this.runNext(cbs);
-		return new AbortController();
-	}
-	submitToolResult(results: ToolResult[], sessionId: string, cbs: SseCallbacks): AbortController {
-		this.submitCalls.push({ results, sessionId });
-		this.submitCallbacks.push(cbs);
-		this.runNext(cbs);
-		return new AbortController();
-	}
+
 	createRun(sessionId: string, text: string, clientRequestId: string): Promise<{ run_id: string; session_id: string; status: 'pending' }> {
 		this.createRunCalls.push({ sessionId, text, clientRequestId });
 		return Promise.resolve({ run_id: 'run-1', session_id: sessionId, status: 'pending' });
 	}
+
 	submitRunToolResult(runId: string, results: ToolResult[]): Promise<void> {
 		this.submitRunResultCalls.push({ runId, results });
 		this.submitCalls.push({ results, sessionId: 'run-session' });
 		return Promise.resolve();
 	}
+
 	subscribeRun(
 		runId: string,
 		afterSequence: number,
-		onEvent: (event: { sequence: number; type: string; payload: unknown }) => void,
+		onEvent: (event: { sequence: number | null; type: string; payload: unknown }) => void,
 		onError: (error: Error) => void,
+		onEnd: () => void,
 	): AbortController {
 		this.subscriptions.push({ runId, afterSequence });
-		this.runEventCallbacks.push(onEvent);
 		let interrupted = false;
 		const callbacks: SseCallbacks = {
 			onContent: (content) => onEvent(this.nextRunEvent('content', { type: 'content', data: content })),
@@ -101,26 +94,38 @@ class FakeStreamClient implements StreamClient {
 				onEvent(this.nextRunEvent('tool_call', { type: 'tool_call', data: [call] }));
 			},
 			onError,
-			onEnd: () => onEvent(this.nextRunEvent('run_status', {
-				type: 'run_status',
-				data: { status: interrupted ? 'interrupted' : 'completed' },
-			})),
+			onEnd: () => {
+				onEvent(this.nextRunEvent('run_status', {
+					type: 'run_status',
+					data: { status: interrupted ? 'interrupted' : 'completed' },
+				}));
+				onEnd();
+			},
 		};
-		(callbacks as SseCallbacks & { onDuplicateAcknowledged?: () => void }).onDuplicateAcknowledged = () => {
-			onError(new TransportError('duplicate acknowledgement'));
-		};
-		this.messageCallbacks.push(callbacks);
+		this.callbackQueue.push({ onEvent, onError, onEnd });
 		this.runNext(callbacks);
 		return new AbortController();
 	}
-	emitRunEvent(event: { sequence: number; type: string; payload: unknown }): void {
-		this.runEventCallbacks.at(-1)?.(event);
+
+	/** 直接向最近一次订阅推送事件（用于测试中模拟额外事件）。 */
+	emitRunEvent(event: { sequence: number | null; type: string; payload: unknown }): void {
+		this.callbackQueue.at(-1)?.onEvent(event);
 	}
-	private nextSequence = 0;
-	private nextRunEvent(type: string, payload: unknown): { sequence: number; type: string; payload: unknown } {
+
+	/** 取得某次订阅的回调集合（用于测试旧轮次事件被忽略）。 */
+	getV2Callbacks(index: number): V2Callbacks | undefined {
+		return this.callbackQueue[index];
+	}
+
+	private nextRunEvent(type: string, payload: unknown): { sequence: number | null; type: string; payload: unknown } {
+		// v2.1: content 事件 sequence 为 null（瞬态，不落库）；其他事件为单调递增整数
+		if (type === 'content') {
+			return { sequence: null, type, payload };
+		}
 		this.nextSequence += 1;
 		return { sequence: this.nextSequence, type, payload };
 	}
+
 	private runNext(cbs: SseCallbacks): void {
 		const script = this.scripts[this.idx++];
 		queueMicrotask(() => {
@@ -135,7 +140,8 @@ class FakeStreamClient implements StreamClient {
 
 function setup(
 	behavior: 'success' | 'error' | 'slow' | 'slow_warn' = 'success',
-	toolTimeoutMs = 1000
+	toolTimeoutMs = 1000,
+	runStore?: RunStore,
 ) {
 	const eventBus = new EventBus();
 	const registry = new ToolRegistry();
@@ -150,6 +156,7 @@ function setup(
 		toolTimeoutMs,
 		getWorkspaceRoots: () => [],
 		getMaxFileSize: () => undefined,
+		runStore,
 	});
 	const events: AgentEvent[] = [];
 	eventBus.onAll((e) => events.push(e));
@@ -160,6 +167,39 @@ class MemoryWorkspaceState implements WorkspaceState {
 	private readonly values = new Map<string, unknown>();
 	get<T>(key: string): T | undefined { return this.values.get(key) as T | undefined; }
 	async update(key: string, value: unknown): Promise<void> { this.values.set(key, value); }
+}
+
+class DelayedWorkspaceState implements WorkspaceState {
+	private readonly values = new Map<string, unknown>();
+	private blocked = false;
+	private releaseBlockedUpdate?: () => void;
+	private blockedUpdate?: Promise<void>;
+
+	get<T>(key: string): T | undefined { return this.values.get(key) as T | undefined; }
+
+	async update(key: string, value: unknown): Promise<void> {
+		this.values.set(key, value);
+		if (this.blockedUpdate) {
+			await this.blockedUpdate;
+		}
+	}
+
+	blockUpdates(): void {
+		if (this.blocked) {
+			return;
+		}
+		this.blocked = true;
+		this.blockedUpdate = new Promise((resolve) => {
+			this.releaseBlockedUpdate = resolve;
+		});
+	}
+
+	releaseUpdates(): void {
+		this.releaseBlockedUpdate?.();
+		this.releaseBlockedUpdate = undefined;
+		this.blockedUpdate = undefined;
+		this.blocked = false;
+	}
 }
 
 function waitForStreamEnd(eventBus: EventBus, timeoutMs = 1000): Promise<void> {
@@ -216,36 +256,80 @@ describe('SessionManager', () => {
 
 		manager.sendMessage('s1', 'hello');
 		await flushMicrotasks();
-		client.emitRunEvent({ sequence: 1, type: 'content', payload: { type: 'content', data: 'hello' } });
+		client.emitRunEvent({ sequence: null, type: 'content', payload: { type: 'content', data: 'hello' } });
+		await flushMicrotasks();
 
 		assert.strictEqual(client.createRunCalls.length, 1);
-		assert.strictEqual(client.messageCalls.length, 0);
 		assert.ok(events.some((event) => event.type === 'content' && event.payload === 'hello'));
 	});
 
+	it('renders content defensively when the server sends sequence zero', async () => {
+		const { client, manager, events } = setup();
+		client.setScripts([() => undefined]);
+		manager.sendMessage('s1', 'hello');
+		await flushMicrotasks();
+
+		const callbacks = client.getV2Callbacks(0)!;
+		callbacks.onEvent({
+			sequence: 1,
+			type: 'run_status',
+			payload: { type: 'run_status', data: { status: 'running' } },
+		});
+		callbacks.onEvent({
+			sequence: 0,
+			type: 'content',
+			payload: { type: 'content', data: '兼容回复' },
+		});
+		await flushMicrotasks();
+
+		assert.ok(events.some((event) => event.type === 'content' && event.payload === '兼容回复'));
+	});
+
 	it('completes a pure-chat turn with no tool calls', async () => {
-		// Arrange
 		const { eventBus, client, manager, events } = setup();
 		client.setScripts([seq(emitContent('hi'), endStream())]);
-		// Act
 		manager.sendMessage('s1', 'hello');
 		await waitForStreamEnd(eventBus);
-		// Assert
 		assert.ok(events.some((e) => e.type === 'content' && e.payload === 'hi'));
 		assert.strictEqual(client.submitCalls.length, 0);
 	});
 
+	it('accepts archived content after completed until the SSE stream ends', async () => {
+		const { eventBus, client, manager, events } = setup();
+		client.setScripts([() => undefined]);
+		manager.sendMessage('s1', 'hello');
+		await flushMicrotasks();
+
+		const callbacks = client.getV2Callbacks(0)!;
+		callbacks.onEvent({
+			sequence: 1,
+			type: 'run_status',
+			payload: { type: 'run_status', data: { status: 'completed' } },
+		});
+		callbacks.onEvent({
+			sequence: null,
+			type: 'content',
+			payload: { type: 'content', data: '完整回复' },
+		});
+		await flushMicrotasks();
+
+		assert.ok(events.some((event) => event.type === 'content' && event.payload === '完整回复'));
+		assert.ok(!events.some((event) => event.type === 'stream_end'));
+
+		const endPromise = waitForStreamEnd(eventBus);
+		callbacks.onEnd();
+		await endPromise;
+		assert.deepStrictEqual(terminalStates(events), ['completed']);
+	});
+
 	it('runs a single tool_call round: execute -> submit -> continuation content', async () => {
-		// Arrange
 		const { eventBus, client, manager, events } = setup();
 		client.setScripts([
 			seq(emitToolCall(call('c1')), endStream()),
 			seq(emitContent('summary'), endStream()),
 		]);
-		// Act
 		manager.sendMessage('s1', 'read a.ts');
 		await waitForStreamEnd(eventBus);
-		// Assert
 		const states = events
 			.filter((e) => e.type === 'tool_state_change')
 			.map((e) => (e.payload as { state: string }).state);
@@ -257,34 +341,61 @@ describe('SessionManager', () => {
 		assert.ok(events.some((e) => e.type === 'tool_result'));
 	});
 
+	it('waits for persisted tool_call events before handling SSE end', async () => {
+		const workspaceState = new DelayedWorkspaceState();
+		const runStore = new RunStore(workspaceState);
+		const { eventBus, client, manager, events } = setup('success', 1000, runStore);
+		client.setScripts([
+			() => undefined,
+			seq(emitContent('summary'), endStream()),
+		]);
+		manager.sendMessage('s1', 'read a.ts');
+		await flushMicrotasks();
+
+		workspaceState.blockUpdates();
+		const callbacks = client.getV2Callbacks(0)!;
+		const endPromise = waitForStreamEnd(eventBus);
+		callbacks.onEvent({
+			sequence: 1,
+			type: 'tool_call',
+			payload: { type: 'tool_call', data: [call('c1')] },
+		});
+		callbacks.onEvent({
+			sequence: 2,
+			type: 'run_status',
+			payload: { type: 'run_status', data: { status: 'interrupted' } },
+		});
+		callbacks.onEnd();
+		workspaceState.releaseUpdates();
+
+		await endPromise;
+		assert.strictEqual(client.submitCalls.length, 1);
+		assert.strictEqual(client.submitCalls[0].results[0].call_id, 'c1');
+		assert.ok(events.some((event) => event.type === 'content' && event.payload === 'summary'));
+	});
+
 	it('runs multiple sequential tool_call rounds', async () => {
-		// Arrange
 		const { eventBus, client, manager } = setup();
 		client.setScripts([
 			seq(emitToolCall(call('c1')), endStream()),
 			seq(emitToolCall(call('c2')), endStream()),
 			seq(emitContent('done'), endStream()),
 		]);
-		// Act
 		manager.sendMessage('s1', 'read two files');
 		await waitForStreamEnd(eventBus);
-		// Assert
 		assert.strictEqual(client.submitCalls.length, 2);
 		assert.strictEqual(client.submitCalls[0].results[0].call_id, 'c1');
 		assert.strictEqual(client.submitCalls[1].results[0].call_id, 'c2');
 	});
 
 	it('runs a batch tool_call round: parallel execute -> batch submit', async () => {
-		// Arrange
 		const { eventBus, client, manager } = setup();
 		client.setScripts([
 			seq(emitToolCall(call('c1')), emitToolCall(call('c2')), endStream()),
 			seq(emitContent('done'), endStream()),
 		]);
-		// Act
 		manager.sendMessage('s1', 'read two files at once');
 		await waitForStreamEnd(eventBus);
-		// Assert
 		assert.strictEqual(client.submitCalls.length, 1);
 		assert.strictEqual(client.submitCalls[0].results.length, 2);
 		const callIds = client.submitCalls[0].results.map((r) => r.call_id).sort();
@@ -294,48 +405,39 @@ describe('SessionManager', () => {
 	});
 
 	it('posts an error result when the tool throws, then continues', async () => {
-		// Arrange
 		const { eventBus, client, manager, events } = setup('error');
 		client.setScripts([
 			seq(emitToolCall(call('c1')), endStream()),
 			seq(emitContent('recovered'), endStream()),
 		]);
-		// Act
 		manager.sendMessage('s1', 'read a.ts');
 		await waitForStreamEnd(eventBus);
-		// Assert
 		assert.strictEqual(client.submitCalls.length, 1);
 		assert.strictEqual(client.submitCalls[0].results[0].status, 'error');
 		assert.ok(events.some((e) => e.type === 'content' && e.payload === 'recovered'));
 	});
 
 	it('cancels a pending tool_call: posts cancelled result and ends stream', async () => {
-		// Arrange
 		const { eventBus, client, manager } = setup();
-		client.setScripts([emitToolCall(call('c1'))]); // 无 end：流保持开启
-		// Act
+		client.setScripts([emitToolCall(call('c1'))]);
 		manager.sendMessage('s1', 'read a.ts');
 		await waitForToolState(eventBus, 'pending');
 		const endPromise = waitForStreamEnd(eventBus);
 		manager.cancel('s1');
 		await endPromise;
-		// Assert
 		assert.strictEqual(client.submitCalls.length, 1);
 		assert.strictEqual(client.submitCalls[0].results[0].status, 'cancelled');
 		assert.strictEqual(client.submitCalls[0].results[0].call_id, 'c1');
 	});
 
 	it('cancels multiple pending tool_calls: posts batch cancelled results', async () => {
-		// Arrange
 		const { eventBus, client, manager } = setup();
-		client.setScripts([seq(emitToolCall(call('c1')), emitToolCall(call('c2')))]); // 无 end
-		// Act
+		client.setScripts([seq(emitToolCall(call('c1')), emitToolCall(call('c2')))]);
 		manager.sendMessage('s1', 'read two files');
 		await waitForToolState(eventBus, 'pending');
 		const endPromise = waitForStreamEnd(eventBus);
 		manager.cancel('s1');
 		await endPromise;
-		// Assert
 		assert.strictEqual(client.submitCalls.length, 1);
 		assert.strictEqual(client.submitCalls[0].results.length, 2);
 		const statuses = client.submitCalls[0].results.map((r) => r.status);
@@ -376,13 +478,15 @@ describe('SessionManager', () => {
 		]);
 		manager.sendMessage('s1', 'old');
 		await flushMicrotasks();
-		const staleCallbacks = client.messageCallbacks[0];
+		const staleCbs = client.getV2Callbacks(0)!;
 
 		manager.sendMessage('s1', 'new');
 		await waitForStreamEnd(eventBus);
-		staleCallbacks.onContent?.('stale');
-		staleCallbacks.onToolCall?.(call('stale-call'));
-		staleCallbacks.onEnd?.();
+
+		// 模拟旧轮次的事件回调（content 为瞬态事件，sequence 为 null）
+		staleCbs.onEvent({ sequence: null, type: 'content', payload: { type: 'content', data: 'stale' } });
+		staleCbs.onEvent({ sequence: 100, type: 'tool_call', payload: { type: 'tool_call', data: [call('stale-call')] } });
+		staleCbs.onEnd();
 		await flushMicrotasks();
 
 		assert.ok(events.some((event) => event.type === 'content' && event.payload === 'current'));
@@ -400,14 +504,15 @@ describe('SessionManager', () => {
 		client.setScripts([() => undefined]);
 		manager.sendMessage('s1', 'old');
 		await flushMicrotasks();
-		const staleCallbacks = client.messageCallbacks[0];
+		const staleCbs = client.getV2Callbacks(0)!;
 
 		manager.reset('s1');
 		client.setScripts([seq(emitContent('current'), endStream())]);
 		manager.sendMessage('s1', 'new');
 		await waitForStreamEnd(eventBus);
-		staleCallbacks.onContent?.('stale');
-		staleCallbacks.onEnd?.();
+
+		staleCbs.onEvent({ sequence: null, type: 'content', payload: { type: 'content', data: 'stale' } });
+		staleCbs.onEnd();
 		await flushMicrotasks();
 
 		assert.ok(!events.some((event) => event.type === 'content' && event.payload === 'stale'));
@@ -455,11 +560,11 @@ describe('SessionManager', () => {
 		client.setScripts([() => undefined]);
 		manager.sendMessage('s1', 'hello');
 		await flushMicrotasks();
-		const callbacks = client.messageCallbacks[0];
+		const staleCbs = client.getV2Callbacks(0)!;
 		const endPromise = waitForStreamEnd(eventBus);
 		manager.cancel('s1');
 		await endPromise;
-		callbacks.onEnd?.();
+		staleCbs.onEnd();
 		await flushMicrotasks();
 
 		assert.deepStrictEqual(terminalStates(events), ['cancelled']);
@@ -481,28 +586,6 @@ describe('SessionManager', () => {
 		await waitForStreamEnd(eventBus);
 
 		assert.deepStrictEqual(terminalStates(events), ['disconnected']);
-	});
-
-	it('marks a duplicate tool-result acknowledgement disconnected without re-executing', async () => {
-		const { client, manager, events } = setup();
-		client.setScripts([
-			seq(emitToolCall(call('c1')), endStream()),
-			acknowledgeDuplicate(),
-		]);
-
-		manager.sendMessage('s1', 'read a.ts');
-		await new Promise((resolve) => setTimeout(resolve, 25));
-
-		assert.strictEqual(client.submitCalls.length, 1);
-		assert.deepStrictEqual(terminalStates(events), ['disconnected']);
-		assert.strictEqual(
-			events.filter((event) =>
-				event.type === 'tool_state_change'
-				&& (event.payload as { call_id?: string; state?: string }).call_id === 'c1'
-				&& (event.payload as { state?: string }).state === 'running'
-			).length,
-			1
-		);
 	});
 
 	it('replays stored timeline events without deriving a lifecycle state', async () => {

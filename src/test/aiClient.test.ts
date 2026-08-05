@@ -3,15 +3,14 @@ import * as http from 'http';
 import { AIClient } from '../aiClient';
 import type { ToolSchema } from '../core/types';
 
-/** Mock 服务端：覆盖 config/session/history/message-stream/tool_result 路由。 */
+/** Mock 服务端：覆盖 config/session/history/run/tool-result/events 路由。 */
 class MockServer {
 	private server!: http.Server;
 	port = 0;
 	readonly sessionBodies: Record<string, unknown>[] = [];
 	readonly runBodies: Record<string, unknown>[] = [];
+	readonly toolResultBodies: Record<string, unknown>[] = [];
 	lastRunEventsUrl?: string;
-	/** /message/stream 行为：'sse' 正常流 | 'httpError' 返回错误状态 | 'jsonError' 返回 JSON 错误信封。 */
-	messageMode: 'sse' | 'httpError' | 'jsonError' = 'sse';
 
 	start(): Promise<void> {
 		return new Promise((resolve) => {
@@ -50,28 +49,6 @@ class MockServer {
 				res.end(JSON.stringify({ success: true, data: [] }));
 				return;
 			}
-			if (req.url === '/api/agent/invoke/message/stream' && req.method === 'POST') {
-				if (this.messageMode === 'httpError') {
-					res.writeHead(500, { 'Content-Type': 'application/json' });
-					res.end(JSON.stringify({ success: false, error: '服务内部错误' }));
-					return;
-				}
-				if (this.messageMode === 'jsonError') {
-					res.writeHead(200, { 'Content-Type': 'application/json' });
-					res.end(JSON.stringify({ success: false, error: '会话不存在' }));
-					return;
-				}
-				res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-				res.write('data: {"type":"content","data":"hi"}\n\n');
-				res.end();
-				return;
-			}
-			if (req.url === '/api/agent/invoke/tool_result' && req.method === 'POST') {
-				res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-				res.write('data: {"type":"content","data":"summary"}\n\n');
-				res.end();
-				return;
-			}
 			if (req.url === '/api/v2/agent/run' && req.method === 'POST') {
 				this.runBodies.push(parsed);
 				res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -79,14 +56,17 @@ class MockServer {
 				return;
 			}
 			if (req.url === '/api/v2/agent/run/r1/tool-result' && req.method === 'POST') {
+				this.toolResultBodies.push(parsed);
 				res.writeHead(200, { 'Content-Type': 'application/json' });
-				res.end(JSON.stringify({ success: true, data: null }));
+				res.end(JSON.stringify({ success: true, data: { run_id: 'r1', status: 'running' } }));
 				return;
 			}
 			if (req.url?.startsWith('/api/v2/agent/run/r1/events') && req.method === 'GET') {
 				this.lastRunEventsUrl = req.url;
 				res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-				res.end('data: {"run_id":"r1","sequence":3,"type":"content","payload":"hi"}\n');
+				// v2.1 信封格式：content 事件 sequence 为 null（瞬态，不落库）
+				res.write('data: {"sequence":null,"event_type":"content","payload":{"type":"content","data":"hi"}}\n\n');
+				res.end();
 				return;
 			}
 			res.writeHead(404);
@@ -142,81 +122,40 @@ describe('AIClient', () => {
 		assert.deepStrictEqual(history, []);
 	});
 
-	it('streamMessage parses content and ends', async () => {
-		const contents: string[] = [];
-		let ended = false;
-		await new Promise<void>((resolve) => {
-			client.streamMessage('s1', 'hello', {
-				onContent: (t) => contents.push(t),
-				onEnd: () => {
-					ended = true;
-					resolve();
-				},
-			});
-		});
-		assert.deepStrictEqual(contents, ['hi']);
-		assert.strictEqual(ended, true);
-	});
-
-	it('streamMessage reports http error via onError', async () => {
-		mock.messageMode = 'httpError';
-		const errors: string[] = [];
-		await new Promise<void>((resolve) => {
-			client.streamMessage('s1', 'hello', {
-				onError: (e) => {
-					errors.push(e.message);
-					resolve();
-				},
-			});
-		});
-		assert.ok(errors.some((m) => m.includes('服务内部错误')));
-	});
-
-	it('streamMessage reports json error envelope via onError', async () => {
-		mock.messageMode = 'jsonError';
-		const errors: string[] = [];
-		await new Promise<void>((resolve) => {
-			client.streamMessage('s1', 'hello', {
-				onError: (e) => {
-					errors.push(e.message);
-					resolve();
-				},
-			});
-		});
-		assert.ok(errors.some((m) => m.includes('会话不存在')));
-	});
-
-	it('submitToolResult pumps the continuation stream', async () => {
-		const contents: string[] = [];
-		let ended = false;
-		await new Promise<void>((resolve) => {
-			client.submitToolResult(
-				[{ call_id: 'c1', status: 'success', result: 'x' }],
-				's1',
-				{
-					onContent: (t) => contents.push(t),
-					onEnd: () => {
-						ended = true;
-						resolve();
-					},
-				}
-			);
-		});
-		assert.deepStrictEqual(contents, ['summary']);
-		assert.strictEqual(ended, true);
-	});
-
 	it('creates a v2 Run with an idempotency key', async () => {
 		const run = await client.createRun('s1', 'hello', 'request-1');
 		assert.strictEqual(run.run_id, 'r1');
 		assert.deepStrictEqual(mock.runBodies[0], { session_id: 's1', text: 'hello', client_request_id: 'request-1' });
 	});
 
-	it('subscribes to a Run after the supplied exclusive cursor', async () => {
-		const event = await new Promise<{ sequence: number }>((resolve, reject) => {
-			client.subscribeRun('r1', 2, resolve, reject);
+	it('submits tool results and receives JSON response', async () => {
+		await client.submitRunToolResult('r1', [{ call_id: 'c1', status: 'success', result: 'x' }]);
+		assert.strictEqual(mock.toolResultBodies.length, 1);
+		assert.deepStrictEqual(mock.toolResultBodies[0].results, [{ call_id: 'c1', status: 'success', result: 'x' }]);
+	});
+
+	it('subscribes to a Run after the supplied exclusive cursor and parses v2 envelope', async () => {
+		const event = await new Promise<{ sequence: number | null; type: string; payload: unknown }>((resolve, reject) => {
+			client.subscribeRun('r1', 2, resolve, reject, () => { });
 		});
-		assert.strictEqual(event.sequence, 3);
+		// v2.1: content 事件 sequence 为 null
+		assert.strictEqual(event.sequence, null);
+		assert.strictEqual(event.type, 'content');
 		assert.strictEqual(mock.lastRunEventsUrl, '/api/v2/agent/run/r1/events?after_sequence=2');
+		// 验证 payload 是 {type, data} 结构
+		const payload = event.payload as { type: string; data: string };
+		assert.strictEqual(payload.type, 'content');
+		assert.strictEqual(payload.data, 'hi');
+	});
+
+	it('calls onEnd when the SSE stream finishes', async () => {
+		let ended = false;
+		await new Promise<void>((resolve) => {
+			client.subscribeRun('r1', 2, () => { }, () => { }, () => {
+				ended = true;
+				resolve();
+			});
+		});
+		assert.strictEqual(ended, true);
 	});
 });

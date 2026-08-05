@@ -21,11 +21,11 @@ describe('SecurityAudit', () => {
 		assert.strictEqual(result.rejection?.status, 'error');
 	});
 
-	it('拦截危险终端命令', () => {
+	it('危险终端命令交由工具审批', () => {
 		const call: ToolCall = { call_id: 'c2', tool: 'terminal.exec', args: { command: 'npm test; rm -rf /' }, site: 'local' };
 		const result = new SecurityAudit().audit(call, new ReadTool(), CTX);
-		assert.strictEqual(result.allowed, false);
-		assert.strictEqual(result.rejection?.status, 'cancelled');
+		assert.strictEqual(result.allowed, true);
+		assert.ok(result.warning?.includes('用户确认'));
 	});
 
 	it('敏感路径仅警告，由工具结果治理负责脱敏', () => {

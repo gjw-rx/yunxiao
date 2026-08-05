@@ -1,14 +1,16 @@
 /**
- * 会话状态机 - 协调一次用户输入触发的多轮 SSE 流（每轮可能含一个本地工具调用）。
+ * 会话状态机 - 基于 v2 Run API 的计算与订阅分离架构。
  *
  * 流程：
- *   用户消息 -> streamMessage（SSE 流 A）
- *     流 A 收集 tool_call，结束后执行工具 -> submitToolResult（SSE 续流 B）
- *       流 B 可能再次出现 tool_call -> 续流 C ...
- *       流 B 以 content 结束且无 tool_call -> 轮次完成
+ *   用户消息 -> createRun（POST，返回 run_id）
+ *     subscribeRun（GET SSE）消费事件流：
+ *       content/thought/tool_start/tool_end -> 转发 UI 展示
+ *       run_status(interrupted) -> 标记中断，等待 tool_call 事件后 SSE 结束
+ *       tool_call -> 收集本地工具调用
+ *     SSE 结束（onEnd）-> 执行 pending 工具 -> submitRunToolResult -> 重新 subscribeRun 续流
+ *     run_status(completed/failed/cancelled) -> 终态，轮次完成
  *
- * Phase 3：每轮 SSE 流可含多个 tool_call（data 为数组），并行执行后批量回传结果。
- * 取消：abort 当前流；为 pending 工具批量发 cancelled 结果（回调置空，忽略续流）。
+ * 取消：abort 当前流；为 pending 工具批量发 cancelled 结果。
  * 超时：工具执行超过 toolTimeoutMs 则发 error 结果。
  */
 import type {
@@ -20,14 +22,13 @@ import type {
 } from './types';
 import type { ToolRouter } from './toolRouter';
 import type { EventBus, AgentEvent } from './eventBus';
-import type { SseCallbacks } from '../protocol/sseHandler';
 import type { ToolContext } from '../tools/baseTool';
 import { ToolTimeoutError, TransportError } from './errors';
 import * as logger from '../logger';
 import { ReliabilityMetrics } from './reliabilityMetrics';
 import { RunStore, type StoredRun } from './runStore';
 
-/** 会话管理器驱动的流客户端（由 AIClient 实现）。 */
+/** 会话管理器驱动的 v2 Run 客户端（由 AIClient 实现）。 */
 export interface StreamClient {
 	/** 创建持久化 Run。 */
 	createRun(
@@ -35,20 +36,16 @@ export interface StreamClient {
 		text: string,
 		clientRequestId: string,
 	): Promise<{ run_id: string; session_id: string; status: string }>;
-	/** 提交指定 Run 的本地工具结果。 */
+	/** 提交指定 Run 的本地工具结果，触发续算。返回 JSON（非 SSE）。 */
 	submitRunToolResult(runId: string, results: ToolResult[]): Promise<void>;
-	/** 从排他游标订阅持久化 Run。 */
+	/** 从排他游标订阅持久化 Run 事件。onEnd 在 SSE 流正常结束时调用。 */
 	subscribeRun(
 		runId: string,
 		afterSequence: number,
-		onEvent: (event: { sequence: number; type: string; payload: unknown }) => void,
+		onEvent: (event: { sequence: number | null; type: string; payload: unknown }) => void,
 		onError: (error: Error) => void,
+		onEnd: () => void,
 	): AbortController;
-	/** 发起用户消息 SSE 流。 */
-	streamMessage(sessionId: string, text: string, callbacks: SseCallbacks): AbortController;
-	/** 批量提交工具结果并读取 SSE 续流。 */
-	submitToolResult(results: ToolResult[], sessionId: string, callbacks: SseCallbacks): AbortController;
-	/** 订阅持久化 Run；旧客户端不实现时不会启用恢复。 */
 }
 
 export interface SessionManagerOptions {
@@ -91,6 +88,7 @@ interface SessionState {
 	readonly generation: number;
 	runId?: string;
 	cursor: number;
+	eventProcessing: Promise<void>;
 	abortController?: AbortController;
 	pendingToolCalls: ToolCall[];
 	activeToolCalls: Map<string, ToolCall>;
@@ -99,6 +97,7 @@ interface SessionState {
 	retryCounts: Map<string, number>;
 	cancelled: boolean;
 	running: boolean;
+	pendingTerminalState?: 'completed' | 'failed' | 'cancelled';
 	terminalState?: Exclude<RunLifecycleState, 'running'>;
 }
 
@@ -128,7 +127,7 @@ export class SessionManager {
 	/** 取消当前轮次：abort 流 + 为 pending 工具发 cancelled 结果。 */
 	cancel(sessionId: string): void {
 		const state = this.sessions.get(sessionId);
-		if (!state || !this.isCurrentRun(sessionId, state)) {
+		if (!state || !this.isCurrentRun(sessionId, state) || state.cancelled) {
 			return;
 		}
 		state.abortController?.abort();
@@ -137,7 +136,15 @@ export class SessionManager {
 		for (const controller of state.activeToolControllers.values()) {
 			controller.abort();
 		}
+		state.eventProcessing = state.eventProcessing.then(() => {
+			this.finishCancellation(sessionId, state);
+		});
+	}
 
+	private finishCancellation(sessionId: string, state: SessionState): void {
+		if (!this.isCurrentRun(sessionId, state)) {
+			return;
+		}
 		// pending 与 running 调用均只终结一次；回调置空，忽略取消后的续流。
 		const calls = new Map<string, ToolCall>();
 		for (const call of state.pendingToolCalls) {
@@ -193,17 +200,48 @@ export class SessionManager {
 		state.abortController = this.opts.client.subscribeRun(
 			run.runId,
 			run.cursor,
-			(event) => { void this.consumeStoredEvent(run.sessionId, state, event); },
+			(event) => {
+				this.enqueueEvent(
+					run.sessionId,
+					state,
+					() => this.consumeStoredEvent(run.sessionId, state, event),
+				);
+			},
 			(error) => this.finishRun(run.sessionId, state, 'disconnected', error.message),
+			() => {
+				void state.eventProcessing.then(() => {
+					// 恢复模式不自动执行工具，仅在云端明确终态后结束本地 Run
+					if (state.pendingTerminalState) {
+						this.finishRun(run.sessionId, state, state.pendingTerminalState);
+					}
+				});
+			},
 		);
 	}
 
 	private async consumeStoredEvent(
 		sessionId: string,
 		state: SessionState,
-		event: { sequence: number; type: string; payload: unknown },
+		event: { sequence: number | null; type: string; payload: unknown },
 	): Promise<void> {
 		if (!this.isCurrentRun(sessionId, state) || !this.opts.runStore) {
+			return;
+		}
+		if (event.type === 'run_status') {
+			const data = readEventData(event.payload);
+			const status = isRecord(data) && typeof data.status === 'string' ? data.status : '';
+			if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+				state.pendingTerminalState = status;
+			}
+		}
+		// content 按事件类型认定为瞬态，兼容旧服务错误返回 sequence=0。
+		if (event.type === 'content' && event.sequence === 0) {
+			this.dispatchRunEvent(sessionId, state, event);
+			return;
+		}
+		// content 等瞬态事件 sequence 为 null，不持久化，直接转发
+		if (event.sequence === null) {
+			this.dispatchRunEvent(sessionId, state, event);
 			return;
 		}
 		const result = await this.opts.runStore.append(sessionId, event);
@@ -211,6 +249,10 @@ export class SessionManager {
 			state.abortController?.abort();
 			this.sessions.delete(sessionId);
 			this.restoreRun(result.run);
+			return;
+		}
+		if (event.type === 'run_status') {
+			this.handleRunStatus(sessionId, state, event.payload);
 			return;
 		}
 		if (result.kind === 'appended' && isAgentEventType(event.type)) {
@@ -222,6 +264,7 @@ export class SessionManager {
 		return {
 			generation: ++this.nextGeneration,
 			cursor: 0,
+			eventProcessing: Promise.resolve(),
 			pendingToolCalls: [],
 			activeToolCalls: new Map(),
 			activeToolControllers: new Map(),
@@ -291,13 +334,31 @@ export class SessionManager {
 		const controller = this.opts.client.subscribeRun(
 			state.runId,
 			state.cursor,
-			(event) => { void this.consumeRunEvent(sessionId, state, event); },
+			(event) => {
+				this.enqueueEvent(
+					sessionId,
+					state,
+					() => this.consumeRunEvent(sessionId, state, event),
+				);
+			},
 			(error) => this.finishRun(
 				sessionId,
 				state,
 				error instanceof TransportError || error instanceof TypeError ? 'disconnected' : 'failed',
 				error.message,
 			),
+			() => {
+				// SSE 流结束前先等待已接收事件完成落盘和分发。
+				void state.eventProcessing.then(() => this.handleStreamEnd(sessionId, state)).catch((err) => {
+					logger.error('[SessionManager] handleStreamEnd 异常:', err instanceof Error ? err.stack ?? err.message : err);
+					if (!this.isCurrentRun(sessionId, state)) {
+						return;
+					}
+					const reason = err instanceof Error ? err.message : String(err);
+					this.opts.eventBus.emit({ type: 'error', sessionId, payload: reason });
+					this.finishRun(sessionId, state, 'failed', reason);
+				});
+			},
 		);
 		if (this.isCurrentRun(sessionId, state)) {
 			state.abortController = controller;
@@ -306,12 +367,53 @@ export class SessionManager {
 		controller.abort();
 	}
 
+	private enqueueEvent(
+		sessionId: string,
+		state: SessionState,
+		consume: () => Promise<void>,
+	): void {
+		state.eventProcessing = state.eventProcessing
+			.then(consume)
+			.catch((error: unknown) => {
+				if (!this.isCurrentRun(sessionId, state)) {
+					return;
+				}
+				const reason = error instanceof Error ? error.message : String(error);
+				logger.error(
+					'# [SessionManager] Run 事件消费异常:',
+					error instanceof Error ? error.stack ?? error.message : error,
+				);
+				this.opts.eventBus.emit({ type: 'error', sessionId, payload: reason });
+				this.finishRun(sessionId, state, 'failed', reason);
+			});
+	}
+
 	private async consumeRunEvent(
 		sessionId: string,
 		state: SessionState,
-		event: { sequence: number; type: string; payload: unknown },
+		event: { sequence: number | null; type: string; payload: unknown },
 	): Promise<void> {
-		if (!this.isCurrentRun(sessionId, state) || event.sequence <= state.cursor) {
+		if (!this.isCurrentRun(sessionId, state)) {
+			return;
+		}
+		if (event.type === 'run_status') {
+			const data = readEventData(event.payload);
+			const status = isRecord(data) && typeof data.status === 'string' ? data.status : '';
+			if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+				state.pendingTerminalState = status;
+			}
+		}
+		// content 按事件类型认定为瞬态，兼容旧服务错误返回 sequence=0。
+		if (event.type === 'content' && event.sequence === 0) {
+			this.dispatchRunEvent(sessionId, state, event);
+			return;
+		}
+		// content 等瞬态事件 sequence 为 null，跳过游标校验和持久化，直接分发
+		if (event.sequence === null) {
+			this.dispatchRunEvent(sessionId, state, event);
+			return;
+		}
+		if (event.sequence <= state.cursor) {
 			return;
 		}
 		if (event.sequence !== state.cursor + 1) {
@@ -337,16 +439,14 @@ export class SessionManager {
 		const data = readEventData(payload);
 		const status = isRecord(data) && typeof data.status === 'string' ? data.status : '';
 		if (status === 'interrupted') {
+			// 标记中断，等待 SSE 流结束（onEnd）再执行 pending 工具。
+			// tool_call 事件在 run_status(interrupted) 之后到达，不能在此处驱动续流。
 			void this.opts.runStore?.updateStatus(sessionId, 'interrupted');
-			this.handleStreamEnd(sessionId, state).catch((error) => {
-				const reason = error instanceof Error ? error.message : String(error);
-				this.finishRun(sessionId, state, 'failed', reason);
-			});
 			return;
 		}
 		if (status === 'completed' || status === 'failed' || status === 'cancelled') {
 			void this.opts.runStore?.updateStatus(sessionId, status);
-			this.finishRun(sessionId, state, status);
+			state.pendingTerminalState = status;
 		}
 	}
 
@@ -364,6 +464,29 @@ export class SessionManager {
 			this.opts.eventBus.emit({ type: 'thought', sessionId, payload: data });
 			return;
 		}
+		if (event.type === 'tool_start' && isRecord(data)) {
+			// 云端工具：只读展示，由 run_id 配对 tool_end
+			this.opts.eventBus.emit({
+				type: 'tool_state_change', sessionId, payload: {
+					call_id: `cloud:${data.run_id}`,
+					state: 'running',
+					tool: typeof data.name === 'string' ? data.name : '',
+					args: data.input,
+				}
+			});
+			return;
+		}
+		if (event.type === 'tool_end' && isRecord(data)) {
+			this.opts.eventBus.emit({
+				type: 'tool_state_change', sessionId, payload: {
+					call_id: `cloud:${data.run_id}`,
+					state: 'success',
+					tool: typeof data.name === 'string' ? data.name : '',
+					output: data.output,
+				}
+			});
+			return;
+		}
 		if (event.type === 'tool_call' && Array.isArray(data)) {
 			for (const item of data) {
 				if (!isToolCall(item)) {
@@ -379,81 +502,13 @@ export class SessionManager {
 		}
 	}
 
-	/** 构造一轮 SSE 流的回调：转发事件到事件总线，收集 tool_call，结束时驱动续流。 */
-	private makeCallbacks(sessionId: string, state: SessionState): SseCallbacks {
-		const emit = (type: AgentEvent['type'], payload: unknown): void => {
-			if (!this.isCurrentRun(sessionId, state)) {
-				return;
-			}
-			this.opts.eventBus.emit({ type, sessionId, payload });
-		};
-		return {
-			onContent: (t) => emit('content', t),
-			onThought: (t) => emit('thought', t),
-			onToolStart: (data) => emit('tool_state_change', {
-				call_id: data.run_id,
-				state: 'running',
-				tool: data.name,
-				args: data.input,
-			}),
-			onToolEnd: (data) => emit('tool_state_change', {
-				call_id: data.run_id,
-				state: 'success',
-				tool: data.name,
-				output: data.output,
-			}),
-			onToolCall: (e) => {
-				if (!this.isCurrentRun(sessionId, state)) {
-					return;
-				}
-				const call: ToolCall = { ...e };
-				state.pendingToolCalls.push(call);
-				this.emitToolState(sessionId, call, 'pending');
-			},
-			onPlan: (e) => emit('plan', e),
-			onProgress: (e) => emit('progress', e),
-			onError: (err) => {
-				if (!this.isCurrentRun(sessionId, state)) {
-					return;
-				}
-				emit('error', err.message);
-				this.finishRun(
-					sessionId,
-					state,
-					err instanceof TypeError || err instanceof TransportError ? 'disconnected' : 'failed',
-					err.message
-				);
-			},
-			onDuplicateAcknowledged: () => {
-				if (!this.isCurrentRun(sessionId, state)) {
-					return;
-				}
-				this.finishRun(sessionId, state, 'disconnected');
-			},
-			onEnd: () => {
-				if (!this.isCurrentRun(sessionId, state)) {
-					return;
-				}
-				this.handleStreamEnd(sessionId, state).catch((err) => {
-					logger.error('[SessionManager] handleStreamEnd 异常:', err instanceof Error ? err.stack ?? err.message : err);
-					if (!this.isCurrentRun(sessionId, state)) {
-						return;
-					}
-					const reason = err instanceof Error ? err.message : String(err);
-					this.opts.eventBus.emit({ type: 'error', sessionId, payload: reason });
-					this.finishRun(sessionId, state, 'failed', reason);
-				});
-			},
-		};
-	}
-
 	/** 流结束处理：有 pending 工具 -> 执行 + 续流；无 -> 轮次完成。 */
 	private async handleStreamEnd(sessionId: string, state: SessionState): Promise<void> {
 		if (!this.isCurrentRun(sessionId, state)) {
 			return;
 		}
 		if (state.pendingToolCalls.length === 0) {
-			this.finishRun(sessionId, state, 'completed');
+			this.finishRun(sessionId, state, state.pendingTerminalState ?? 'completed');
 			return;
 		}
 
@@ -477,14 +532,14 @@ export class SessionManager {
 				) {
 					return undefined;
 				}
-					this.emitToolState(
-						sessionId,
-						call,
-						r.status === 'success' ? 'success' : 'error',
-						r.error,
-						r.result
-					);
-					return r;
+				this.emitToolState(
+					sessionId,
+					call,
+					r.status === 'success' ? 'success' : 'error',
+					r.error,
+					r.result
+				);
+				return r;
 			} catch (err) {
 				if (
 					!this.isCurrentRun(sessionId, state)
@@ -493,10 +548,10 @@ export class SessionManager {
 				) {
 					return undefined;
 				}
-					const reason = err instanceof Error ? err.message : String(err);
-					this.emitToolState(sessionId, call, 'error', reason);
-					return { call_id: call.call_id, status: 'error', error: reason, metadata: { retryable: false } };
-				}
+				const reason = err instanceof Error ? err.message : String(err);
+				this.emitToolState(sessionId, call, 'error', reason);
+				return { call_id: call.call_id, status: 'error', error: reason, metadata: { retryable: false } };
+			}
 		};
 		const parallel = calls.length > 1 && calls.every((call) => this.opts.router.canRunInParallel(call));
 		if (parallel) {

@@ -7,7 +7,7 @@ export interface WorkspaceState {
 export type StoredRunStatus = 'running' | 'interrupted' | 'completed' | 'failed' | 'cancelled';
 
 export interface StoredRunEvent {
-	readonly sequence: number;
+	readonly sequence: number | null;
 	readonly type: string;
 	readonly payload: unknown;
 }
@@ -49,7 +49,7 @@ export class RunStore {
 	constructor(
 		private readonly state: WorkspaceState,
 		private readonly maxEvents = 100,
-	) {}
+	) { }
 
 	get(sessionId: string): StoredRun | undefined {
 		const run = this.readAll()[sessionId];
@@ -78,6 +78,10 @@ export class RunStore {
 		const run = this.get(sessionId);
 		if (!run) {
 			throw new Error(`未找到会话 ${sessionId} 的 Run 快照`);
+		}
+		// 瞬态事件（content chunk）sequence 为 null，跳过游标校验，不更新游标也不存储
+		if (event.sequence === null) {
+			return { kind: 'appended', run };
 		}
 		if (event.sequence <= run.cursor) {
 			return { kind: 'duplicate', run };
@@ -127,7 +131,8 @@ export class RunStore {
 		if (!isTimelineEvent(event.type)) {
 			return [...(timeline ?? [])];
 		}
-		return [...(timeline ?? []), { sequence: event.sequence, type: event.type, payload: event.payload }];
+		// append 调用前已保证 event.sequence 非 null（瞬态事件在 append 入口提前返回）
+		return [...(timeline ?? []), { sequence: event.sequence as number, type: event.type, payload: event.payload }];
 	}
 }
 

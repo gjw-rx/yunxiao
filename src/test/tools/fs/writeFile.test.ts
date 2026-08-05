@@ -89,6 +89,26 @@ describe('WriteFileTool', () => {
 		assert.ok(!dirEntries.some((e) => e.endsWith('.tmp')));
 	});
 
+	it('expectedVersion 不匹配时仍覆盖写入', async () => {
+		// 准备
+		const abs = path.join(workspace, 'existing.txt');
+		await fs.writeFile(abs, 'old content');
+
+		// 执行
+		const result = await tool.execute(
+			{
+				path: 'existing.txt',
+				content: 'new content',
+				expectedVersion: 'stale-version',
+			},
+			await makeContext()
+		);
+
+		// 断言
+		assert.strictEqual(result.status, 'success');
+		assert.strictEqual(await fs.readFile(abs, 'utf8'), 'new content');
+	});
+
 	it('validate 拒绝空 path 与非字符串 content', () => {
 		assert.throws(() => tool.validate({ path: '', content: 'x' }));
 		assert.throws(() => tool.validate({ path: 'a.txt', content: 123 as unknown }));
