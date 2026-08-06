@@ -1408,7 +1408,8 @@ ${this._getJs()}
 
     #inputWrapper {
       display: flex;
-      align-items: flex-end;
+      flex-direction: column;
+      align-items: stretch;
       gap: 8px;
       background: #ffffff;
       border: 1px solid var(--input-border);
@@ -1421,8 +1422,85 @@ ${this._getJs()}
       box-shadow: 0 0 0 1px var(--focus);
     }
 
+    .file-reference-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .file-reference-list:empty { display: none; }
+    .file-reference-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      max-width: 100%;
+      height: 24px;
+      padding: 0 3px 0 5px;
+      border: 1px solid var(--border-light);
+      border-radius: 5px;
+      color: var(--input-fg);
+      background: var(--vscode-editor-background, #ffffff);
+      font: inherit;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .file-reference-chip:hover {
+      border-color: var(--input-border);
+      background: var(--hover-bg);
+    }
+    .file-reference-extension {
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      min-width: 17px;
+      height: 16px;
+      padding: 0 2px;
+      border-radius: 3px;
+      color: var(--vscode-editor-background, #ffffff);
+      background: var(--accent);
+      font-family: var(--mono);
+      font-size: 8px;
+      font-weight: 700;
+      line-height: 1;
+      text-transform: uppercase;
+    }
+    .file-reference-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 11px;
+      line-height: 1;
+    }
+    .file-reference-remove {
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      width: 16px;
+      height: 16px;
+      margin-left: 1px;
+      padding: 0;
+      border: 0;
+      border-radius: 3px;
+      color: var(--muted);
+      background: transparent;
+      cursor: pointer;
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1;
+      transition: color 0.15s, background 0.15s;
+    }
+    .file-reference-remove:hover {
+      color: var(--error);
+      background: color-mix(in srgb, var(--error) 10%, transparent);
+    }
+    .file-reference-remove:focus-visible {
+      outline: 1px solid var(--focus);
+      outline-offset: 1px;
+    }
+
     #input {
       flex: 1;
+      width: 100%;
       background: transparent;
       color: var(--input-fg);
       border: none;
@@ -1512,6 +1590,76 @@ ${this._getJs()}
       color: var(--muted);
       margin-top: 5px;
       opacity: 0.7;
+    }
+
+    /* ── Message action bar ── */
+    .msg-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 2px;
+      margin-top: 6px;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+    .msg-row:hover .msg-actions,
+    .msg-row:focus-within .msg-actions {
+      opacity: 1;
+    }
+
+    .msg-action-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      height: 26px;
+      padding: 0 8px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: var(--font);
+      font-size: 11px;
+      transition: all 0.12s ease;
+    }
+    .msg-action-btn:hover:not(:disabled) {
+      background: var(--hover-bg);
+      color: var(--fg);
+    }
+    .msg-action-btn:active:not(:disabled) {
+      transform: scale(0.95);
+    }
+    .msg-action-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .msg-action-btn svg {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+    }
+    .msg-action-btn.liked {
+      color: var(--accent);
+    }
+    .msg-action-btn.liked svg {
+      fill: currentColor;
+    }
+
+    .token-usage {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 8px;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      user-select: none;
+    }
+    .token-usage svg {
+      width: 12px;
+      height: 12px;
+      opacity: 0.7;
     }`;
   }
 
@@ -1553,6 +1701,7 @@ ${this._getJs()}
       <div id="filePickerList"></div>
     </div>
     <div id="inputWrapper">
+      <div id="fileReferenceList" class="file-reference-list" aria-label="已引用文件"></div>
       <textarea id="input" rows="1" placeholder="输入消息... 使用 @ 引用文件" disabled></textarea>
     </div>
     <div id="inputToolbar" class="input-toolbar">
@@ -1620,6 +1769,7 @@ ${this._getJs()}
     const agentModel   = document.getElementById('agentModel');
     const filePicker   = document.getElementById('filePicker');
     const filePickerList = document.getElementById('filePickerList');
+    const fileReferenceList = document.getElementById('fileReferenceList');
     const slashCommandPicker = document.getElementById('slashCommandPicker');
     const slashCommandList = document.getElementById('slashCommandList');
 
@@ -1633,6 +1783,7 @@ ${this._getJs()}
     let filePickerIndex = 0;
     let filePickerAtStart = -1;
     let filteredFiles = [];
+    let selectedFiles = [];
     let slashCommandIndex = 0;
     let filteredSlashCommands = [];
     const slashCommands = [
@@ -2043,6 +2194,10 @@ ${this._getJs()}
       return div.innerHTML;
     }
 
+    function escapeAttribute(str) {
+      return escapeHtml(str).replace(/"/g, '&quot;');
+    }
+
     // ── Event bindings ──
     sendBtn.addEventListener('click', handleSend);
     compactBtn.addEventListener('click', startCompact);
@@ -2232,12 +2387,35 @@ ${this._getJs()}
       const cursorPos = inputEl.selectionStart;
       const before = inputEl.value.substring(0, filePickerAtStart);
       const after = inputEl.value.substring(cursorPos);
-      const insert = '@' + file.path + ' ';
-      inputEl.value = before + insert + after;
-      inputEl.selectionStart = inputEl.selectionEnd = before.length + insert.length;
+      inputEl.value = before + after;
+      inputEl.selectionStart = inputEl.selectionEnd = before.length;
+      if (!selectedFiles.some((selected) => selected.path === file.path)) {
+        selectedFiles.push(file);
+      }
+      renderFileReferences();
       closeFilePicker();
       inputEl.focus();
       autoResize();
+    }
+
+    function renderFileReferences() {
+      fileReferenceList.innerHTML = selectedFiles.map((file, index) => {
+        const extension = file.name.includes('.')
+          ? file.name.split('.').pop().slice(0, 3)
+          : 'file';
+        return '<span class="file-reference-chip" title="' + escapeAttribute(file.path) + '">' +
+          '<span class="file-reference-extension">' + escapeHtml(extension) + '</span>' +
+          '<span class="file-reference-name">' + escapeHtml(file.name) + '</span>' +
+          '<button type="button" class="file-reference-remove" data-index="' + index +
+          '" aria-label="取消引用 ' + escapeAttribute(file.name) + '" title="取消引用">&times;</button></span>';
+      }).join('');
+      fileReferenceList.querySelectorAll('.file-reference-remove').forEach((button) => {
+        button.addEventListener('click', () => {
+          selectedFiles.splice(Number(button.dataset.index), 1);
+          renderFileReferences();
+          inputEl.focus();
+        });
+      });
     }
 
     function closeFilePicker() {
@@ -2279,12 +2457,15 @@ ${this._getJs()}
     }
 
     function handleSend() {
-      const text = inputEl.value.trim();
+      const referenceText = selectedFiles.map((file) => '@' + file.path).join(' ');
+      const text = [referenceText, inputEl.value.trim()].filter(Boolean).join(' ');
       if (!text || !currentSessionId || isStreaming || isCompressing) return;
 
       finishTurn(); // 收束上一回合，新回合从这条用户消息之后开始
       appendUserMsg(text);
       inputEl.value = '';
+      selectedFiles = [];
+      renderFileReferences();
       autoResize();
       setStreaming(true);
       currentAssistantTxt = '';
@@ -2302,6 +2483,8 @@ ${this._getJs()}
     /** 清空消息流与所有回合级 DOM 引用。 */
     function resetConversation() {
       messagesEl.innerHTML = '';
+      selectedFiles = [];
+      renderFileReferences();
       toolEntries.clear();
       approvalCards.clear();
       diffCards.clear();
@@ -2336,6 +2519,80 @@ ${this._getJs()}
       scrollToBottom();
     }
 
+    /** 复制图标 SVG */
+    const COPY_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="8" height="10" rx="1.5"/><path d="M3 5v7a1.5 1.5 0 0 0 1.5 1.5H11"/></svg>\`;
+    const COPIED_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6"/></svg>\`;
+    const LIKE_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5L5.5 6.5v7h6l1.5-4V8h-4l.5-2.5L7 3.5z"/><path d="M5.5 6.5H3.5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h2"/></svg>\`;
+    const LIKED_ICON = \`<svg viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5L5.5 6.5v7h6l1.5-4V8h-4l.5-2.5L7 3.5z"/><path d="M5.5 6.5H3.5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h2"/></svg>\`;
+
+    /** 执行复制操作 */
+    async function copyText(text, btn) {
+      try {
+        await navigator.clipboard.writeText(text || '');
+      } catch (err) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text || '';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      btn.classList.add('copied');
+      btn.innerHTML = COPIED_ICON;
+      setTimeout(() => {
+        btn.classList.remove('copied');
+        btn.innerHTML = COPY_ICON;
+      }, 2000);
+    }
+
+    /** 创建消息操作栏 */
+    function createMsgActions(getText) {
+      const actions = document.createElement('div');
+      actions.className = 'msg-actions';
+
+      // Token 用量显示
+      const tokenUsage = document.createElement('span');
+      tokenUsage.className = 'token-usage';
+      tokenUsage.innerHTML = \`
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="8" cy="8" r="6"/>
+          <path d="M8 4v4l2 2"/>
+        </svg>
+        <span class="token-count">-- tokens</span>
+      \`;
+      actions.appendChild(tokenUsage);
+
+      // 复制按钮
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'msg-action-btn copy-btn';
+      copyBtn.title = '复制回复';
+      copyBtn.innerHTML = COPY_ICON;
+      copyBtn.addEventListener('click', () => copyText(getText(), copyBtn));
+      actions.appendChild(copyBtn);
+
+      // 点赞按钮
+      const likeBtn = document.createElement('button');
+      likeBtn.className = 'msg-action-btn like-btn';
+      likeBtn.title = '点赞';
+      likeBtn.innerHTML = LIKE_ICON;
+      likeBtn.addEventListener('click', () => {
+        likeBtn.classList.toggle('liked');
+        likeBtn.innerHTML = likeBtn.classList.contains('liked') ? LIKED_ICON : LIKE_ICON;
+      });
+      actions.appendChild(likeBtn);
+
+      return actions;
+    }
+
+    /** 更新消息的 token 显示 */
+    function updateMsgTokenUsage(row, tokenCount) {
+      if (!row) return;
+      const tokenEl = row.querySelector('.token-count');
+      if (tokenEl) {
+        tokenEl.textContent = tokenCount ? \`\${tokenCount} tokens\` : '-- tokens';
+      }
+    }
+
     /** 回复气泡挂在当前回合尾部——因此永远排在过程时间线之后。 */
     function appendAssistantBubble(streaming) {
       const turn = ensureTurn();
@@ -2345,6 +2602,11 @@ ${this._getJs()}
       const bubble = document.createElement('div');
       bubble.className = 'message assistant' + (streaming ? ' cursor' : '');
       row.appendChild(bubble);
+
+      // 添加操作栏，使用getter函数动态获取最新文本
+      const actions = createMsgActions(() => currentAssistantTxt || bubble.textContent || '');
+      row.appendChild(actions);
+
       turn.rootEl.appendChild(row);
       scrollToBottom();
       return bubble;
@@ -2359,11 +2621,27 @@ ${this._getJs()}
       scrollToBottom();
     }
 
-    function appendMsgFromHistory(role, text) {
+    function appendMsgFromHistory(role, text, tokenUsage) {
       if (role === 'user') { appendUserMsg(text); return; }
-      const bubble = appendAssistantBubble(false);
+      const turn = ensureTurn();
+      const row = document.createElement('div');
+      row.className = 'msg-row';
+      row.innerHTML = '<div class="msg-label">回复</div>';
+      const bubble = document.createElement('div');
+      bubble.className = 'message assistant';
+      row.appendChild(bubble);
       renderMarkdown(bubble, text);
+
+      // 添加操作栏（历史消息使用闭包捕获text）
+      const actions = createMsgActions(() => text);
+      row.appendChild(actions);
+      if (tokenUsage) {
+        updateMsgTokenUsage(row, tokenUsage);
+      }
+
+      turn.rootEl.appendChild(row);
       finishTurn();
+      scrollToBottom();
     }
 
     function mergeStreamText(current, incoming) {
@@ -2426,8 +2704,19 @@ ${this._getJs()}
       addStep(step);
     }
 
-    /** 将云端确认的预算状态作为时间线步骤展示，不在客户端估算用量。 */
+    /** 将云端确认的预算状态作为时间线步骤展示，同时尝试提取 token 用量更新到当前消息。 */
     function showBudgetEvent(type, payload) {
+      // 尝试从payload中提取token用量并更新当前消息
+      if (currentAssistantEl && payload && typeof payload === 'object') {
+        const row = currentAssistantEl.parentElement;
+        const tokenCount = payload.total_tokens || payload.usage?.total_tokens
+          || payload.tokens || (payload.prompt_tokens && payload.completion_tokens
+            ? payload.prompt_tokens + payload.completion_tokens : null);
+        if (tokenCount && row) {
+          updateMsgTokenUsage(row, tokenCount);
+        }
+      }
+
       const step = document.createElement('div');
       step.className = 'step ' + (type === 'budget_exhausted' ? 'error' : 'progress');
       const exhausted = type === 'budget_exhausted';

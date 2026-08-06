@@ -208,6 +208,23 @@ describe('ChatViewProvider session creation', () => {
 		assert.match(html, /if \(inputEl\.value\.trim\(\) === '\/compact'\)/);
 	});
 
+	it('renders file references as removable chips while preserving paths on send', () => {
+		const { internals } = setup(async () => ({ session_id: 'unused', agent_id: 'unused' }));
+		const html = internals._getHtml({
+			asWebviewUri: (uri: vscode.Uri) => uri,
+			cspSource: 'vscode-webview:',
+		} as unknown as vscode.Webview);
+
+		assert.match(html, /id="fileReferenceList"/);
+		assert.match(html, /class="file-reference-chip"/);
+		assert.match(html, /class="file-reference-remove"/);
+		assert.match(html, /aria-label="取消引用 /);
+		assert.match(html, /selectedFiles\.some\(\(selected\) => selected\.path === file\.path\)/);
+		assert.match(html, /selectedFiles\.map\(\(file\) => '@' \+ file\.path\)\.join\(' '\)/);
+		assert.match(html, /selectedFiles = \[\];[\s\S]*?renderFileReferences\(\);/);
+		assert.doesNotMatch(html, /const insert = '@' \+ file\.path \+ ' ';/);
+	});
+
 	it('calls the compression API and forwards its result to the webview', async () => {
 		const { compressCalls, messages, internals } = setup(
 			async () => ({ session_id: 'unused', agent_id: 'unused' }),
