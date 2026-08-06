@@ -18,8 +18,34 @@ interface SessionResult {
 	agent_id: string;
 }
 
-function setup(createSession: () => Promise<SessionResult>) {
+interface CompressResult {
+	session_id: string;
+	compressed: boolean;
+	before_count: number;
+	after_count: number;
+	pruned_count: number;
+	summary_token_budget: number;
+	compress_count: number;
+	trigger: 'manual';
+}
+
+const COMPRESS_RESULT: CompressResult = {
+	session_id: 'old-session',
+	compressed: true,
+	before_count: 30,
+	after_count: 8,
+	pruned_count: 2,
+	summary_token_budget: 2048,
+	compress_count: 1,
+	trigger: 'manual',
+};
+
+function setup(
+	createSession: () => Promise<SessionResult>,
+	compressSession: (sessionId: string) => Promise<CompressResult> = async () => COMPRESS_RESULT,
+) {
 	const calls: unknown[][] = [];
+	const compressCalls: string[] = [];
 	const resets: string[] = [];
 	const messages: Record<string, unknown>[] = [];
 	const provider = new ChatViewProvider(
@@ -29,6 +55,10 @@ function setup(createSession: () => Promise<SessionResult>) {
 				createSession: (...args: unknown[]) => {
 					calls.push(args);
 					return createSession();
+				},
+				compressSession: (sessionId: string) => {
+					compressCalls.push(sessionId);
+					return compressSession(sessionId);
 				},
 			} as unknown as AIClient,
 			registry: { localSchemas: () => [] } as unknown as ToolRegistry,
@@ -41,7 +71,7 @@ function setup(createSession: () => Promise<SessionResult>) {
 		webview: { postMessage: (message: Record<string, unknown>) => messages.push(message) },
 	} as unknown as vscode.WebviewView;
 	internals._currentSessionId = 'old-session';
-	return { calls, resets, messages, internals };
+	return { calls, compressCalls, resets, messages, internals };
 }
 
 describe('ChatViewProvider session creation', () => {
@@ -161,5 +191,71 @@ describe('ChatViewProvider session creation', () => {
 		assert.ok(showThought);
 		assert.doesNotMatch(showThought, /collapsed-text|scrollHeight|toggleBound/);
 		assert.doesNotMatch(html, /\.step\.thought\.collapsed-text/);
+	});
+
+	it('renders a slash command menu and routes compact through one action', () => {
+		const { internals } = setup(async () => ({ session_id: 'unused', agent_id: 'unused' }));
+		const html = internals._getHtml({
+			asWebviewUri: (uri: vscode.Uri) => uri,
+			cspSource: 'vscode-webview:',
+		} as unknown as vscode.Webview);
+
+		assert.match(html, /id="slashCommandPicker"/);
+		assert.match(html, /command:\s*'compact'/);
+		assert.match(html, /function handleSlashTrigger\(\)/);
+		assert.match(html, /function startCompact\(\)/);
+		assert.match(html, /compactBtn\.addEventListener\('click', startCompact\)/);
+		assert.match(html, /if \(inputEl\.value\.trim\(\) === '\/compact'\)/);
+	});
+
+	it('calls the compression API and forwards its result to the webview', async () => {
+		const { compressCalls, messages, internals } = setup(
+			async () => ({ session_id: 'unused', agent_id: 'unused' }),
+		);
+
+		await internals._handleMessage({ command: 'compressSession', sessionId: 'old-session' });
+
+		assert.deepStrictEqual(compressCalls, ['old-session']);
+		assert.deepStrictEqual(messages, [{
+			command: 'compressCompleted',
+			sessionId: 'old-session',
+			result: COMPRESS_RESULT,
+		}]);
+	});
+
+	it('rejects compression requests for a stale session', async () => {
+		const { compressCalls, messages, internals } = setup(
+			async () => ({ session_id: 'unused', agent_id: 'unused' }),
+		);
+
+		await internals._handleMessage({ command: 'compressSession', sessionId: 'stale-session' });
+
+		assert.deepStrictEqual(compressCalls, []);
+		assert.deepStrictEqual(messages, [{
+			command: 'compressError',
+			sessionId: 'stale-session',
+			message: '当前会话已切换，无法压缩',
+		}]);
+	});
+
+	it('prevents duplicate compression requests for the same session', async () => {
+		let resolveCompress!: (result: CompressResult) => void;
+		const pending = new Promise<CompressResult>((resolve) => { resolveCompress = resolve; });
+		const { compressCalls, messages, internals } = setup(
+			async () => ({ session_id: 'unused', agent_id: 'unused' }),
+			async () => pending,
+		);
+
+		const first = internals._handleMessage({ command: 'compressSession', sessionId: 'old-session' });
+		await internals._handleMessage({ command: 'compressSession', sessionId: 'old-session' });
+		resolveCompress(COMPRESS_RESULT);
+		await first;
+
+		assert.deepStrictEqual(compressCalls, ['old-session']);
+		assert.deepStrictEqual(messages, [{
+			command: 'compressCompleted',
+			sessionId: 'old-session',
+			result: COMPRESS_RESULT,
+		}]);
 	});
 });

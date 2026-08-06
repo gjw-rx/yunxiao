@@ -10,6 +10,7 @@ class MockServer {
 	readonly sessionBodies: Record<string, unknown>[] = [];
 	readonly runBodies: Record<string, unknown>[] = [];
 	readonly toolResultBodies: Record<string, unknown>[] = [];
+	readonly compressRequests: Array<{ method?: string; url?: string; body: string }> = [];
 	lastRunEventsUrl?: string;
 
 	start(): Promise<void> {
@@ -47,6 +48,24 @@ class MockServer {
 			if (req.url?.startsWith('/api/agent/invoke/history') && req.method === 'GET') {
 				res.writeHead(200, { 'Content-Type': 'application/json' });
 				res.end(JSON.stringify({ success: true, data: [] }));
+				return;
+			}
+			if (req.url?.startsWith('/api/compress/sessions/') && req.method === 'POST') {
+				this.compressRequests.push({ method: req.method, url: req.url, body });
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({
+					success: true,
+					data: {
+						session_id: 's/1',
+						compressed: true,
+						before_count: 30,
+						after_count: 8,
+						pruned_count: 2,
+						summary_token_budget: 2048,
+						compress_count: 1,
+						trigger: 'manual',
+					},
+				}));
 				return;
 			}
 			if (req.url === '/api/v2/agent/run' && req.method === 'POST') {
@@ -120,6 +139,19 @@ describe('AIClient', () => {
 	it('getHistory returns messages', async () => {
 		const history = await client.getHistory('s1');
 		assert.deepStrictEqual(history, []);
+	});
+
+	it('compresses the encoded session without sending a request body', async () => {
+		const result = await client.compressSession('s/1');
+
+		assert.strictEqual(result.compressed, true);
+		assert.strictEqual(result.before_count, 30);
+		assert.strictEqual(result.after_count, 8);
+		assert.deepStrictEqual(mock.compressRequests, [{
+			method: 'POST',
+			url: '/api/compress/sessions/s%2F1/compress',
+			body: '',
+		}]);
 	});
 
 	it('creates a v2 Run with an idempotency key', async () => {
