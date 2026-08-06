@@ -57,6 +57,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _currentSessionId?: string;
   private _createSessionRequest = 0;
   private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
+  private readonly _compressingSessions = new Set<string>();
   private readonly _sessionNames = new Map<string, string>();
 
   constructor(
@@ -256,6 +257,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const text = msg.text as string;
         // 经会话状态机发起流；事件经事件总线回流（见 _forwardEvent）
         this._sessionManager.sendMessage(sessionId, text);
+        break;
+      }
+      case 'compressSession': {
+        const sessionId = msg.sessionId as string;
+        if (!sessionId || sessionId !== this._currentSessionId) {
+          view.webview.postMessage({
+            command: 'compressError',
+            sessionId,
+            message: '当前会话已切换，无法压缩',
+          });
+          break;
+        }
+        if (this._compressingSessions.has(sessionId)) {
+          break;
+        }
+        this._compressingSessions.add(sessionId);
+        try {
+          const result = await this._client.compressSession(sessionId);
+          view.webview.postMessage({ command: 'compressCompleted', sessionId, result });
+        } catch (err: unknown) {
+          view.webview.postMessage({
+            command: 'compressError',
+            sessionId,
+            message: friendlyError(err, this._baseUrl),
+          });
+        } finally {
+          this._compressingSessions.delete(sessionId);
+        }
         break;
       }
       case 'stopStream': {
@@ -1300,6 +1329,22 @@ ${this._getJs()}
     #error:not(:empty) { border-color: var(--border); }
     #error:empty { display: none; }
 
+    .compact-notice {
+      align-self: center;
+      margin: 6px auto;
+      padding: 5px 9px;
+      border: 1px solid var(--border-light);
+      border-radius: 999px;
+      color: var(--muted);
+      background: var(--vscode-badge-background, var(--hover-bg));
+      font-size: 10px;
+      line-height: 1.4;
+    }
+    .compact-notice.success {
+      color: var(--success);
+      border-color: color-mix(in srgb, var(--success) 36%, transparent);
+    }
+
     /* ── Input area ── */
     #inputArea {
       position: relative;
@@ -1309,13 +1354,13 @@ ${this._getJs()}
       background: #ffffff;
     }
 
-    #filePicker {
+    #filePicker, #slashCommandPicker {
       position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); display: none;
       overflow: hidden; background: var(--vscode-quickInput-background, var(--vscode-editor-background, #252526));
       border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 30px rgba(0,0,0,0.28); z-index: 110;
       animation: picker-rise 0.14s ease-out both;
     }
-    #filePicker.show { display: block; }
+    #filePicker.show, #slashCommandPicker.show { display: block; }
     .file-picker-heading { display: flex; justify-content: space-between; padding: 8px 10px 6px; color: var(--muted); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
     .file-picker-hint { opacity: 0.7; text-transform: none; letter-spacing: 0; }
     #filePickerList { max-height: 220px; overflow-y: auto; padding: 0 4px 4px; }
@@ -1324,6 +1369,41 @@ ${this._getJs()}
     .file-option-icon { color: var(--muted); flex: 0 0 auto; }
     .file-option-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
     .file-picker-empty { padding: 12px 10px; color: var(--muted); font-size: 12px; }
+    #slashCommandList { padding: 0 4px 4px; }
+    .slash-command-option {
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 8px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--fg);
+      cursor: pointer;
+      text-align: left;
+      font: inherit;
+    }
+    .slash-command-option:hover, .slash-command-option.active {
+      color: var(--vscode-list-activeSelectionForeground, var(--fg));
+      background: var(--vscode-list-activeSelectionBackground, var(--hover-bg));
+    }
+    .slash-command-icon {
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border: 1px solid var(--border-light);
+      border-radius: 6px;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-weight: 700;
+    }
+    .slash-command-copy { min-width: 0; }
+    .slash-command-name { display: block; font-family: var(--mono); font-size: 12px; font-weight: 600; }
+    .slash-command-description { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+    .slash-command-key { color: var(--muted); font-size: 9px; }
     @keyframes picker-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
     #inputWrapper {
@@ -1372,7 +1452,7 @@ ${this._getJs()}
       gap: 4px;
     }
 
-    .open-file-btn {
+    .open-file-btn, .compact-btn {
       width: 28px;
       height: 28px;
       padding: 0;
@@ -1380,14 +1460,16 @@ ${this._getJs()}
       color: var(--muted);
       transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s;
     }
-    .open-file-btn:hover:not(:disabled) {
+    .open-file-btn:hover:not(:disabled), .compact-btn:hover:not(:disabled) {
       color: var(--fg);
       background: var(--hover-bg);
       border-color: var(--border-light);
     }
-    .open-file-btn:active:not(:disabled) { transform: scale(0.92); }
-    .open-file-btn:focus-visible { outline: 1px solid var(--focus); outline-offset: 1px; }
-    .open-file-btn svg { width: 15px; height: 15px; }
+    .open-file-btn:active:not(:disabled), .compact-btn:active:not(:disabled) { transform: scale(0.92); }
+    .open-file-btn:focus-visible, .compact-btn:focus-visible { outline: 1px solid var(--focus); outline-offset: 1px; }
+    .open-file-btn svg, .compact-btn svg { width: 15px; height: 15px; }
+    .compact-btn.compressing svg { animation: compact-spin 0.8s linear infinite; }
+    @keyframes compact-spin { to { transform: rotate(360deg); } }
 
     /* Shared icon-dot style (used in compact agent btn + dropdown cards) */
     .agent-icon-dot {
@@ -1462,6 +1544,10 @@ ${this._getJs()}
   <div id="error"></div>
 
   <div id="inputArea">
+    <div id="slashCommandPicker" role="listbox" aria-label="选择 Slash 命令">
+      <div class="file-picker-heading"><span>Slash 命令</span><span class="file-picker-hint">↑↓ 选择 · Enter 执行 · Esc 关闭</span></div>
+      <div id="slashCommandList"></div>
+    </div>
     <div id="filePicker" role="listbox" aria-label="选择工作区文件">
       <div class="file-picker-heading"><span>工作区文件</span><span class="file-picker-hint">↑↓ 选择 · Enter 确认 · Esc 关闭</span></div>
       <div id="filePickerList"></div>
@@ -1474,6 +1560,12 @@ ${this._getJs()}
         <button id="openFileBtn" class="btn btn-icon open-file-btn" title="打开文件" aria-label="打开文件">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
             <path d="M8 2v12M2 8h12" />
+          </svg>
+        </button>
+        <button id="compactBtn" class="btn btn-icon compact-btn" disabled title="压缩当前会话上下文" aria-label="压缩当前会话上下文">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2.5 5.5h3v-3M13.5 5.5h-3v-3M2.5 10.5h3v3M13.5 10.5h-3v3" />
+            <path d="M5.5 5.5 2.5 2.5M10.5 5.5l3-3M5.5 10.5l-3 3M10.5 10.5l3 3" />
           </svg>
         </button>
       </div>
@@ -1502,7 +1594,7 @@ ${this._getJs()}
         </button>
       </div>
     </div>
-    <div id="hint">Enter 发送 &middot; Shift+Enter 换行 &middot; @ 引用文件</div>
+    <div id="hint">Enter 发送 &middot; Shift+Enter 换行 &middot; / 命令 &middot; @ 引用文件</div>
   </div>
 `;
   }
@@ -1517,6 +1609,7 @@ ${this._getJs()}
     const sendBtn      = document.getElementById('sendBtn');
     const stopBtn      = document.getElementById('stopBtn');
     const openFileBtn  = document.getElementById('openFileBtn');
+    const compactBtn   = document.getElementById('compactBtn');
     const newSessBtn   = document.getElementById('newSessionIconBtn');
     const historyBtn   = document.getElementById('historyBtn');
     const sessionNameInput = document.getElementById('sessionNameInput');
@@ -1527,16 +1620,28 @@ ${this._getJs()}
     const agentModel   = document.getElementById('agentModel');
     const filePicker   = document.getElementById('filePicker');
     const filePickerList = document.getElementById('filePickerList');
+    const slashCommandPicker = document.getElementById('slashCommandPicker');
+    const slashCommandList = document.getElementById('slashCommandList');
 
     // ── State ──
     let agents = [];
     let selectedAgentId = null;
     let currentSessionId = null;
     let isStreaming = false;
+    let isCompressing = false;
     let workspaceFiles = [];
     let filePickerIndex = 0;
     let filePickerAtStart = -1;
     let filteredFiles = [];
+    let slashCommandIndex = 0;
+    let filteredSlashCommands = [];
+    const slashCommands = [
+      {
+        command: 'compact',
+        label: '/compact',
+        description: '压缩当前会话上下文',
+      },
+    ];
 
     /* 「回合」模型：一轮对话 = 过程时间线（思考/工具/审批）+ 最终回复。
        时间线容器先于回复气泡插入 DOM，因此过程天然呈现在回复之上。 */
@@ -1605,6 +1710,9 @@ ${this._getJs()}
       }
       if (!filePicker.contains(e.target) && e.target !== inputEl) {
         closeFilePicker();
+      }
+      if (!slashCommandPicker.contains(e.target) && e.target !== inputEl) {
+        closeSlashCommandPicker();
       }
     });
 
@@ -1937,6 +2045,7 @@ ${this._getJs()}
 
     // ── Event bindings ──
     sendBtn.addEventListener('click', handleSend);
+    compactBtn.addEventListener('click', startCompact);
 
     stopBtn.addEventListener('click', () => {
       if (currentSessionId) {
@@ -1967,6 +2076,29 @@ ${this._getJs()}
     });
 
     inputEl.addEventListener('keydown', (e) => {
+      if (slashCommandPicker.classList.contains('show')) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (filteredSlashCommands.length === 0) return;
+          slashCommandIndex = (
+            slashCommandIndex
+            + (e.key === 'ArrowDown' ? 1 : -1)
+            + filteredSlashCommands.length
+          ) % filteredSlashCommands.length;
+          renderSlashCommands();
+          return;
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          selectSlashCommand(filteredSlashCommands[slashCommandIndex]);
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          closeSlashCommandPicker();
+          return;
+        }
+      }
       if (filePicker.classList.contains('show')) {
         if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           e.preventDefault();
@@ -1978,10 +2110,82 @@ ${this._getJs()}
         if (e.key === 'Enter') { e.preventDefault(); selectFile(filteredFiles[filePickerIndex]); return; }
         if (e.key === 'Escape') { e.preventDefault(); closeFilePicker(); return; }
       }
+      if (e.key === 'Enter' && !e.shiftKey && inputEl.value.trim() === '/compact') {
+        e.preventDefault();
+        startCompact();
+        return;
+      }
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
     });
 
     inputEl.addEventListener('input', autoResize);
+    inputEl.addEventListener('input', handleSlashTrigger);
+
+    // ── Slash 命令选择 ──
+    function handleSlashTrigger() {
+      const cursorPos = inputEl.selectionStart;
+      const text = inputEl.value;
+      const commandText = text.substring(0, cursorPos);
+      if (
+        cursorPos !== text.length
+        || !commandText.startsWith('/')
+        || /\\s/.test(commandText)
+      ) {
+        closeSlashCommandPicker();
+        return;
+      }
+
+      const query = commandText.slice(1).toLowerCase();
+      filteredSlashCommands = slashCommands.filter((command) =>
+        command.command.startsWith(query)
+      );
+      if (filteredSlashCommands.length === 0) {
+        closeSlashCommandPicker();
+        return;
+      }
+
+      closeFilePicker();
+      slashCommandIndex = Math.min(
+        slashCommandIndex,
+        filteredSlashCommands.length - 1,
+      );
+      slashCommandPicker.classList.add('show');
+      renderSlashCommands();
+    }
+
+    function renderSlashCommands() {
+      slashCommandList.innerHTML = filteredSlashCommands.map((command, index) =>
+        '<button class="slash-command-option' + (index === slashCommandIndex ? ' active' : '') +
+        '" role="option" data-index="' + index + '">' +
+        '<span class="slash-command-icon">/</span>' +
+        '<span class="slash-command-copy"><span class="slash-command-name">' +
+        escapeHtml(command.label) + '</span><span class="slash-command-description">' +
+        escapeHtml(command.description) + '</span></span>' +
+        '<span class="slash-command-key">Enter</span></button>'
+      ).join('');
+      slashCommandList.querySelectorAll('.slash-command-option').forEach((option) => {
+        option.addEventListener('mousedown', (e) => e.preventDefault());
+        option.addEventListener('click', () => {
+          selectSlashCommand(filteredSlashCommands[Number(option.dataset.index)]);
+        });
+      });
+    }
+
+    function selectSlashCommand(command) {
+      if (!command) return;
+      inputEl.value = '';
+      autoResize();
+      closeSlashCommandPicker();
+      if (command.command === 'compact') {
+        startCompact();
+      }
+    }
+
+    function closeSlashCommandPicker() {
+      slashCommandPicker.classList.remove('show');
+      filteredSlashCommands = [];
+      slashCommandIndex = 0;
+    }
 
     // ── @ file selection ──
     inputEl.addEventListener('input', handleAtTrigger);
@@ -1996,6 +2200,7 @@ ${this._getJs()}
         return;
       }
       filePickerAtStart = atStart;
+      closeSlashCommandPicker();
       if (workspaceFiles.length === 0) vscode.postMessage({ command: 'requestWorkspaceFiles' });
       showFilePicker(text.slice(atStart + 1));
     }
@@ -2045,7 +2250,20 @@ ${this._getJs()}
       inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
     }
 
+    function startCompact() {
+      if (!currentSessionId || isStreaming || isCompressing) return;
+      if (inputEl.value.trim() === '/compact') {
+        inputEl.value = '';
+        autoResize();
+      }
+      closeSlashCommandPicker();
+      closeFilePicker();
+      setCompressing(true);
+      vscode.postMessage({ command: 'compressSession', sessionId: currentSessionId });
+    }
+
     function startNewSession() {
+      if (isCompressing) return;
       if (!selectedAgentId) {
         // Try first agent if available
         if (agents.length > 0) {
@@ -2062,7 +2280,7 @@ ${this._getJs()}
 
     function handleSend() {
       const text = inputEl.value.trim();
-      if (!text || !currentSessionId || isStreaming) return;
+      if (!text || !currentSessionId || isStreaming || isCompressing) return;
 
       finishTurn(); // 收束上一回合，新回合从这条用户消息之后开始
       appendUserMsg(text);
@@ -2228,13 +2446,42 @@ ${this._getJs()}
       setTimeout(() => { if (errorEl.textContent === msg) errorEl.textContent = ''; }, 5000);
     }
 
+    function showCompactNotice(result) {
+      messagesEl.querySelector('.compact-notice')?.remove();
+      const notice = document.createElement('div');
+      notice.className = 'compact-notice' + (result.compressed ? ' success' : '');
+      notice.textContent = result.compressed
+        ? '上下文已压缩：' + result.before_count + ' → ' + result.after_count
+          + ' 条 · 累计 ' + result.compress_count + ' 次'
+        : '当前上下文无需压缩，共 ' + result.before_count + ' 条消息';
+      messagesEl.appendChild(notice);
+      scrollToBottom();
+    }
+
+    function updateInteractionState() {
+      const busy = isStreaming || isCompressing;
+      sendBtn.disabled = busy || !currentSessionId;
+      inputEl.disabled = busy || !currentSessionId;
+      compactBtn.disabled = busy || !currentSessionId;
+      openFileBtn.disabled = busy;
+      newSessBtn.disabled = isCompressing;
+      historyBtn.disabled = isCompressing;
+      agentBtn.disabled = isCompressing;
+    }
+
     function setStreaming(state) {
       isStreaming = state;
       sendBtn.style.display = state ? 'none' : 'inline-flex';
       stopBtn.style.display = state ? 'inline-flex' : 'none';
       stopBtn.disabled = !state;
-      sendBtn.disabled = state || !currentSessionId;
-      inputEl.disabled = !currentSessionId;
+      updateInteractionState();
+    }
+
+    function setCompressing(state) {
+      isCompressing = state;
+      compactBtn.classList.toggle('compressing', state);
+      compactBtn.title = state ? '正在压缩上下文…' : '压缩当前会话上下文';
+      updateInteractionState();
     }
 
     // ── Host message handler ──
@@ -2254,8 +2501,7 @@ ${this._getJs()}
         case 'sessionCreated': {
           currentSessionId = msg.sessionId;
           resetConversation();
-          inputEl.disabled = false;
-          sendBtn.disabled = false;
+          setCompressing(false);
           setStreaming(false);
           vscode.postMessage({ command: 'loadHistory', sessionId: currentSessionId });
           break;
@@ -2269,6 +2515,18 @@ ${this._getJs()}
           currentAssistantEl = null;
           currentAssistantTxt = '';
           finishTurn();
+          break;
+        case 'compressCompleted':
+          if (msg.sessionId === currentSessionId) {
+            setCompressing(false);
+            showCompactNotice(msg.result);
+          }
+          break;
+        case 'compressError':
+          if (msg.sessionId === currentSessionId) {
+            setCompressing(false);
+            showError(msg.message);
+          }
           break;
         case 'toolState':
           showToolState(msg.tool, msg.state, msg.error, msg.call_id, msg.args, msg.output);

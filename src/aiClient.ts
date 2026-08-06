@@ -44,6 +44,17 @@ export interface MessageInfo {
 	create_time: string;
 }
 
+export interface ManualCompressResponse {
+	session_id: string;
+	compressed: boolean;
+	before_count: number;
+	after_count: number;
+	pruned_count: number;
+	summary_token_budget: number;
+	compress_count: number;
+	trigger: 'manual';
+}
+
 interface ApiResponse<T> {
 	success: boolean;
 	data?: T;
@@ -58,7 +69,13 @@ interface SessionResult {
 
 // ---------- 通用 JSON 请求 ----------
 
-function request<T>(baseUrl: string, path: string, method: string, body?: unknown): Promise<T> {
+function request<T>(
+	baseUrl: string,
+	path: string,
+	method: string,
+	body?: unknown,
+	timeoutMs?: number,
+): Promise<T> {
 	return new Promise((resolve, reject) => {
 		const url = new URL(path, baseUrl);
 		const lib = url.protocol === 'https:' ? https : http;
@@ -93,6 +110,11 @@ function request<T>(baseUrl: string, path: string, method: string, body?: unknow
 		);
 
 		req.on('error', (err) => reject(err));
+		if (timeoutMs) {
+			req.setTimeout(timeoutMs, () => {
+				req.destroy(new Error(`请求超时（${timeoutMs}ms）`));
+			});
+		}
 		if (payload) {
 			req.write(payload);
 		}
@@ -124,6 +146,18 @@ export class AIClient {
 	getHistory(sessionId: string, offset = 0, limit = 50): Promise<MessageInfo[]> {
 		const qs = `?session_id=${encodeURIComponent(sessionId)}&offset=${offset}&limit=${limit}`;
 		return request<MessageInfo[]>(this.baseUrl, `/api/agent/invoke/history${qs}`, 'GET');
+	}
+
+	/** 手动压缩指定会话的上下文；服务端要求 Run 进入终态后调用。 */
+	compressSession(sessionId: string): Promise<ManualCompressResponse> {
+		const encodedSessionId = encodeURIComponent(sessionId);
+		return request<ManualCompressResponse>(
+			this.baseUrl,
+			`/api/compress/sessions/${encodedSessionId}/compress`,
+			'POST',
+			undefined,
+			60_000,
+		);
 	}
 
 	/** 创建 v2 持久化 Run；调用方随后以事件订阅消费计算结果。 */
