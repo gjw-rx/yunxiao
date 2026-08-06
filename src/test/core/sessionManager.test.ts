@@ -594,6 +594,19 @@ describe('SessionManager', () => {
 		assert.strictEqual(events.filter((event) => event.type === 'stream_end').length, 1);
 	});
 
+	it('completes when a legacy run store has no updateStatus method', async () => {
+		const runStore = new RunStore(new MemoryWorkspaceState());
+		(runStore as unknown as { updateStatus?: RunStore['updateStatus'] }).updateStatus = undefined;
+		const { eventBus, client, manager, events } = setup('success', 1000, runStore);
+		client.setScripts([endStream()]);
+
+		manager.sendMessage('s1', 'hello');
+		await waitForStreamEnd(eventBus);
+
+		assert.deepStrictEqual(terminalStates(events), ['completed']);
+		assert.strictEqual(events.some((event) => event.type === 'error'), false);
+	});
+
 	it('emits cancelled once and ignores a later end callback', async () => {
 		const { eventBus, client, manager, events } = setup();
 		client.setScripts([() => undefined]);
