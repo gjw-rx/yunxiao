@@ -166,9 +166,11 @@ describe('ChatViewProvider session creation', () => {
 			cspSource: 'vscode-webview:',
 		} as unknown as vscode.Webview);
 
+		const numberSource = html.match(/function formatNumber\(n\) \{[\s\S]*?\n    \}/)?.[0];
 		const source = html.match(/function formatTokenUsage\(usage, inputLength\) \{[\s\S]*?\n    \}/)?.[0];
+		assert.ok(numberSource);
 		assert.ok(source);
-		const format = new Function(`${source}; return formatTokenUsage;`)() as (
+		const format = new Function(`${numberSource}; ${source}; return formatTokenUsage;`)() as (
 			usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number },
 			inputLength: number,
 		) => {

@@ -19,6 +19,7 @@ import type {
 	ToolCall,
 	ToolResult,
 	ToolLifecycleState,
+	TokenUsageEventPayload,
 } from './types';
 import type { ToolRouter } from './toolRouter';
 import type { EventBus, AgentEvent } from './eventBus';
@@ -439,14 +440,34 @@ export class SessionManager {
 
 	private handleRunStatus(sessionId: string, state: SessionState, payload: unknown): void {
 		const data = readEventData(payload);
-		const status = isRecord(data) && typeof data.status === 'string' ? data.status : '';
+		const isDataRecord = isRecord(data);
+		const status = isDataRecord && typeof data.status === 'string' ? data.status : '';
 		if (status === 'interrupted') {
 			// 标记中断，等待 SSE 流结束（onEnd）再执行 pending 工具。
 			// tool_call 事件在 run_status(interrupted) 之后到达，不能在此处驱动续流。
 			this.updateRunStoreStatus(sessionId, 'interrupted');
 			return;
 		}
-		if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+		if (status === 'completed') {
+			this.updateRunStoreStatus(sessionId, status);
+			state.pendingTerminalState = status;
+			// 提取 token 用量信息并发射事件
+			const tokenUsage = isDataRecord && isRecord(data.token_usage) ? data.token_usage : undefined;
+			const inputLength = isDataRecord && typeof data.input_length === 'number' ? data.input_length : 0;
+			if (tokenUsage && typeof tokenUsage.total_tokens === 'number') {
+				const tokenPayload: TokenUsageEventPayload = {
+					token_usage: {
+						prompt_tokens: typeof tokenUsage.prompt_tokens === 'number' ? tokenUsage.prompt_tokens : 0,
+						completion_tokens: typeof tokenUsage.completion_tokens === 'number' ? tokenUsage.completion_tokens : 0,
+						total_tokens: tokenUsage.total_tokens,
+					},
+					input_length: inputLength,
+				};
+				this.opts.eventBus.emit({ type: 'token_usage', sessionId, payload: tokenPayload });
+			}
+			return;
+		}
+		if (status === 'failed' || status === 'cancelled') {
 			this.updateRunStoreStatus(sessionId, status);
 			state.pendingTerminalState = status;
 		}
@@ -734,7 +755,7 @@ async function runSequential<T>(
 }
 
 function isAgentEventType(type: string): type is AgentEvent['type'] {
-	return ['content', 'content_batch', 'thought', 'tool_call', 'tool_result', 'plan', 'progress', 'stream_end', 'error', 'tool_state_change', 'run_state_change', 'budget_update', 'budget_exhausted'].includes(type);
+	return ['content', 'content_batch', 'thought', 'tool_call', 'tool_result', 'plan', 'progress', 'stream_end', 'error', 'tool_state_change', 'run_state_change', 'budget_update', 'budget_exhausted', 'token_usage'].includes(type);
 }
 
 function readEventData(payload: unknown): unknown {

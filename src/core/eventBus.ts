@@ -17,7 +17,8 @@ export type EventType =
 	| 'run_state_change'
 	| 'content_batch'
 	| 'budget_update'
-	| 'budget_exhausted';
+	| 'budget_exhausted'
+	| 'token_usage';
 
 /** 事件对象。 */
 export interface AgentEvent {
@@ -63,6 +64,7 @@ export class EventBus {
 			'content_batch',
 			'budget_update',
 			'budget_exhausted',
+			'token_usage',
 		];
 		const unsubs = allTypes.map((t) => this.on(t, listener));
 		return () => unsubs.forEach((u) => u());

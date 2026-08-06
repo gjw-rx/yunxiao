@@ -121,3 +121,16 @@ export interface ProgressEventData {
 	readonly current?: number;
 	readonly total?: number;
 }
+
+/** token 用量（run_status=completed 时存在） */
+export interface TokenUsage {
+	readonly prompt_tokens: number;
+	readonly completion_tokens: number;
+	readonly total_tokens: number;
+}
+
+/** token 用量事件 payload */
+export interface TokenUsageEventPayload {
+	readonly token_usage: TokenUsage;
+	readonly input_length: number;
+}

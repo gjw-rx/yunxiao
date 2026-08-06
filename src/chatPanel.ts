@@ -136,6 +136,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		case 'budget_exhausted':
 			view.webview.postMessage({ command: 'budgetEvent', type: e.type, payload: e.payload });
 			break;
+		case 'token_usage':
+			view.webview.postMessage({ command: 'tokenUsage', payload: e.payload });
+			break;
       case 'stream_end':
         view.webview.postMessage({ command: 'replyEnd' });
         break;
@@ -1660,6 +1663,23 @@ ${this._getJs()}
       width: 12px;
       height: 12px;
       opacity: 0.7;
+      flex-shrink: 0;
+    }
+    .token-progress {
+      display: inline-block;
+      width: 24px;
+      height: 3px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: var(--vscode-progressBar-background, var(--border));
+      opacity: 0.35;
+    }
+    .token-progress-fill {
+      display: block;
+      width: 0;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--accent);
     }`;
   }
 
@@ -1798,6 +1818,7 @@ ${this._getJs()}
        时间线容器先于回复气泡插入 DOM，因此过程天然呈现在回复之上。 */
     let currentTurn = null;        // { rootEl, traceEl, traceBodyEl, countEl, liveEl, stepCount }
     let currentAssistantEl = null; // 当前流式回复气泡
+    let currentAssistantRow = null; // 当前流式回复消息行（包含操作栏）
     let currentAssistantTxt = '';
     let currentThoughtEl = null;
     let currentThoughtTxt = '';
@@ -2470,6 +2491,7 @@ ${this._getJs()}
       setStreaming(true);
       currentAssistantTxt = '';
       currentAssistantEl = null;
+      currentAssistantRow = null;
 
       vscode.postMessage({ command: 'sendMessage', sessionId: currentSessionId, text });
     }
@@ -2490,6 +2512,7 @@ ${this._getJs()}
       diffCards.clear();
       currentTurn = null;
       currentAssistantEl = null;
+      currentAssistantRow = null;
       currentAssistantTxt = '';
       currentThoughtEl = null;
       currentThoughtTxt = '';
@@ -2545,6 +2568,29 @@ ${this._getJs()}
       }, 2000);
     }
 
+    /** 格式化数字（千分位） */
+    function formatNumber(n) {
+      if (typeof n !== 'number' || n === 0) return '0';
+      return n.toLocaleString('en-US');
+    }
+
+    /** 按云端上下文上限格式化本轮 Token 用量 */
+    function formatTokenUsage(usage, inputLength) {
+      const total = usage && Number.isFinite(usage.total_tokens) ? usage.total_tokens : 0;
+      const prompt = usage && Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : 0;
+      const completion = usage && Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : 0;
+      if (total <= 0 || !Number.isFinite(inputLength) || inputLength <= 0) {
+        return { text: '--', title: 'Token 用量不可用', percent: null };
+      }
+      const percent = Number(((total / inputLength) * 100).toFixed(1));
+      const ratio = formatNumber(total) + ' / ' + formatNumber(inputLength) + ' (' + percent.toFixed(1) + '%)';
+      return {
+        text: ratio,
+        title: '本轮 Token 消耗：' + ratio + '；输入 ' + formatNumber(prompt) + '，输出 ' + formatNumber(completion),
+        percent,
+      };
+    }
+
     /** 创建消息操作栏 */
     function createMsgActions(getText) {
       const actions = document.createElement('div');
@@ -2558,8 +2604,10 @@ ${this._getJs()}
           <circle cx="8" cy="8" r="6"/>
           <path d="M8 4v4l2 2"/>
         </svg>
-        <span class="token-count">-- tokens</span>
+        <span class="token-count">--</span>
+        <span class="token-progress" hidden><span class="token-progress-fill"></span></span>
       \`;
+      tokenUsage.title = 'Token 用量不可用';
       actions.appendChild(tokenUsage);
 
       // 复制按钮
@@ -2585,11 +2633,26 @@ ${this._getJs()}
     }
 
     /** 更新消息的 token 显示 */
-    function updateMsgTokenUsage(row, tokenCount) {
+    function updateMsgTokenUsage(row, usage, inputLength) {
       if (!row) return;
-      const tokenEl = row.querySelector('.token-count');
-      if (tokenEl) {
-        tokenEl.textContent = tokenCount ? \`\${tokenCount} tokens\` : '-- tokens';
+      const tokenEl = row.querySelector('.token-usage');
+      if (!tokenEl || !usage) return;
+
+      const formatted = formatTokenUsage(usage, inputLength);
+
+      const countEl = tokenEl.querySelector('.token-count');
+      if (countEl) {
+        countEl.textContent = formatted.text;
+      }
+      tokenEl.title = formatted.title;
+
+      const progressEl = tokenEl.querySelector('.token-progress');
+      const progressFillEl = tokenEl.querySelector('.token-progress-fill');
+      if (progressEl && progressFillEl) {
+        progressEl.hidden = formatted.percent === null;
+        progressFillEl.style.width = formatted.percent === null
+          ? '0'
+          : Math.min(formatted.percent, 100) + '%';
       }
     }
 
@@ -2608,6 +2671,7 @@ ${this._getJs()}
       row.appendChild(actions);
 
       turn.rootEl.appendChild(row);
+      currentAssistantRow = row;
       scrollToBottom();
       return bubble;
     }
@@ -2704,19 +2768,8 @@ ${this._getJs()}
       addStep(step);
     }
 
-    /** 将云端确认的预算状态作为时间线步骤展示，同时尝试提取 token 用量更新到当前消息。 */
+    /** 将云端确认的预算状态作为时间线步骤展示 */
     function showBudgetEvent(type, payload) {
-      // 尝试从payload中提取token用量并更新当前消息
-      if (currentAssistantEl && payload && typeof payload === 'object') {
-        const row = currentAssistantEl.parentElement;
-        const tokenCount = payload.total_tokens || payload.usage?.total_tokens
-          || payload.tokens || (payload.prompt_tokens && payload.completion_tokens
-            ? payload.prompt_tokens + payload.completion_tokens : null);
-        if (tokenCount && row) {
-          updateMsgTokenUsage(row, tokenCount);
-        }
-      }
-
       const step = document.createElement('div');
       step.className = 'step ' + (type === 'budget_exhausted' ? 'error' : 'progress');
       const exhausted = type === 'budget_exhausted';
@@ -2728,6 +2781,25 @@ ${this._getJs()}
       body.textContent = JSON.stringify(payload);
       step.appendChild(body);
       addStep(step);
+    }
+
+    /** 显示 token 用量信息 */
+    function showTokenUsage(payload) {
+      if (!payload) return;
+      // 优先使用当前回复，引用丢失时回退到最后一条 assistant 消息
+      let row = currentAssistantRow;
+      if (!row && messagesEl) {
+        const assistantMessages = messagesEl.querySelectorAll('.message.assistant');
+        const lastAssistant = assistantMessages.length > 0
+          ? assistantMessages[assistantMessages.length - 1]
+          : null;
+        row = lastAssistant ? lastAssistant.parentElement : null;
+      }
+      if (row) {
+        updateMsgTokenUsage(row, payload.token_usage, payload.input_length);
+        // 更新后清空引用，避免影响后续消息
+        currentAssistantRow = null;
+      }
     }
 
     function showError(msg) {
@@ -2803,6 +2875,7 @@ ${this._getJs()}
           if (currentAssistantEl) currentAssistantEl.classList.remove('cursor');
           currentAssistantEl = null;
           currentAssistantTxt = '';
+          // currentAssistantRow 由 token_usage 事件更新后清理
           finishTurn();
           break;
         case 'compressCompleted':
@@ -2828,6 +2901,9 @@ ${this._getJs()}
           break;
         case 'budgetEvent':
           showBudgetEvent(msg.type, msg.payload);
+          break;
+        case 'tokenUsage':
+          showTokenUsage(msg.payload);
           break;
         case 'historyLoaded':
           resetConversation();
