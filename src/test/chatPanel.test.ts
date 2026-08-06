@@ -141,4 +141,25 @@ describe('ChatViewProvider session creation', () => {
 		assert.match(html, /if \(entry\.args !== undefined && entry\.args !== null\)/);
 		assert.match(html, /else if \(entry\.output !== undefined && entry\.output !== null\)/);
 	});
+
+	it('wraps the complete thought text to the webview width without clamping', () => {
+		const { internals } = setup(async () => ({ session_id: 'unused', agent_id: 'unused' }));
+		const html = internals._getHtml({
+			asWebviewUri: (uri: vscode.Uri) => uri,
+			cspSource: 'vscode-webview:',
+		} as unknown as vscode.Webview);
+
+		const thoughtStyle = html.match(/\.step\.thought \.step-body \{([\s\S]*?)\}/)?.[1];
+		assert.ok(thoughtStyle);
+		assert.match(thoughtStyle, /width: 100%;/);
+		assert.match(thoughtStyle, /min-width: 0;/);
+		assert.match(thoughtStyle, /white-space: pre-wrap;/);
+		assert.match(thoughtStyle, /overflow-wrap: anywhere;/);
+		assert.match(thoughtStyle, /word-break: break-word;/);
+
+		const showThought = html.match(/function showThought\(text\) \{([\s\S]*?)\n    \}\n\n    function showPlan/)?.[1];
+		assert.ok(showThought);
+		assert.doesNotMatch(showThought, /collapsed-text|scrollHeight|toggleBound/);
+		assert.doesNotMatch(html, /\.step\.thought\.collapsed-text/);
+	});
 });
