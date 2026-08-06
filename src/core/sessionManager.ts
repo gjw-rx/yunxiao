@@ -93,6 +93,7 @@ interface SessionState {
 	pendingToolCalls: ToolCall[];
 	activeToolCalls: Map<string, ToolCall>;
 	activeToolControllers: Map<string, AbortController>;
+	toolCallIdsByRunId: Map<string, string>;
 	finalizedCallIds: Set<string>;
 	retryCounts: Map<string, number>;
 	cancelled: boolean;
@@ -268,6 +269,7 @@ export class SessionManager {
 			pendingToolCalls: [],
 			activeToolCalls: new Map(),
 			activeToolControllers: new Map(),
+			toolCallIdsByRunId: new Map(),
 			finalizedCallIds: new Set(),
 			retryCounts: new Map(),
 			cancelled: false,
@@ -465,10 +467,14 @@ export class SessionManager {
 			return;
 		}
 		if (event.type === 'tool_start' && isRecord(data)) {
-			// 云端工具：只读展示，由 run_id 配对 tool_end
+			// 云端工具：记录 run_id 与调用 ID 的关系，供缺少 tool_call_id 的 tool_end 复用。
+			const runId = typeof data.run_id === 'string' ? data.run_id : '';
 			const callId = typeof data.tool_call_id === 'string' && data.tool_call_id
 				? data.tool_call_id
-				: `cloud:${data.run_id}`;
+				: `cloud:${runId}`;
+			if (runId) {
+				state.toolCallIdsByRunId.set(runId, callId);
+			}
 			this.opts.eventBus.emit({
 				type: 'tool_state_change', sessionId, payload: {
 					call_id: callId,
@@ -480,9 +486,13 @@ export class SessionManager {
 			return;
 		}
 		if (event.type === 'tool_end' && isRecord(data)) {
+			const runId = typeof data.run_id === 'string' ? data.run_id : '';
 			const callId = typeof data.tool_call_id === 'string' && data.tool_call_id
 				? data.tool_call_id
-				: `cloud:${data.run_id}`;
+				: state.toolCallIdsByRunId.get(runId) ?? `cloud:${runId}`;
+			if (runId) {
+				state.toolCallIdsByRunId.delete(runId);
+			}
 			this.opts.eventBus.emit({
 				type: 'tool_state_change', sessionId, payload: {
 					call_id: callId,
