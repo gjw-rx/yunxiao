@@ -103,4 +103,31 @@ describe('ChatViewProvider session creation', () => {
 		assert.match(html, /const changed = selectedAgentId && selectedAgentId !== agentId;/);
 		assert.match(html, /if \(changed\) startNewSession\(\);/);
 	});
+
+	it('reuses one thought step and merges incremental or cumulative stream text', () => {
+		const { internals } = setup(async () => ({ session_id: 'unused', agent_id: 'unused' }));
+		const html = internals._getHtml({
+			asWebviewUri: (uri: vscode.Uri) => uri,
+			cspSource: 'vscode-webview:',
+		} as unknown as vscode.Webview);
+
+		assert.match(html, /let currentThoughtEl = null;/);
+		assert.match(html, /function mergeStreamText\(current, incoming\)/);
+		assert.match(html, /currentThoughtTxt = mergeStreamText\(currentThoughtTxt, text\);/);
+		assert.match(html, /if \(!currentThoughtEl\) \{[\s\S]*?addStep\(step\);[\s\S]*?currentThoughtEl = step;/);
+		assert.match(html, /currentThoughtEl\.querySelector\('\.step-body'\)\.textContent = currentThoughtTxt;/);
+	});
+
+	it('preserves tool arguments while the same entry receives its result', () => {
+		const { internals } = setup(async () => ({ session_id: 'unused', agent_id: 'unused' }));
+		const html = internals._getHtml({
+			asWebviewUri: (uri: vscode.Uri) => uri,
+			cspSource: 'vscode-webview:',
+		} as unknown as vscode.Webview);
+
+		assert.match(html, /entry\.args = args !== undefined && args !== null \? args : entry\.args;/);
+		assert.match(html, /entry\.output = output !== undefined && output !== null \? output : entry\.output;/);
+		assert.match(html, /if \(entry\.args !== undefined && entry\.args !== null\)/);
+		assert.match(html, /else if \(entry\.output !== undefined && entry\.output !== null\)/);
+	});
 });

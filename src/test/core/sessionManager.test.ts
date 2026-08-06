@@ -285,6 +285,46 @@ describe('SessionManager', () => {
 		assert.ok(events.some((event) => event.type === 'content' && event.payload === '兼容回复'));
 	});
 
+	it('correlates tool lifecycle events with their tool call id', async () => {
+		const { client, manager, events } = setup();
+		client.setScripts([() => undefined]);
+		manager.sendMessage('s1', 'read a.ts');
+		await flushMicrotasks();
+
+		client.emitRunEvent({
+			sequence: 1,
+			type: 'tool_start',
+			payload: {
+				type: 'tool_start',
+				data: {
+					run_id: 'tool-run-1',
+					tool_call_id: 'call-1',
+					name: 'fs.read_file',
+					input: { path: 'a.ts' },
+				},
+			},
+		});
+		client.emitRunEvent({
+			sequence: 2,
+			type: 'tool_end',
+			payload: {
+				type: 'tool_end',
+				data: {
+					run_id: 'tool-run-1',
+					tool_call_id: 'call-1',
+					name: 'fs.read_file',
+					output: 'content',
+				},
+			},
+		});
+		await flushMicrotasks();
+
+		const toolEvents = events
+			.filter((event) => event.type === 'tool_state_change')
+			.map((event) => event.payload as { call_id: string });
+		assert.deepStrictEqual(toolEvents.map((event) => event.call_id), ['call-1', 'call-1']);
+	});
+
 	it('completes a pure-chat turn with no tool calls', async () => {
 		const { eventBus, client, manager, events } = setup();
 		client.setScripts([seq(emitContent('hi'), endStream())]);
