@@ -159,6 +159,44 @@ describe('ChatViewProvider session creation', () => {
 		assert.strictEqual(merge('The user wants', 'The user wants'), 'The user wants');
 	});
 
+	it('formats token usage with context ratio and prompt/completion details', () => {
+		const { internals } = setup(async () => ({ session_id: 'unused', agent_id: 'unused' }));
+		const html = internals._getHtml({
+			asWebviewUri: (uri: vscode.Uri) => uri,
+			cspSource: 'vscode-webview:',
+		} as unknown as vscode.Webview);
+
+		const source = html.match(/function formatTokenUsage\(usage, inputLength\) \{[\s\S]*?\n    \}/)?.[0];
+		assert.ok(source);
+		const format = new Function(`${source}; return formatTokenUsage;`)() as (
+			usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number },
+			inputLength: number,
+		) => {
+			text: string;
+			title: string;
+			percent: number | null;
+		};
+
+		assert.deepStrictEqual(format({
+			prompt_tokens: 15_700,
+			completion_tokens: 2_600,
+			total_tokens: 18_300,
+		}, 128_000), {
+			text: '18,300 / 128,000 (14.3%)',
+			title: '本轮 Token 消耗：18,300 / 128,000 (14.3%)；输入 15,700，输出 2,600',
+			percent: 14.3,
+		});
+		assert.deepStrictEqual(format({
+			prompt_tokens: 0,
+			completion_tokens: 0,
+			total_tokens: 0,
+		}, 128_000), {
+			text: '--',
+			title: 'Token 用量不可用',
+			percent: null,
+		});
+	});
+
 	it('preserves tool arguments while the same entry receives its result', () => {
 		const { internals } = setup(async () => ({ session_id: 'unused', agent_id: 'unused' }));
 		const html = internals._getHtml({

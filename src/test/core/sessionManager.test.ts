@@ -361,6 +361,44 @@ describe('SessionManager', () => {
 		assert.deepStrictEqual(terminalStates(events), ['completed']);
 	});
 
+	it('emits token usage from a completed run status', async () => {
+		const { client, manager, events } = setup();
+		client.setScripts([() => undefined]);
+		manager.sendMessage('s1', 'hello');
+		await flushMicrotasks();
+
+		const callbacks = client.getV2Callbacks(0)!;
+		callbacks.onEvent({
+			sequence: 1,
+			type: 'run_status',
+			payload: {
+				type: 'run_status',
+				data: {
+					status: 'completed',
+					token_usage: {
+						prompt_tokens: 15_700,
+						completion_tokens: 2_600,
+						total_tokens: 18_300,
+					},
+					input_length: 128_000,
+				},
+			},
+		});
+		await flushMicrotasks();
+
+		assert.deepStrictEqual(
+			events.find((event) => event.type === 'token_usage')?.payload,
+			{
+				token_usage: {
+					prompt_tokens: 15_700,
+					completion_tokens: 2_600,
+					total_tokens: 18_300,
+				},
+				input_length: 128_000,
+			},
+		);
+	});
+
 	it('runs a single tool_call round: execute -> submit -> continuation content', async () => {
 		const { eventBus, client, manager, events } = setup();
 		client.setScripts([
