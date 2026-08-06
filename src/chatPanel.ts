@@ -1010,17 +1010,15 @@ ${this._getJs()}
 
     /* ── 思考步骤 ── */
     .step.thought .step-body {
+      width: 100%;
+      min-width: 0;
       font-size: 12px;
       line-height: 1.6;
       color: var(--muted);
       padding: 1px 0 5px;
       white-space: pre-wrap;
-    }
-    .step.thought.collapsed-text .step-body {
-      display: -webkit-box;
-      -webkit-line-clamp: 3;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
 
     /* ── 计划步骤 ── */
@@ -2177,24 +2175,12 @@ ${this._getJs()}
         const body = document.createElement('div');
         body.className = 'step-body';
         step.appendChild(body);
-        step.classList.add('collapsed-text');
         addStep(step);
         currentThoughtEl = step;
       }
 
       const body = currentThoughtEl.querySelector('.step-body');
       body.textContent = currentThoughtTxt;
-
-      if (body.scrollHeight > body.clientHeight + 4) {
-        currentThoughtEl.classList.add('clickable');
-        if (!currentThoughtEl.dataset.toggleBound) {
-          const thoughtEl = currentThoughtEl;
-          thoughtEl.dataset.toggleBound = 'true';
-          thoughtEl.querySelector('.step-head').addEventListener('click', () => {
-            thoughtEl.classList.toggle('collapsed-text');
-          });
-        }
-      }
       scrollToBottom();
     }
 
