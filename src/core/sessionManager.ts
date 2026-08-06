@@ -465,8 +465,8 @@ export class SessionManager {
 		}
 		void runStore.updateStatus(sessionId, status).catch((error: unknown) => {
 			logger.error(
-				`# [SessionManager] Run 状态持久化失败 — sessionId=${sessionId}, status=${status}`,
-				error,
+				`# [SessionManager] Run 状态持久化失败 — sessionId=${sessionId}, `
+				+ `status=${status}, error=${String(error)}`,
 			);
 		});
 	}
