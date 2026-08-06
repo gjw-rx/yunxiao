@@ -607,6 +607,21 @@ describe('SessionManager', () => {
 		assert.strictEqual(events.some((event) => event.type === 'error'), false);
 	});
 
+	it('completes when persisting the run status fails', async () => {
+		const runStore = new RunStore(new MemoryWorkspaceState());
+		runStore.updateStatus = async () => {
+			throw new Error('workspace state unavailable');
+		};
+		const { eventBus, client, manager, events } = setup('success', 1000, runStore);
+		client.setScripts([endStream()]);
+
+		manager.sendMessage('s1', 'hello');
+		await waitForStreamEnd(eventBus);
+
+		assert.deepStrictEqual(terminalStates(events), ['completed']);
+		assert.strictEqual(events.some((event) => event.type === 'error'), false);
+	});
+
 	it('emits cancelled once and ignores a later end callback', async () => {
 		const { eventBus, client, manager, events } = setup();
 		client.setScripts([() => undefined]);

@@ -443,13 +443,32 @@ export class SessionManager {
 		if (status === 'interrupted') {
 			// 标记中断，等待 SSE 流结束（onEnd）再执行 pending 工具。
 			// tool_call 事件在 run_status(interrupted) 之后到达，不能在此处驱动续流。
-			void this.opts.runStore?.updateStatus(sessionId, 'interrupted');
+			this.updateRunStoreStatus(sessionId, 'interrupted');
 			return;
 		}
 		if (status === 'completed' || status === 'failed' || status === 'cancelled') {
-			void this.opts.runStore?.updateStatus(sessionId, status);
+			this.updateRunStoreStatus(sessionId, status);
 			state.pendingTerminalState = status;
 		}
+	}
+
+	private updateRunStoreStatus(sessionId: string, status: StoredRun['status']): void {
+		const runStore = this.opts.runStore;
+		if (!runStore) {
+			return;
+		}
+		if (typeof runStore.updateStatus !== 'function') {
+			logger.log(
+				`# [SessionManager] 跳过 Run 状态持久化 — sessionId=${sessionId}, status=${status}`,
+			);
+			return;
+		}
+		void runStore.updateStatus(sessionId, status).catch((error: unknown) => {
+			logger.error(
+				`# [SessionManager] Run 状态持久化失败 — sessionId=${sessionId}, status=${status}`,
+				error,
+			);
+		});
 	}
 
 	private dispatchRunEvent(
