@@ -115,7 +115,18 @@ describe('ChatViewProvider session creation', () => {
 		assert.match(html, /function mergeStreamText\(current, incoming\)/);
 		assert.match(html, /currentThoughtTxt = mergeStreamText\(currentThoughtTxt, text\);/);
 		assert.match(html, /if \(!currentThoughtEl\) \{[\s\S]*?addStep\(step\);[\s\S]*?currentThoughtEl = step;/);
-		assert.match(html, /currentThoughtEl\.querySelector\('\.step-body'\)\.textContent = currentThoughtTxt;/);
+		assert.match(html, /const body = currentThoughtEl\.querySelector\('\.step-body'\);[\s\S]*?body\.textContent = currentThoughtTxt;/);
+
+		const source = html.match(/function mergeStreamText\(current, incoming\) \{[\s\S]*?\n    \}/)?.[0];
+		assert.ok(source);
+		const merge = new Function(`${source}; return mergeStreamText;`)() as (
+			current: string,
+			incoming: string,
+		) => string;
+		assert.strictEqual(merge('', 'The '), 'The ');
+		assert.strictEqual(merge('The ', 'user'), 'The user');
+		assert.strictEqual(merge('The user', 'The user wants'), 'The user wants');
+		assert.strictEqual(merge('The user wants', 'The user wants'), 'The user wants');
 	});
 
 	it('preserves tool arguments while the same entry receives its result', () => {

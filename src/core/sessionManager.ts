@@ -466,9 +466,12 @@ export class SessionManager {
 		}
 		if (event.type === 'tool_start' && isRecord(data)) {
 			// 云端工具：只读展示，由 run_id 配对 tool_end
+			const callId = typeof data.tool_call_id === 'string' && data.tool_call_id
+				? data.tool_call_id
+				: `cloud:${data.run_id}`;
 			this.opts.eventBus.emit({
 				type: 'tool_state_change', sessionId, payload: {
-					call_id: `cloud:${data.run_id}`,
+					call_id: callId,
 					state: 'running',
 					tool: typeof data.name === 'string' ? data.name : '',
 					args: data.input,
@@ -477,9 +480,12 @@ export class SessionManager {
 			return;
 		}
 		if (event.type === 'tool_end' && isRecord(data)) {
+			const callId = typeof data.tool_call_id === 'string' && data.tool_call_id
+				? data.tool_call_id
+				: `cloud:${data.run_id}`;
 			this.opts.eventBus.emit({
 				type: 'tool_state_change', sessionId, payload: {
-					call_id: `cloud:${data.run_id}`,
+					call_id: callId,
 					state: 'success',
 					tool: typeof data.name === 'string' ? data.name : '',
 					output: data.output,

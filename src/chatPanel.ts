@@ -1545,6 +1545,8 @@ ${this._getJs()}
     let currentTurn = null;        // { rootEl, traceEl, traceBodyEl, countEl, liveEl, stepCount }
     let currentAssistantEl = null; // 当前流式回复气泡
     let currentAssistantTxt = '';
+    let currentThoughtEl = null;
+    let currentThoughtTxt = '';
     const toolEntries = new Map();   // call_id -> { stepEl, detailEl, state, tool }
     const approvalCards = new Map(); // call_id -> card element
     const diffCards = new Map();     // call_id -> card element
@@ -1716,6 +1718,8 @@ ${this._getJs()}
       if (currentTurn.liveEl) currentTurn.liveEl.style.display = 'none';
       if (currentTurn.stepCount > 0) currentTurn.traceEl.classList.add('collapsed');
       currentTurn = null;
+      currentThoughtEl = null;
+      currentThoughtTxt = '';
     }
 
     /** 从工具入参里挑一个最有信息量的字段做行内预览。 */
@@ -1767,31 +1771,42 @@ ${this._getJs()}
           step.classList.toggle('expanded');
         });
 
-        entry = { stepEl: step, detailEl: detail, state, tool };
+        entry = {
+          stepEl: step,
+          detailEl: detail,
+          state,
+          tool,
+          args: undefined,
+          output: undefined,
+          error: undefined,
+        };
         toolEntries.set(callId, entry);
         addStep(step);
       }
 
       // 状态推进：保留展开态
       entry.state = state;
+      entry.args = args !== undefined && args !== null ? args : entry.args;
+      entry.output = output !== undefined && output !== null ? output : entry.output;
+      entry.error = error || entry.error;
       const wasExpanded = entry.stepEl.classList.contains('expanded');
       entry.stepEl.className =
         'step tool clickable ' + state + (wasExpanded ? ' expanded' : '');
       entry.stepEl.querySelector('.step-status').innerHTML = getStatusIcon(state);
 
-      const argPreview = summarizeArgs(args);
+      const argPreview = summarizeArgs(entry.args);
       if (argPreview) {
         entry.stepEl.querySelector('.step-arg').textContent = argPreview;
       }
 
       let html = '';
-      if (args !== undefined && args !== null) {
-        html += \`<div class="detail-label">参数</div><div class="detail-block">\${escapeHtml(truncate(stringify(args), 1200))}</div>\`;
+      if (entry.args !== undefined && entry.args !== null) {
+        html += \`<div class="detail-label">参数</div><div class="detail-block">\${escapeHtml(truncate(stringify(entry.args), 1200))}</div>\`;
       }
-      if (error) {
-        html += \`<div class="detail-label">错误</div><div class="detail-block is-error">\${escapeHtml(error)}</div>\`;
-      } else if (output !== undefined && output !== null) {
-        html += \`<div class="detail-label">结果</div><div class="detail-block">\${escapeHtml(truncate(stringify(output), 2000))}</div>\`;
+      if (entry.error) {
+        html += \`<div class="detail-label">错误</div><div class="detail-block is-error">\${escapeHtml(entry.error)}</div>\`;
+      } else if (entry.output !== undefined && entry.output !== null) {
+        html += \`<div class="detail-label">结果</div><div class="detail-block">\${escapeHtml(truncate(stringify(entry.output), 2000))}</div>\`;
       }
       entry.detailEl.innerHTML = html;
 
@@ -2077,6 +2092,8 @@ ${this._getJs()}
       currentTurn = null;
       currentAssistantEl = null;
       currentAssistantTxt = '';
+      currentThoughtEl = null;
+      currentThoughtTxt = '';
     }
 
     function scrollToBottom() {
@@ -2133,37 +2150,52 @@ ${this._getJs()}
       finishTurn();
     }
 
-    function showThought(text) {
-      const step = document.createElement('div');
-      step.className = 'step thought';
-      step.innerHTML = \`
-        <span class="step-dot"></span>
-        <div class="step-head">
-          <span class="step-icon">
-            <svg viewBox="0 0 16 16" fill="currentColor">
-              <path d="M8 1a5 5 0 0 1 4.9 4.1A3.5 3.5 0 0 1 12.5 12H11v-1h1.5a2.5 2.5 0 0 0 .4-4.97A4 4 0 1 0 4 6.5a3 3 0 0 0-.5 5.97V13h1v-.5A3 3 0 0 0 7 9.5 3.5 3.5 0 0 1 8 2.5z"/>
-            </svg>
-          </span>
-          <span class="step-name">思考</span>
-        </div>
-      \`;
-      const body = document.createElement('div');
-      body.className = 'step-body';
-      body.textContent = text;
-      step.appendChild(body);
+    function mergeStreamText(current, incoming) {
+      if (!incoming) return current;
+      if (!current || incoming.startsWith(current)) return incoming;
+      if (current.startsWith(incoming) || current.endsWith(incoming)) return current;
+      return current + incoming;
+    }
 
-      // 先夹到三行再量：夹住后仍溢出说明确实是长思考，给它一个展开开关
-      step.classList.add('collapsed-text');
-      addStep(step);
+    function showThought(text) {
+      currentThoughtTxt = mergeStreamText(currentThoughtTxt, text);
+
+      if (!currentThoughtEl) {
+        const step = document.createElement('div');
+        step.className = 'step thought';
+        step.innerHTML = \`
+          <span class="step-dot"></span>
+          <div class="step-head">
+            <span class="step-icon">
+              <svg viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 1a5 5 0 0 1 4.9 4.1A3.5 3.5 0 0 1 12.5 12H11v-1h1.5a2.5 2.5 0 0 0 .4-4.97A4 4 0 1 0 4 6.5a3 3 0 0 0-.5 5.97V13h1v-.5A3 3 0 0 0 7 9.5 3.5 3.5 0 0 1 8 2.5z"/>
+              </svg>
+            </span>
+            <span class="step-name">思考</span>
+          </div>
+        \`;
+        const body = document.createElement('div');
+        body.className = 'step-body';
+        step.appendChild(body);
+        step.classList.add('collapsed-text');
+        addStep(step);
+        currentThoughtEl = step;
+      }
+
+      const body = currentThoughtEl.querySelector('.step-body');
+      body.textContent = currentThoughtTxt;
 
       if (body.scrollHeight > body.clientHeight + 4) {
-        step.classList.add('clickable');
-        step.querySelector('.step-head').addEventListener('click', () => {
-          step.classList.toggle('collapsed-text');
-        });
-      } else {
-        step.classList.remove('collapsed-text');
+        currentThoughtEl.classList.add('clickable');
+        if (!currentThoughtEl.dataset.toggleBound) {
+          const thoughtEl = currentThoughtEl;
+          thoughtEl.dataset.toggleBound = 'true';
+          thoughtEl.querySelector('.step-head').addEventListener('click', () => {
+            thoughtEl.classList.toggle('collapsed-text');
+          });
+        }
       }
+      scrollToBottom();
     }
 
     function showPlan(steps) {
