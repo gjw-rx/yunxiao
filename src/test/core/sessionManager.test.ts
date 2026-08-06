@@ -311,7 +311,6 @@ describe('SessionManager', () => {
 				type: 'tool_end',
 				data: {
 					run_id: 'tool-run-1',
-					tool_call_id: 'call-1',
 					name: 'fs.read_file',
 					output: 'content',
 				},
