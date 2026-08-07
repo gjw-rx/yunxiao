@@ -42,7 +42,7 @@ export type AppendResult =
 	| { readonly kind: 'gap'; readonly run: StoredRun; readonly expectedSequence: number };
 
 const STATE_KEY = 'yunxiaoAgent.runStore.v1';
-const TERMINAL_STATUSES = new Set<StoredRunStatus>(['completed', 'failed', 'cancelled']);
+const TERMINAL_STATUSES = new Set<StoredRunStatus>(['completed', 'failed', 'cancelled', 'interrupted']);
 
 /** 仅保存 UI 恢复所需的轻量 Run 状态，云端仍是事件事实来源。 */
 export class RunStore {

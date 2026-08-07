@@ -99,7 +99,7 @@ interface SessionState {
 	retryCounts: Map<string, number>;
 	cancelled: boolean;
 	running: boolean;
-	pendingTerminalState?: 'completed' | 'failed' | 'cancelled';
+	pendingTerminalState?: 'completed' | 'failed' | 'cancelled' | 'disconnected';
 	terminalState?: Exclude<RunLifecycleState, 'running'>;
 }
 
@@ -212,10 +212,8 @@ export class SessionManager {
 			(error) => this.finishRun(run.sessionId, state, 'disconnected', error.message),
 			() => {
 				void state.eventProcessing.then(() => {
-					// 恢复模式不自动执行工具，仅在云端明确终态后结束本地 Run
-					if (state.pendingTerminalState) {
-						this.finishRun(run.sessionId, state, state.pendingTerminalState);
-					}
+					// 恢复模式不自动执行工具，直接结束（有终态用终态，无终态兜底 disconnected）
+					this.finishRun(run.sessionId, state, state.pendingTerminalState ?? 'disconnected');
 				});
 			},
 		);
@@ -234,6 +232,9 @@ export class SessionManager {
 			const status = isRecord(data) && typeof data.status === 'string' ? data.status : '';
 			if (status === 'completed' || status === 'failed' || status === 'cancelled') {
 				state.pendingTerminalState = status;
+			} else if (status === 'interrupted') {
+				// 恢复模式不自动执行工具，interrupted 直接结束，避免 session 悬空后循环重连
+				state.pendingTerminalState = 'disconnected';
 			}
 		}
 		// content 按事件类型认定为瞬态，兼容旧服务错误返回 sequence=0。
@@ -248,9 +249,8 @@ export class SessionManager {
 		}
 		const result = await this.opts.runStore.append(sessionId, event);
 		if (result.kind === 'gap') {
-			state.abortController?.abort();
-			this.sessions.delete(sessionId);
-			this.restoreRun(result.run);
+			// 恢复模式 gap 直接结束，不 restoreRun，避免无限循环
+			this.finishRun(sessionId, state, 'disconnected', 'Run 事件序号不连续');
 			return;
 		}
 		if (event.type === 'run_status') {

@@ -1,9 +1,11 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { promises as fs } from 'fs';
 import { AIClient } from './aiClient';
 import type { ToolRegistry } from './core/toolRegistry';
 import type { SessionManager } from './core/sessionManager';
 import type { EventBus, AgentEvent } from './core/eventBus';
+import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
 
 interface ChatViewDeps {
   readonly client: AIClient;
@@ -125,20 +127,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'content':
         view.webview.postMessage({ command: 'replyChunk', text: e.payload as string });
         break;
-		case 'content_batch': {
-			const payload = e.payload as { content?: unknown };
-			if (typeof payload.content === 'string') {
-				view.webview.postMessage({ command: 'replyChunk', text: payload.content });
-			}
-			break;
-		}
-		case 'budget_update':
-		case 'budget_exhausted':
-			view.webview.postMessage({ command: 'budgetEvent', type: e.type, payload: e.payload });
-			break;
-		case 'token_usage':
-			view.webview.postMessage({ command: 'tokenUsage', payload: e.payload });
-			break;
+      case 'content_batch': {
+        const payload = e.payload as { content?: unknown };
+        if (typeof payload.content === 'string') {
+          view.webview.postMessage({ command: 'replyChunk', text: payload.content });
+        }
+        break;
+      }
+      case 'budget_update':
+      case 'budget_exhausted':
+        view.webview.postMessage({ command: 'budgetEvent', type: e.type, payload: e.payload });
+        break;
+      case 'token_usage':
+        view.webview.postMessage({ command: 'tokenUsage', payload: e.payload });
+        break;
       case 'stream_end':
         view.webview.postMessage({ command: 'replyEnd' });
         break;
@@ -257,7 +259,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'sendMessage': {
         const sessionId = msg.sessionId as string;
-        const text = msg.text as string;
+        const userText = (msg.text as string) ?? '';
+        const files = Array.isArray(msg.files)
+          ? (msg.files as { path: string }[])
+          : [];
+        // 读取引用文件内容，拼接为结构化上下文前置到用户文本（见 _buildFileContext）
+        let text = userText;
+        if (files.length > 0) {
+          const contextBlock = await this._buildFileContext(files);
+          text = userText ? `${contextBlock}\n\n${userText}` : contextBlock;
+        }
         // 经会话状态机发起流；事件经事件总线回流（见 _forwardEvent）
         this._sessionManager.sendMessage(sessionId, text);
         break;
@@ -381,6 +392,56 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         view.webview.postMessage({ command: 'historyList', sessions });
         break;
       }
+    }
+  }
+
+  /**
+   * 将引用文件内容拼接为结构化上下文块，供模型直接获取文件内容而非裸路径。
+   * 路径解析与 requestWorkspaceFiles 生成 displayPath 的逻辑对称（多工作区带 folderName/ 前缀）。
+   */
+  private async _buildFileContext(files: { path: string }[]): Promise<string> {
+    const parts: string[] = [];
+    for (const file of files) {
+      const content = await this._readReferencedFile(file.path);
+      const body = content ?? '[无法读取文件内容]';
+      parts.push(`<file path="${file.path}">\n${body}\n</file>`);
+    }
+    return `<referenced_files>\n${parts.join('\n')}\n</referenced_files>`;
+  }
+
+  /** 读取单个引用文件内容，复用 read_file 的安全策略（大小限制/二进制检测/敏感脱敏）。失败返回 null。 */
+  private async _readReferencedFile(displayPath: string): Promise<string | null> {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length === 0) {
+      return null;
+    }
+    // 反解 displayPath 为绝对路径（与 requestWorkspaceFiles 生成逻辑对称）
+    let absPath: string | undefined;
+    for (const folder of folders) {
+      const prefix = folder.name + '/';
+      if (displayPath.startsWith(prefix)) {
+        absPath = path.join(folder.uri.fsPath, displayPath.slice(prefix.length));
+        break;
+      }
+    }
+    if (!absPath) {
+      absPath = path.join(folders[0].uri.fsPath, displayPath);
+    }
+    try {
+      const stat = await fs.stat(absPath);
+      if (stat.size > DEFAULT_MAX_FILE_SIZE) {
+        return null;
+      }
+      if (isBinaryExt(absPath)) {
+        return null;
+      }
+      const content = await fs.readFile(absPath, 'utf8');
+      if (content.includes('\0')) {
+        return null;
+      }
+      return redactSecrets(content);
+    } catch {
+      return null;
     }
   }
 
@@ -2478,12 +2539,20 @@ ${this._getJs()}
     }
 
     function handleSend() {
-      const referenceText = selectedFiles.map((file) => '@' + file.path).join(' ');
-      const text = [referenceText, inputEl.value.trim()].filter(Boolean).join(' ');
-      if (!text || !currentSessionId || isStreaming || isCompressing) return;
+      const userText = inputEl.value.trim();
+      const files = selectedFiles.slice();
+      if ((!userText && files.length === 0) || !currentSessionId || isStreaming || isCompressing) return;
 
       finishTurn(); // 收束上一回合，新回合从这条用户消息之后开始
-      appendUserMsg(text);
+      // 用户气泡展示引用文件（纯文本提示，不含 @ 符号，避免污染工具调用路径）
+      const displayParts = [];
+      if (files.length > 0) {
+        displayParts.push('引用文件: ' + files.map((file) => file.path).join(', '));
+      }
+      if (userText) {
+        displayParts.push(userText);
+      }
+      appendUserMsg(displayParts.join('\\n'));
       inputEl.value = '';
       selectedFiles = [];
       renderFileReferences();
@@ -2493,7 +2562,8 @@ ${this._getJs()}
       currentAssistantEl = null;
       currentAssistantRow = null;
 
-      vscode.postMessage({ command: 'sendMessage', sessionId: currentSessionId, text });
+      // 文件引用作为独立字段传递，由扩展主进程读取内容注入结构化上下文
+      vscode.postMessage({ command: 'sendMessage', sessionId: currentSessionId, text: userText, files });
     }
 
     // ── Message rendering ──

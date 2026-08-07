@@ -260,7 +260,10 @@ describe('ChatViewProvider session creation', () => {
 		assert.match(html, /class="file-reference-remove"/);
 		assert.match(html, /aria-label="取消引用 /);
 		assert.match(html, /selectedFiles\.some\(\(selected\) => selected\.path === file\.path\)/);
-		assert.match(html, /selectedFiles\.map\(\(file\) => '@' \+ file\.path\)\.join\(' '\)/);
+		// 文件引用作为独立 files 字段传递，不再用 @ 前缀拼接进文本
+		assert.match(html, /selectedFiles\.slice\(\)/);
+		assert.match(html, /command: 'sendMessage'[\s\S]*?files/);
+		assert.doesNotMatch(html, /'@' \+ file\.path/);
 		assert.match(html, /selectedFiles = \[\];[\s\S]*?renderFileReferences\(\);/);
 		assert.doesNotMatch(html, /const insert = '@' \+ file\.path \+ ' ';/);
 	});

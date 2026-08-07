@@ -36,7 +36,8 @@ const SECRET_PATTERNS: readonly { re: RegExp; replacement: string }[] = [
 	{ re: /sk-[a-zA-Z0-9]{20,}/g, replacement: '***' },
 ];
 
-function isBinaryExt(filePath: string): boolean {
+/** 判断路径是否为二进制文件（按扩展名）。 */
+export function isBinaryExt(filePath: string): boolean {
 	return BINARY_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
