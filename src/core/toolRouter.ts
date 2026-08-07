@@ -112,6 +112,11 @@ export class ToolRouter {
 		return tool.permission === 'read' && tool.schema.canParallel === true;
 	}
 
+	/** 是否为本地注册工具。云端工具返回 false。 */
+	isLocalTool(name: string): boolean {
+		return this.registry.has(name);
+	}
+
 	/** 构造审批提示摘要：工具名 + 权限 + 参数。 */
 	private buildApprovalSummary(
 		call: ToolCall,

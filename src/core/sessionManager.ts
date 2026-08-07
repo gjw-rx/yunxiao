@@ -507,6 +507,12 @@ export class SessionManager {
 			return;
 		}
 		if (event.type === 'tool_start' && isRecord(data)) {
+			// 云端应为本地工具抑制 tool_start/tool_end（见 runApi §10）；
+			// 若仍收到（如 LangGraph 续流重放），跳以免与 tool_call 路径重复展示。
+			const toolName = typeof data.name === 'string' ? data.name : '';
+			if (toolName && this.opts.router.isLocalTool(toolName)) {
+				return;
+			}
 			// 云端工具：记录 run_id 与调用 ID 的关系，供缺少 tool_call_id 的 tool_end 复用。
 			const runId = typeof data.run_id === 'string' ? data.run_id : '';
 			const callId = typeof data.tool_call_id === 'string' && data.tool_call_id
@@ -526,6 +532,10 @@ export class SessionManager {
 			return;
 		}
 		if (event.type === 'tool_end' && isRecord(data)) {
+			const toolName = typeof data.name === 'string' ? data.name : '';
+			if (toolName && this.opts.router.isLocalTool(toolName)) {
+				return;
+			}
 			const runId = typeof data.run_id === 'string' ? data.run_id : '';
 			const callId = typeof data.tool_call_id === 'string' && data.tool_call_id
 				? data.tool_call_id

@@ -299,6 +299,45 @@ describe('SessionManager', () => {
 				data: {
 					run_id: 'tool-run-1',
 					tool_call_id: 'call-1',
+					name: 'skills_list',
+					input: {},
+				},
+			},
+		});
+		client.emitRunEvent({
+			sequence: 2,
+			type: 'tool_end',
+			payload: {
+				type: 'tool_end',
+				data: {
+					run_id: 'tool-run-1',
+					name: 'skills_list',
+					output: 'content',
+				},
+			},
+		});
+		await flushMicrotasks();
+
+		const toolEvents = events
+			.filter((event) => event.type === 'tool_state_change')
+			.map((event) => event.payload as { call_id: string });
+		assert.deepStrictEqual(toolEvents.map((event) => event.call_id), ['call-1', 'call-1']);
+	});
+
+	it('skips tool_start/tool_end for locally registered tools to avoid duplicate display', async () => {
+		const { client, manager, events } = setup();
+		client.setScripts([() => undefined]);
+		manager.sendMessage('s1', 'read a.ts');
+		await flushMicrotasks();
+
+		client.emitRunEvent({
+			sequence: 1,
+			type: 'tool_start',
+			payload: {
+				type: 'tool_start',
+				data: {
+					run_id: 'tool-run-2',
+					tool_call_id: 'call-2',
 					name: 'fs.read_file',
 					input: { path: 'a.ts' },
 				},
@@ -310,7 +349,7 @@ describe('SessionManager', () => {
 			payload: {
 				type: 'tool_end',
 				data: {
-					run_id: 'tool-run-1',
+					run_id: 'tool-run-2',
 					name: 'fs.read_file',
 					output: 'content',
 				},
@@ -318,10 +357,8 @@ describe('SessionManager', () => {
 		});
 		await flushMicrotasks();
 
-		const toolEvents = events
-			.filter((event) => event.type === 'tool_state_change')
-			.map((event) => event.payload as { call_id: string });
-		assert.deepStrictEqual(toolEvents.map((event) => event.call_id), ['call-1', 'call-1']);
+		const toolStateChanges = events.filter((event) => event.type === 'tool_state_change');
+		assert.strictEqual(toolStateChanges.length, 0);
 	});
 
 	it('completes a pure-chat turn with no tool calls', async () => {
