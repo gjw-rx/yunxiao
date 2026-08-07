@@ -9,6 +9,7 @@ import { EventBus } from './core/eventBus';
 import { SessionManager } from './core/sessionManager';
 import { RunStore } from './core/runStore';
 import { ToolExecutionJournal } from './core/toolExecutionJournal';
+import { RollbackManager } from './core/rollbackManager';
 import { ApprovalGateway } from './core/approvalGateway';
 import { ReadFileTool, DEFAULT_MAX_FILE_SIZE } from './tools/fs/readFile';
 import { WriteFileTool } from './tools/fs/writeFile';
@@ -63,6 +64,7 @@ async function _activate(context: vscode.ExtensionContext) {
 	const baseUrl = getServiceBaseUrl();
 	const client = new AIClient(baseUrl);
 	const eventBus = new EventBus();
+	const rollbackManager = new RollbackManager(client);
 
 	// 先创建 provider（作为审批 prompter 的实现方）
 	const provider = new ChatViewProvider(context, {
@@ -70,6 +72,7 @@ async function _activate(context: vscode.ExtensionContext) {
 		registry: new ToolRegistry(),
 		sessionManager: null as unknown as SessionManager,
 		eventBus,
+		rollbackManager,
 	});
 
 	// 审批网关：使用 webview 内嵌审批卡片
@@ -181,6 +184,46 @@ async function _activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('yunxiaoAgent.newSession', () => {
 			provider.triggerNewSession();
+		})
+	);
+
+	// 回退对话命令
+	context.subscriptions.push(
+		vscode.commands.registerCommand('yunxiaoAgent.rollback', async () => {
+			const sessionId = provider.getCurrentSessionId();
+			if (!sessionId) {
+				vscode.window.showWarningMessage('当前无活跃会话，无法回退');
+				return;
+			}
+			const turnInput = await vscode.window.showInputBox({
+				prompt: '输入要回退到的轮次（1-based）',
+				placeHolder: '如：2',
+				validateInput: (v) => {
+					const n = Number(v);
+					return Number.isInteger(n) && n >= 1 ? null : '请输入正整数';
+				},
+			});
+			if (!turnInput) {
+				return;
+			}
+			const targetTurn = parseInt(turnInput, 10);
+			try {
+				const result = await rollbackManager.requestRollback(sessionId, targetTurn);
+				const parts: string[] = [`已回退 ${result.rolled_back_turns.length} 轮`];
+				if (result.applied.length > 0) {
+					parts.push(`文件回退 ${result.applied.length} 处`);
+				}
+				if (result.conflicts.length > 0) {
+					parts.push(`版本冲突跳过 ${result.conflicts.length} 处`);
+				}
+				if (result.non_reversible.length > 0) {
+					parts.push(`不可逆工具: ${result.non_reversible.join(', ')}`);
+				}
+				vscode.window.showInformationMessage(parts.join('，'));
+				provider.refreshHistory();
+			} catch (e) {
+				vscode.window.showErrorMessage(`回退失败: ${e instanceof Error ? e.message : String(e)}`);
+			}
 		})
 	);
 }

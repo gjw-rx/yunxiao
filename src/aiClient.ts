@@ -55,6 +55,23 @@ export interface ManualCompressResponse {
 	trigger: 'manual';
 }
 
+/** 回退 API 返回的单条文件操作。 */
+export interface FileOperation {
+	tool: string;
+	path?: string;
+	old_string?: string;
+	new_string?: string;
+	reversible: boolean;
+	tool_args?: Record<string, unknown>;
+}
+
+/** 回退 API 响应。 */
+export interface RollbackApiResponse {
+	rolled_back_turns: number[];
+	file_operations: FileOperation[];
+	non_reversible_tools: string[];
+}
+
 interface ApiResponse<T> {
 	success: boolean;
 	data?: T;
@@ -146,6 +163,14 @@ export class AIClient {
 	getHistory(sessionId: string, offset = 0, limit = 50): Promise<MessageInfo[]> {
 		const qs = `?session_id=${encodeURIComponent(sessionId)}&offset=${offset}&limit=${limit}`;
 		return request<MessageInfo[]>(this.baseUrl, `/api/agent/invoke/history${qs}`, 'GET');
+	}
+
+	/** 回退对话到指定轮次，返回需插件端回退的文件操作列表。 */
+	rollback(sessionId: string, targetTurn: number): Promise<RollbackApiResponse> {
+		return request<RollbackApiResponse>(this.baseUrl, '/api/agent/invoke/rollback', 'POST', {
+			session_id: sessionId,
+			target_turn: targetTurn,
+		});
 	}
 
 	/** 手动压缩指定会话的上下文；服务端要求 Run 进入终态后调用。 */

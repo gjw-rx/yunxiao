@@ -5,6 +5,7 @@ import { AIClient } from './aiClient';
 import type { ToolRegistry } from './core/toolRegistry';
 import type { SessionManager } from './core/sessionManager';
 import type { EventBus, AgentEvent } from './core/eventBus';
+import type { RollbackManager } from './core/rollbackManager';
 import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
 
 interface ChatViewDeps {
@@ -12,6 +13,7 @@ interface ChatViewDeps {
   readonly registry: ToolRegistry;
   readonly sessionManager: SessionManager;
   readonly eventBus: EventBus;
+  readonly rollbackManager: RollbackManager;
 }
 
 function getServiceBaseUrl(): string {
@@ -54,6 +56,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly _registry: ToolRegistry;
   private readonly _sessionManager: SessionManager;
   private readonly _eventBus: EventBus;
+  private readonly _rollbackManager: RollbackManager;
   private _baseUrl: string;
   private _configListener?: vscode.Disposable;
   private _currentSessionId?: string;
@@ -71,6 +74,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._registry = deps.registry;
     this._sessionManager = deps.sessionManager;
     this._eventBus = deps.eventBus;
+    this._rollbackManager = deps.rollbackManager;
   }
 
   resolveWebviewView(
@@ -175,6 +179,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** 从工具栏"新建会话"按钮触发 */
   triggerNewSession(): void {
     this._view?.webview.postMessage({ command: 'triggerNewSession' });
+  }
+
+  /** 获取当前会话 ID（供回退命令使用） */
+  getCurrentSessionId(): string | undefined {
+    return this._currentSessionId;
+  }
+
+  /** 刷新当前会话的历史消息（回退后调用） */
+  refreshHistory(): void {
+    if (this._currentSessionId && this._view) {
+      this._view.webview.postMessage({
+        command: 'loadHistory',
+        sessionId: this._currentSessionId,
+      });
+    }
   }
 
   /**
@@ -390,6 +409,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           sessions.unshift({ session_id: this._currentSessionId, name: 'Untitled' });
         }
         view.webview.postMessage({ command: 'historyList', sessions });
+        break;
+      }
+      case 'rollbackSession': {
+        const sessionId = msg.sessionId as string;
+        const targetTurn = msg.targetTurn as number;
+        if (!sessionId || !targetTurn) {
+          break;
+        }
+        try {
+          const result = await this._rollbackManager.requestRollback(sessionId, targetTurn);
+          const parts: string[] = [`已回退 ${result.rolled_back_turns.length} 轮`];
+          if (result.applied.length > 0) {
+            parts.push(`文件回退 ${result.applied.length} 处`);
+          }
+          if (result.conflicts.length > 0) {
+            parts.push(`版本冲突跳过 ${result.conflicts.length} 处`);
+          }
+          if (result.non_reversible.length > 0) {
+            parts.push(`不可逆工具: ${result.non_reversible.join(', ')}`);
+          }
+          vscode.window.showInformationMessage(parts.join('，'));
+          // 通知前端刷新历史
+          view.webview.postMessage({ command: 'rollbackDone', sessionId, targetTurn, text: msg.text });
+        } catch (err: unknown) {
+          view.webview.postMessage({
+            command: 'error',
+            message: `回退失败: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
         break;
       }
     }
@@ -2604,6 +2652,7 @@ ${this._getJs()}
       currentAssistantRow = null;
       currentAssistantTxt = '';
       currentThoughtEl = null;
+      userTurnCount = 0;
       currentThoughtTxt = '';
     }
 
@@ -2619,10 +2668,16 @@ ${this._getJs()}
       }
     }
 
+    /** 用户消息轮次计数器（1-based，用于回退定位） */
+    let userTurnCount = 0;
+
     function appendUserMsg(text) {
       clearPlaceholder();
+      userTurnCount++;
+      const turn = userTurnCount;
       const row = document.createElement('div');
       row.className = 'msg-row user-row';
+      row.dataset.turn = String(turn);
       const bubble = document.createElement('div');
       bubble.className = 'message user';
       bubble.textContent = text;
@@ -2636,7 +2691,7 @@ ${this._getJs()}
       rollbackBtn.className = 'msg-action-btn rollback-btn';
       rollbackBtn.title = '回退：将内容放回输入框并清空后续对话';
       rollbackBtn.innerHTML = ROLLBACK_ICON;
-      rollbackBtn.addEventListener('click', () => rollbackUserMessage(row, text));
+      rollbackBtn.addEventListener('click', () => rollbackUserMessage(row, text, turn));
       actions.appendChild(rollbackBtn);
 
       const deleteBtn = document.createElement('button');
@@ -2661,19 +2716,16 @@ ${this._getJs()}
       row.remove();
     }
 
-    /** 回退到指定用户消息：将文本放回输入框，清空该消息及所有后续内容 */
-    function rollbackUserMessage(row, text) {
+    /** 回退到指定用户消息：通知 extension host 调用云端回退 API */
+    function rollbackUserMessage(row, text, turn) {
       if (isStreaming) return;
-      let next = row.nextElementSibling;
-      while (next) {
-        const after = next.nextElementSibling;
-        next.remove();
-        next = after;
-      }
-      row.remove();
-      inputEl.value = text;
-      autoResize();
-      inputEl.focus();
+      if (!currentSessionId) return;
+      vscode.postMessage({
+        command: 'rollbackSession',
+        sessionId: currentSessionId,
+        targetTurn: turn,
+        text,
+      });
     }
 
     /** 复制图标 SVG */
@@ -3115,6 +3167,16 @@ ${this._getJs()}
               sessionNameInput.value = latest.name || 'Untitled';
               vscode.postMessage({ command: 'loadHistory', sessionId: currentSessionId });
             }
+          }
+          break;
+        }
+        case 'rollbackDone': {
+          // 回退成功：重新加载历史并恢复用户输入框文本
+          vscode.postMessage({ command: 'loadHistory', sessionId: currentSessionId });
+          if (msg.text) {
+            inputEl.value = msg.text;
+            autoResize();
+            inputEl.focus();
           }
           break;
         }
