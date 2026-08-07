@@ -1710,6 +1710,25 @@ ${this._getJs()}
       fill: currentColor;
     }
 
+    /* ── User message hover state ── */
+    .msg-row.user-row .message.user {
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .msg-row.user-row:hover .message.user {
+      border-color: var(--input-border);
+      background: var(--hover-bg);
+    }
+
+    /* ── Delete & rollback action buttons ── */
+    .msg-action-btn.delete-btn:hover:not(:disabled) {
+      color: var(--error);
+      background: color-mix(in srgb, var(--error) 10%, transparent);
+    }
+    .msg-action-btn.rollback-btn:hover:not(:disabled) {
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+    }
+
     .token-usage {
       display: inline-flex;
       align-items: center;
@@ -2608,8 +2627,53 @@ ${this._getJs()}
       bubble.className = 'message user';
       bubble.textContent = text;
       row.appendChild(bubble);
+
+      // 悬停操作：回退 + 删除
+      const actions = document.createElement('div');
+      actions.className = 'msg-actions';
+
+      const rollbackBtn = document.createElement('button');
+      rollbackBtn.className = 'msg-action-btn rollback-btn';
+      rollbackBtn.title = '回退：将内容放回输入框并清空后续对话';
+      rollbackBtn.innerHTML = ROLLBACK_ICON;
+      rollbackBtn.addEventListener('click', () => rollbackUserMessage(row, text));
+      actions.appendChild(rollbackBtn);
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'msg-action-btn delete-btn';
+      deleteBtn.title = '删除此消息';
+      deleteBtn.innerHTML = DELETE_ICON;
+      deleteBtn.addEventListener('click', () => deleteUserMessage(row));
+      actions.appendChild(deleteBtn);
+
+      row.appendChild(actions);
       messagesEl.appendChild(row);
       scrollToBottom();
+    }
+
+    /** 删除用户消息及其后续助手回合 */
+    function deleteUserMessage(row) {
+      if (isStreaming) return;
+      const next = row.nextElementSibling;
+      if (next && next.classList.contains('turn')) {
+        next.remove();
+      }
+      row.remove();
+    }
+
+    /** 回退到指定用户消息：将文本放回输入框，清空该消息及所有后续内容 */
+    function rollbackUserMessage(row, text) {
+      if (isStreaming) return;
+      let next = row.nextElementSibling;
+      while (next) {
+        const after = next.nextElementSibling;
+        next.remove();
+        next = after;
+      }
+      row.remove();
+      inputEl.value = text;
+      autoResize();
+      inputEl.focus();
     }
 
     /** 复制图标 SVG */
@@ -2617,6 +2681,8 @@ ${this._getJs()}
     const COPIED_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6"/></svg>\`;
     const LIKE_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5L5.5 6.5v7h6l1.5-4V8h-4l.5-2.5L7 3.5z"/><path d="M5.5 6.5H3.5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h2"/></svg>\`;
     const LIKED_ICON = \`<svg viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5L5.5 6.5v7h6l1.5-4V8h-4l.5-2.5L7 3.5z"/><path d="M5.5 6.5H3.5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h2"/></svg>\`;
+    const DELETE_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M5.5 4V2.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V4M4.5 4v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4"/><path d="M6.5 7.5v3.5M9.5 7.5v3.5"/></svg>\`;
+    const ROLLBACK_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h6a3 3 0 0 1 0 6H5"/><path d="M5.5 3.5L3 6L5.5 8.5"/></svg>\`;
 
     /** 执行复制操作 */
     async function copyText(text, btn) {
@@ -2662,7 +2728,7 @@ ${this._getJs()}
     }
 
     /** 创建消息操作栏 */
-    function createMsgActions(getText) {
+    function createMsgActions(getText, onDelete) {
       const actions = document.createElement('div');
       actions.className = 'msg-actions';
 
@@ -2698,6 +2764,16 @@ ${this._getJs()}
         likeBtn.innerHTML = likeBtn.classList.contains('liked') ? LIKED_ICON : LIKE_ICON;
       });
       actions.appendChild(likeBtn);
+
+      // 删除按钮
+      if (onDelete) {
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'msg-action-btn delete-btn';
+        deleteBtn.title = '删除此消息';
+        deleteBtn.innerHTML = DELETE_ICON;
+        deleteBtn.addEventListener('click', onDelete);
+        actions.appendChild(deleteBtn);
+      }
 
       return actions;
     }
@@ -2737,7 +2813,11 @@ ${this._getJs()}
       row.appendChild(bubble);
 
       // 添加操作栏，使用getter函数动态获取最新文本
-      const actions = createMsgActions(() => currentAssistantTxt || bubble.textContent || '');
+      const actions = createMsgActions(() => currentAssistantTxt || bubble.textContent || '', () => {
+        if (isStreaming) return;
+        const turnEl = row.closest('.turn');
+        if (turnEl) turnEl.remove();
+      });
       row.appendChild(actions);
 
       turn.rootEl.appendChild(row);
@@ -2767,7 +2847,11 @@ ${this._getJs()}
       renderMarkdown(bubble, text);
 
       // 添加操作栏（历史消息使用闭包捕获text）
-      const actions = createMsgActions(() => text);
+      const actions = createMsgActions(() => text, () => {
+        if (isStreaming) return;
+        const turnEl = row.closest('.turn');
+        if (turnEl) turnEl.remove();
+      });
       row.appendChild(actions);
       if (tokenUsage) {
         updateMsgTokenUsage(row, tokenUsage);
