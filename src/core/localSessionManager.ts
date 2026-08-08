@@ -14,6 +14,8 @@ import * as logger from '../logger';
 export interface HistoryEntry {
 	role: string;
 	content: string;
+	toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+	toolCallId?: string;
 }
 
 export class LocalSessionManager {
@@ -51,11 +53,16 @@ export class LocalSessionManager {
 	loadHistory(sessionId: string): HistoryEntry[] {
 		const messages = this.messageStore.loadHistory(sessionId);
 		return messages
-			.filter((m) => m.role === 'user' || m.role === 'assistant')
-			.map((m) => ({
-				role: m.role,
-				content: m.content,
-			}));
+			.filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
+			.map((m) => {
+				if (m.role === 'assistant' && 'toolCalls' in m && m.toolCalls) {
+					return { role: m.role, content: m.content, toolCalls: m.toolCalls };
+				}
+				if (m.role === 'tool' && 'toolCallId' in m) {
+					return { role: m.role, content: m.content, toolCallId: (m as { toolCallId: string }).toolCallId };
+				}
+				return { role: m.role, content: m.content };
+			});
 	}
 
 	/** 重置会话：取消 AgentLoop + 清空 MessageStore。 */

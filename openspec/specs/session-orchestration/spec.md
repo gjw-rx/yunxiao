@@ -48,6 +48,10 @@ The session manager SHALL track each tool call through `pending` -> `running` ->
 - **WHEN** `fs.read_file` fails (e.g. file not found)
 - **THEN** the call's state becomes `error` and a `tool_result` with `status: 'error'` and the reason is posted, so the agent can recover
 
+#### Scenario: Pending state visible to UI before execution
+- **WHEN** the LLM returns a tool call and the AgentLoop emits a `tool_call` event
+- **THEN** the UI can render a `pending` tool step before the tool begins executing
+
 ### Requirement: Cancel and abort
 The session manager SHALL support cancelling an in-flight turn by aborting the active SSE stream and all cancellable local tools. It SHALL post one `cancelled` result for each pending/running call that has not already been finalized, then clear the turn state.
 
@@ -99,3 +103,14 @@ The session manager SHALL expose exactly one terminal outcome for each current l
 #### Scenario: Duplicate result has no continuation response
 - **WHEN** a tool result submission receives a valid duplicate acknowledgement rather than owning a continuation stream
 - **THEN** the session manager reconnects to the existing `run_id` after its last consumed sequence instead of claiming completion
+
+### Requirement: History entry preserves tool call metadata
+The `HistoryEntry` interface SHALL include optional `toolCalls` for assistant messages and `toolCallId` for tool role messages, so that loading history restores the full tool call timeline.
+
+#### Scenario: Assistant message with tool calls in history
+- **WHEN** history is loaded for a session that had tool calls
+- **THEN** assistant messages include their `toolCalls` array and tool messages include their `toolCallId`
+
+#### Scenario: Tool messages retained in history
+- **WHEN** history is loaded for a session
+- **THEN** `tool` role messages are included in the returned history entries, not filtered out

@@ -110,6 +110,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           output?: unknown;
         };
         view.webview.postMessage({ command: 'toolState', ...p });
+        // code.edit 成功且有 diff 数据时，额外发送 diffResult 命令
+        if (p.tool === 'code.edit' && p.state === 'success' && p.output) {
+          const out = p.output as Record<string, unknown>;
+          if (out.diff) {
+            view.webview.postMessage({
+              command: 'diffResult',
+              call_id: p.call_id,
+              file_path: out.file_path ?? out.path ?? '',
+              diff_html: out.diff_html ?? out.diff ?? '',
+              additions: out.additions ?? 0,
+              deletions: out.deletions ?? 0,
+            });
+          }
+        }
+        break;
+      }
+      case 'tool_call': {
+        const p = e.payload as { call_id: string; tool: string; args?: unknown };
+        view.webview.postMessage({ command: 'toolCall', ...p });
+        break;
+      }
+      case 'tool_result': {
+        const p = e.payload as { call_id: string; status: string; result?: unknown; error?: string };
+        view.webview.postMessage({ command: 'toolResult', ...p });
         break;
       }
       case 'thought':
@@ -2567,6 +2591,12 @@ ${this._getJs()}
         case 'toolState':
           showToolState(msg.tool, msg.state, msg.error, msg.call_id, msg.args, msg.output);
           break;
+        case 'toolCall':
+          showToolState(msg.tool, 'pending', undefined, msg.call_id, msg.args);
+          break;
+        case 'toolResult':
+          // tool_result 仅作补充数据，不单独渲染（tool_state_change 已覆盖）
+          break;
         case 'thought':
           showThought(msg.text);
           break;
@@ -2588,7 +2618,35 @@ ${this._getJs()}
                 发送第一条消息开始对话
               </div>\`;
           }
-          for (const m of msg.messages) appendMsgFromHistory(m.role, m.content);
+          for (const m of msg.messages) {
+            if (m.role === 'tool' && m.toolCallId) {
+              // 工具结果消息：更新已有 pending 工具步骤，或创建已完成步骤
+              let entry = toolEntries.get(m.toolCallId);
+              if (entry) {
+                entry.state = 'success';
+                entry.output = m.content;
+                entry.stepEl.className = 'step tool clickable success' + (entry.stepEl.classList.contains('expanded') ? ' expanded' : '');
+                entry.stepEl.querySelector('.step-status').innerHTML = getStatusIcon('success');
+                if (m.content) {
+                  entry.detailEl.innerHTML += '<div class="detail-label">结果</div><div class="detail-block">' + escapeHtml(truncate(m.content, 2000)) + '</div>';
+                }
+              } else {
+                showToolState('tool', 'success', undefined, m.toolCallId, undefined, m.content);
+              }
+            } else if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+              // 含工具调用的 assistant 消息：先渲染工具 pending 步骤，再渲染回复文本
+              for (const tc of m.toolCalls) {
+                let parsedArgs;
+                try { parsedArgs = JSON.parse(tc.arguments); } catch { parsedArgs = {}; }
+                showToolState(tc.name, 'success', undefined, tc.id, parsedArgs);
+              }
+              if (m.content) {
+                appendMsgFromHistory('assistant', m.content);
+              }
+            } else {
+              appendMsgFromHistory(m.role, m.content);
+            }
+          }
           scrollToBottom();
           break;
         case 'error':

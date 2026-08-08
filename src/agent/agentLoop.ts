@@ -6,6 +6,7 @@
  *
  * 参考 opencode 双层循环设计，简化为单层 while + 工具续轮。
  */
+import { randomUUID } from 'crypto';
 import type { LLMProvider, LLMRequest, LLMMessage } from '../llm/types';
 import type { MessageStore } from '../memory/messageStore';
 import { loadHistoryForLLM } from '../memory/historyLoader';
@@ -152,12 +153,24 @@ export class AgentLoop {
 							payload: event.text,
 						});
 					} else if (event.type === 'toolCall') {
-						pendingToolCalls.push({
-							id: event.id,
-							name: event.name,
-							arguments: event.arguments,
-						});
-					} else if (event.type === 'usage') {
+					const callId = event.id || randomUUID();
+					pendingToolCalls.push({
+						id: callId,
+						name: event.name,
+						arguments: event.arguments,
+					});
+					let parsedArgs: unknown;
+					try {
+						parsedArgs = JSON.parse(event.arguments);
+					} catch {
+						parsedArgs = {};
+					}
+					this.eventBus.emit({
+						type: 'tool_call',
+						sessionId,
+						payload: { call_id: callId, tool: event.name, args: parsedArgs },
+					});
+				} else if (event.type === 'usage') {
 						logger.log(`[AgentLoop] token 用量: input=${event.inputTokens} output=${event.outputTokens}`);
 						this.eventBus.emit({
 							type: 'token_usage',
