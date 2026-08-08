@@ -279,3 +279,100 @@ describe('overflow recovery', () => {
 		}
 	});
 });
+
+// ── 双阈值触发测试 ──
+
+describe('compactIfNeeded dual threshold', () => {
+	const fakeProvider: LLMProvider = {
+		async *chatCompletion() {
+			yield { type: 'textDelta' as const, text: '## Objective\n- Compressed' };
+			yield { type: 'finish' as const, reason: 'stop' as const };
+		},
+	};
+
+	function makeEventBus(): { bus: EventBusMock; events: unknown[] } {
+		const events: unknown[] = [];
+		const bus: EventBusMock = {
+			emit(e: unknown) { events.push(e); },
+			on() { return () => {}; },
+		};
+		return { bus, events };
+	}
+
+	it('消息条数达到阈值时触发压缩（token 未达阈值）', async () => {
+		const config: CompactionConfig = {
+			enabled: true,
+			keepTokens: 2,
+			buffer: 100,
+			contextWindow: 999999, // 极高 token 阈值，确保不因 token 触发
+			messageThreshold: 5,
+		};
+		const store = new MessageStore();
+		const { bus } = makeEventBus();
+
+		// 写入 6 条短消息，超过 messageThreshold=5
+		for (let i = 0; i < 6; i++) {
+			store.append('s1', { role: 'user', content: 'x' });
+		}
+		const msgs = store.loadHistory('s1');
+
+		const result = await compactIfNeeded('s1', msgs, fakeProvider, 'gpt-4o-mini', config, store, bus as never);
+		assert.strictEqual(result, true, '消息条数达到阈值应触发压缩');
+	});
+
+	it('消息条数未达阈值且 token 未达阈值时不触发', async () => {
+		const config: CompactionConfig = {
+			enabled: true,
+			keepTokens: 20,
+			buffer: 100,
+			contextWindow: 999999,
+			messageThreshold: 40,
+		};
+		const store = new MessageStore();
+		const { bus } = makeEventBus();
+
+		store.append('s1', { role: 'user', content: 'x' });
+		const msgs = store.loadHistory('s1');
+
+		const result = await compactIfNeeded('s1', msgs, fakeProvider, 'gpt-4o-mini', config, store, bus as never);
+		assert.strictEqual(result, false, '双阈值均未达到不应触发');
+	});
+});
+
+// ── 摘要模板新字段测试 ──
+
+describe('compaction summary template', () => {
+	it('摘要 prompt 包含 Failed Attempts 字段', async () => {
+		const fakeProvider: LLMProvider = {
+			async *chatCompletion() {
+				yield { type: 'textDelta' as const, text: '## Failed Attempts\n- read_file failed' };
+				yield { type: 'finish' as const, reason: 'stop' as const };
+			},
+		};
+
+		const head: Message[] = [
+			{ role: 'assistant', content: '', seq: 0, toolCalls: [{ id: '1', name: 'read_file', arguments: '{"path":"/none"}' }] },
+			{ role: 'tool', toolCallId: '1', content: 'Error: file not found', seq: 1 },
+		];
+
+		const summary = await generateSummary(head, null, fakeProvider, 'gpt-4o-mini');
+		assert.ok(summary.includes('Failed Attempts'), '摘要应包含 Failed Attempts 字段');
+	});
+
+	it('摘要 prompt 包含 Completed Work 字段', async () => {
+		const fakeProvider: LLMProvider = {
+			async *chatCompletion() {
+				yield { type: 'textDelta' as const, text: '## Completed Work\n- write_file succeeded' };
+				yield { type: 'finish' as const, reason: 'stop' as const };
+			},
+		};
+
+		const head: Message[] = [
+			{ role: 'assistant', content: '', seq: 0, toolCalls: [{ id: '1', name: 'write_file', arguments: '{"path":"/a"}' }] },
+			{ role: 'tool', toolCallId: '1', content: 'wrote /a', seq: 1 },
+		];
+
+		const summary = await generateSummary(head, null, fakeProvider, 'gpt-4o-mini');
+		assert.ok(summary.includes('Completed Work'), '摘要应包含 Completed Work 字段');
+	});
+});

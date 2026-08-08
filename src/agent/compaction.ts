@@ -26,6 +26,8 @@ export interface CompactionConfig {
 	readonly buffer: number;
 	/** 模型上下文窗口大小 */
 	readonly contextWindow: number;
+	/** 触发压缩的消息条数阈值（默认 40） */
+	readonly messageThreshold?: number;
 }
 
 // ── 分割算法 ──
@@ -85,6 +87,12 @@ const SUMMARY_PROMPT_TEMPLATE = `You are maintaining a conversation summary. Cre
 ### Blocked
 - [Blocked work]
 
+## Failed Attempts
+- [Tool name + args + error reason, for each failed attempt]
+
+## Completed Work
+- [Successfully completed tool calls and their key outcomes]
+
 ## Next Move
 1. [Next planned actions]
 
@@ -115,6 +123,12 @@ Please provide an updated summary following the same structure:
 ### Blocked
 - [Blocked work]
 
+## Failed Attempts
+- [Tool name + args + error reason, for each failed attempt]
+
+## Completed Work
+- [Successfully completed tool calls and their key outcomes]
+
 ## Next Move
 1. [Next planned actions]
 
@@ -141,6 +155,12 @@ Please provide a summary following this structure:
 - [Active work]
 ### Blocked
 - [Blocked work]
+
+## Failed Attempts
+- [Tool name + args + error reason, for each failed attempt]
+
+## Completed Work
+- [Successfully completed tool calls and their key outcomes]
 
 ## Next Move
 1. [Next planned actions]
@@ -215,10 +235,14 @@ export async function compactIfNeeded(
 	}
 
 	const totalTokens = estimateMessages(messages);
+	const messageCount = messages.length;
 
 	// 计算阈值：contextWindow - maxOutput - buffer
 	const threshold = config.contextWindow - (model.includes('maxTokens') ? 4096 : 4096) - config.buffer;
-	if (totalTokens <= threshold) {
+	const msgThreshold = config.messageThreshold ?? 40;
+
+	// 双阈值：token 或 消息条数 任一达到即触发
+	if (totalTokens <= threshold && messageCount <= msgThreshold) {
 		return false;
 	}
 
@@ -258,7 +282,7 @@ export async function compactIfNeeded(
 
 // ── 辅助函数 ──
 
-/** 将消息列表转为纯文本（用于摘要 prompt）。 */
+/** 将消息列表转为纯文本（用于摘要 prompt）。tool 消息区分 success/error 状态。 */
 function messagesToText(messages: Message[]): string {
 	const lines: string[] = [];
 	for (const msg of messages) {
@@ -278,7 +302,11 @@ function messagesToText(messages: Message[]): string {
 				}
 				break;
 			case 'tool':
-				lines.push(`[Tool Result: ${msg.toolCallId}]: ${msg.content.slice(0, 500)}`);
+				if (msg.content.startsWith('Error:') || msg.content.startsWith('Cancelled:')) {
+					lines.push(`[Tool Failed: ${msg.toolCallId}]: ${msg.content.slice(0, 500)}`);
+				} else {
+					lines.push(`[Tool Succeeded: ${msg.toolCallId}]: ${msg.content.slice(0, 500)}`);
+				}
 				break;
 			case 'compaction':
 				lines.push(`[Compaction Summary]: ${msg.summary}`);

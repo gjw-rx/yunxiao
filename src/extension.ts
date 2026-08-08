@@ -170,6 +170,7 @@ async function _activate(context: vscode.ExtensionContext) {
 		keepTokens: config.get<number>('compaction.keepTokens', 8000),
 		buffer: config.get<number>('compaction.buffer', 20000),
 		contextWindow: 128000,
+		messageThreshold: config.get<number>('compaction.messageThreshold', 40),
 	};
 
 	// Agent Loop
@@ -181,9 +182,10 @@ async function _activate(context: vscode.ExtensionContext) {
 		eventBus,
 		{
 			model: modelConfig.model,
+			providerId: modelConfig.provider,
 			temperature: modelConfig.temperature,
 			maxTokens: modelConfig.maxTokens,
-			maxSteps: config.get<number>('agent.maxSteps', 50),
+			maxSteps: config.get<number>('agent.maxSteps', 25),
 			workspaceRoots,
 			maxFileSize: config.get<number>('maxFileSize', DEFAULT_MAX_FILE_SIZE),
 			toolTimeoutMs: config.get<number>('toolTimeoutMs', 30_000),
@@ -192,6 +194,8 @@ async function _activate(context: vscode.ExtensionContext) {
 			agentPrompt: config.get<string>('agent.systemPrompt', '') || undefined,
 			skillRegistry,
 			compaction: compactionConfig,
+			repeatThreshold: config.get<number>('agent.repeatThreshold', 3),
+			cacheReadTools: config.get<boolean>('agent.cacheReadTools', true),
 		}
 	);
 

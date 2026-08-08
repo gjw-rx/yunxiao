@@ -1573,7 +1573,7 @@ ${this._getJs()}
         </button>
       </div>
     </div>
-    <div id="hint">Enter 发送 &middot; Shift+Enter 换行 &middot; / 命令 &middot; @ 引用文件</div>
+    <div id="hint">Enter 发送 &middot; Shift+Enter 换行 &middot; 中文输入法下 Enter 确认候选词 &middot; / 命令 &middot; @ 引用文件</div>
   </div>
 `;
   }
@@ -1724,7 +1724,7 @@ ${this._getJs()}
       turn.traceBodyEl.appendChild(el);
       turn.stepCount += 1;
       turn.countEl.textContent = turn.stepCount;
-      scrollToBottom();
+      smartScrollToBottom();
       return turn;
     }
 
@@ -1826,7 +1826,7 @@ ${this._getJs()}
       }
       entry.detailEl.innerHTML = html;
 
-      scrollToBottom();
+      smartScrollToBottom();
     }
 
     // ══ 审批卡片 ══
@@ -1899,7 +1899,7 @@ ${this._getJs()}
         summaryEl.parentNode.insertBefore(more, summaryEl.nextSibling);
       }
 
-      scrollToBottom();
+      smartScrollToBottom();
     }
 
     // ── Diff cards ──
@@ -1942,7 +1942,7 @@ ${this._getJs()}
 
       addStep(card);
       diffCards.set(callId, card);
-      scrollToBottom();
+      smartScrollToBottom();
     }
 
     // ── Utility ──
@@ -2019,7 +2019,7 @@ ${this._getJs()}
         if (e.key === 'Enter') { e.preventDefault(); selectFile(filteredFiles[filePickerIndex]); return; }
         if (e.key === 'Escape') { e.preventDefault(); closeFilePicker(); return; }
       }
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); handleSend(); }
     });
 
     inputEl.addEventListener('input', autoResize);
@@ -2230,8 +2230,33 @@ ${this._getJs()}
       currentThoughtTxt = '';
     }
 
+    /** 判断用户是否在底部附近（用于流式输出时决定是否自动跟随） */
+    function isNearBottom() {
+      const threshold = 80;
+      return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < threshold;
+    }
+
+    /** 用户手动滚动时记录位置，阻止流式自动跟随 */
+    let userScrolledAway = false;
+    messagesEl.addEventListener('scroll', () => {
+      if (isNearBottom()) {
+        userScrolledAway = false;
+      } else if (isStreaming) {
+        userScrolledAway = true;
+      }
+    });
+
+    /** 强制滚动到底部（用户消息、新会话等非流式场景） */
     function scrollToBottom() {
+      userScrolledAway = false;
       messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    /** 流式输出期间智能滚动：仅当用户未手动上滑时跟随 */
+    function smartScrollToBottom() {
+      if (!userScrolledAway) {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
     }
 
     function renderMarkdown(el, text) {
@@ -2427,7 +2452,7 @@ ${this._getJs()}
 
       turn.rootEl.appendChild(row);
       currentAssistantRow = row;
-      scrollToBottom();
+      smartScrollToBottom();
       return bubble;
     }
 
@@ -2437,7 +2462,7 @@ ${this._getJs()}
         currentAssistantEl = appendAssistantBubble(true);
       }
       renderMarkdown(currentAssistantEl, currentAssistantTxt);
-      scrollToBottom();
+      smartScrollToBottom();
     }
 
     function appendMsgFromHistory(role, text, tokenUsage) {
@@ -2500,7 +2525,7 @@ ${this._getJs()}
 
       const body = currentThoughtEl.querySelector('.step-body');
       body.textContent = currentThoughtTxt;
-      scrollToBottom();
+      smartScrollToBottom();
     }
 
     function showPlan(steps) {

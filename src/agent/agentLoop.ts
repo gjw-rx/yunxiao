@@ -20,12 +20,16 @@ import { toolSchemasToDefinitions, llmToolCallToCoreToolCall, toolResultToConten
 import { buildSystemPrompt } from './systemPrompt';
 import type { CompactionConfig } from './compaction';
 import { compactIfNeeded } from './compaction';
+import { ToolCallTracker } from './toolCallTracker';
+import { ToolResultCache } from './toolResultCache';
 import * as logger from '../logger';
 
 /** AgentLoop 配置 */
 export interface AgentLoopConfig {
 	/** 模型名称 */
 	readonly model: string;
+	/** Provider ID（如 "openai"） */
+	readonly providerId?: string;
 	/** 温度参数 */
 	readonly temperature: number;
 	/** 最大输出 token 数 */
@@ -48,6 +52,10 @@ export interface AgentLoopConfig {
 	readonly skillRegistry?: SkillRegistry | null;
 	/** 上下文压缩配置（可选，不配置则不启用压缩） */
 	readonly compaction?: CompactionConfig;
+	/** 连续重复调用阈值（默认 3） */
+	readonly repeatThreshold?: number;
+	/** 是否缓存只读工具结果（默认 true） */
+	readonly cacheReadTools?: boolean;
 }
 
 const MAX_STEPS_PROMPT =
@@ -76,6 +84,11 @@ export class AgentLoop {
 		logger.log(`[AgentLoop] run 开始 sessionId=${sessionId} 用户消息长度=${userText.length}`);
 
 		let step = 0;
+		const repeatThreshold = this.config.repeatThreshold ?? 3;
+		const cacheReadTools = this.config.cacheReadTools ?? true;
+		const callTracker = new ToolCallTracker();
+		const resultCache = new ToolResultCache();
+		let stepWarned = false;
 
 		try {
 			let overflowRetry = false;
@@ -103,6 +116,8 @@ export class AgentLoop {
 				workspaceRoot: this.config.workspaceRoots[0] ?? '',
 				platform: process.platform,
 				date: new Date().toISOString().slice(0, 10),
+				modelId: this.config.model,
+				providerId: this.config.providerId,
 			});
 
 			// 构建消息：系统提示词 + 历史
@@ -115,11 +130,17 @@ export class AgentLoop {
 				const tools = toolSchemasToDefinitions(this.toolRegistry.list());
 
 				// Max Steps 检查
-				let toolChoice: 'auto' | 'none' = 'auto';
-				if (step >= this.config.maxSteps) {
-					toolChoice = 'none';
-					messages.push({ role: 'user', content: MAX_STEPS_PROMPT });
-				}
+			let toolChoice: 'auto' | 'none' = 'auto';
+			if (step >= this.config.maxSteps) {
+				toolChoice = 'none';
+				messages.push({ role: 'user', content: MAX_STEPS_PROMPT });
+			} else if (!stepWarned && step >= Math.floor(this.config.maxSteps * 0.8)) {
+				stepWarned = true;
+				const warning = `You are approaching the maximum step limit (${this.config.maxSteps} steps). You have used ${step} steps. Please wrap up your work.`;
+				messages.push({ role: 'user', content: warning });
+				this.messageStore.append(sessionId, { role: 'user', content: warning });
+				logger.log(`[AgentLoop] step=${step} 接近 maxSteps=${this.config.maxSteps}，注入预警`);
+			}
 
 				// 构建 LLM 请求
 				const request: LLMRequest = {
@@ -257,33 +278,78 @@ export class AgentLoop {
 				const toolContext = this.buildToolContext(sessionId);
 
 				// 串行执行工具
-				for (const tc of pendingToolCalls) {
-					if (signal.aborted) {
-						break;
-					}
+			for (const tc of pendingToolCalls) {
+				if (signal.aborted) {
+					break;
+				}
 
-					const coreCall = llmToolCallToCoreToolCall(tc);
+				const coreCall = llmToolCallToCoreToolCall(tc);
+				const isReadTool = this.isReadTool(tc.name);
 
+				// P0: 重复调用检测（在缓存检查之前，确保重复计数不受缓存影响）
+				const repeatCount = callTracker.check(tc.name, coreCall.args);
+				if (repeatCount >= repeatThreshold) {
+					logger.log(`[AgentLoop] 工具 ${tc.name} 连续重复 ${repeatCount} 次，注入引导消息`);
+					callTracker.reset();
+					this.messageStore.append(sessionId, {
+						role: 'user',
+						content: `You are repeatedly calling ${tc.name} with the same arguments. This suggests you may be stuck. Please try a different approach or summarize what you have accomplished.`,
+					});
+					continue;
+				}
+
+				// P5: 缓存检查（只读工具 + cacheReadTools 启用）
+				if (cacheReadTools && isReadTool && resultCache.has(tc.name, coreCall.args)) {
+					const cached = resultCache.get(tc.name, coreCall.args)!;
+					const cachedResult: ToolResult = {
+						...cached,
+						call_id: tc.id,
+						result: `[cached] ${cached.result ?? ''}`,
+					};
+					logger.log(`[AgentLoop] 工具 ${tc.name} 缓存命中，跳过执行`);
 					this.eventBus.emit({
-					type: 'tool_state_change',
-					sessionId,
-					payload: { call_id: tc.id, tool: tc.name, state: 'running', args: coreCall.args },
-				});
-
-					let result: ToolResult;
-					try {
-						result = await this.toolRouter.route(coreCall, toolContext);
-						logger.log(`[AgentLoop] 工具 ${tc.name} 执行完成 status=${result.status}`);
-					} catch (error) {
-						logger.notifyError(`[AgentLoop] 工具 ${tc.name} 执行异常`, error instanceof Error ? error.message : String(error));
-						result = {
-							call_id: tc.id,
-							status: 'error',
-							error: error instanceof Error ? error.message : String(error),
-						};
-					}
-
+						type: 'tool_state_change',
+						sessionId,
+						payload: { call_id: tc.id, tool: tc.name, state: 'success', args: coreCall.args },
+					});
 					this.eventBus.emit({
+						type: 'tool_result',
+						sessionId,
+						payload: cachedResult,
+					});
+					this.messageStore.append(sessionId, {
+						role: 'tool',
+						toolCallId: tc.id,
+						content: toolResultToContent(cachedResult),
+					});
+					continue;
+				}
+
+				this.eventBus.emit({
+				type: 'tool_state_change',
+				sessionId,
+				payload: { call_id: tc.id, tool: tc.name, state: 'running', args: coreCall.args },
+			});
+
+				let result: ToolResult;
+				try {
+					result = await this.toolRouter.route(coreCall, toolContext);
+					logger.log(`[AgentLoop] 工具 ${tc.name} 执行完成 status=${result.status}`);
+				} catch (error) {
+					logger.notifyError(`[AgentLoop] 工具 ${tc.name} 执行异常`, error instanceof Error ? error.message : String(error));
+					result = {
+						call_id: tc.id,
+						status: 'error',
+						error: error instanceof Error ? error.message : String(error),
+					};
+				}
+
+				// P5: 缓存只读工具的成功结果
+				if (cacheReadTools && isReadTool && result.status === 'success') {
+					resultCache.set(tc.name, coreCall.args, result);
+				}
+
+				this.eventBus.emit({
 					type: 'tool_state_change',
 					sessionId,
 					payload: {
@@ -309,13 +375,19 @@ export class AgentLoop {
 				}
 
 				// 工具执行后检查中断
-				if (signal.aborted) {
-					this.emitRunStateChange(sessionId, 'cancelled');
-					this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
-					return;
-				}
+			if (signal.aborted) {
+				this.emitRunStateChange(sessionId, 'cancelled');
+				this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
+				return;
+			}
 
-				step++;
+			// P1: 工具执行后额外检查 compaction
+			if (this.config.compaction?.enabled) {
+				const postToolMessages = this.messageStore.loadHistory(sessionId);
+				await compactIfNeeded(sessionId, postToolMessages, this.provider, this.config.model, this.config.compaction, this.messageStore, this.eventBus);
+			}
+
+			step++;
 			}
 
 			// 正常完成
@@ -338,6 +410,15 @@ export class AgentLoop {
 	/** 中断当前正在执行的 Agent Loop。 */
 	cancel(): void {
 		this.abortController?.abort();
+	}
+
+	/** 判断工具是否为只读（用于缓存决策）。 */
+	private isReadTool(name: string): boolean {
+		try {
+			return this.toolRegistry.lookup(name).permission === 'read';
+		} catch {
+			return false;
+		}
 	}
 
 	/** 构建 ToolContext，注入运行时信息。 */
