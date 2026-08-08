@@ -58,6 +58,42 @@
           "description": "AI 服务的 Base URL（FastAPI 服务地址）",
           "scope": "window"
         },
+        "yunxiaoAgent.model.provider": {
+          "type": "string",
+          "default": "openai",
+          "description": "LLM Provider ID（如 openai，兼容 DeepSeek/通义千问等 OpenAI 兼容服务）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.model.model": {
+          "type": "string",
+          "default": "",
+          "description": "模型名称（如 gpt-4o-mini、deepseek-chat）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.model.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "LLM API Key（Bearer Token）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.model.baseURL": {
+          "type": "string",
+          "default": "https://api.openai.com/v1",
+          "description": "LLM API 地址（OpenAI 兼容的 /v1/chat/completions 端点）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.model.temperature": {
+          "type": "number",
+          "default": 0.7,
+          "description": "LLM 生成温度参数",
+          "scope": "window"
+        },
+        "yunxiaoAgent.model.maxTokens": {
+          "type": "number",
+          "default": 4096,
+          "description": "LLM 最大输出 token 数",
+          "scope": "window"
+        },
         "yunxiaoAgent.maxFileSize": {
           "type": "number",
           "default": 1048576,
