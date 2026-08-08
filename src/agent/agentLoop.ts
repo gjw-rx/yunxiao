@@ -17,6 +17,8 @@ import type { ToolResult } from '../core/types';
 import type { SkillRegistry } from '../skill/skillRegistry';
 import { toolSchemasToDefinitions, llmToolCallToCoreToolCall, toolResultToContent } from './toolAdapter';
 import { buildSystemPrompt } from './systemPrompt';
+import type { CompactionConfig } from './compaction';
+import { compactIfNeeded } from './compaction';
 
 /** AgentLoop 配置 */
 export interface AgentLoopConfig {
@@ -42,6 +44,8 @@ export interface AgentLoopConfig {
 	readonly agentPrompt?: string;
 	/** Skill 注册表（为 null 时系统提示词不含 Skill guidance） */
 	readonly skillRegistry?: SkillRegistry | null;
+	/** 上下文压缩配置（可选，不配置则不启用压缩） */
+	readonly compaction?: CompactionConfig;
 }
 
 const MAX_STEPS_PROMPT =
@@ -71,10 +75,19 @@ export class AgentLoop {
 		let step = 0;
 
 		try {
-			while (true) {
+			let overflowRetry = false;
+
+		while (true) {
 				if (signal.aborted) {
 					break;
 				}
+
+				// 上下文压缩检查（每轮开始前）
+				if (this.config.compaction?.enabled && !overflowRetry) {
+					const allMessages = this.messageStore.loadHistory(sessionId);
+					await compactIfNeeded(sessionId, allMessages, this.provider, this.config.model, this.config.compaction, this.messageStore, this.eventBus);
+				}
+				overflowRetry = false;
 
 				// 加载历史
 			const history = loadHistoryForLLM(sessionId, this.messageStore);
@@ -180,6 +193,19 @@ export class AgentLoop {
 
 				// 处理错误
 				if (hasError) {
+					// Context overflow 恢复：assistant 尚未输出时触发压缩后重试
+					const isOverflow = /context_length|maximum context|too many tokens|token limit/i.test(errorMessage);
+					if (isOverflow && !textContent && this.config.compaction?.enabled) {
+						const allMessages = this.messageStore.loadHistory(sessionId);
+						const compacted = await compactIfNeeded(
+							sessionId, allMessages, this.provider, this.config.model,
+							this.config.compaction, this.messageStore, this.eventBus,
+						);
+						if (compacted) {
+							overflowRetry = true;
+							continue;
+						}
+					}
 					this.emitRunStateChange(sessionId, 'failed', errorMessage);
 					this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 					return;
