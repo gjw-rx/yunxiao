@@ -6,6 +6,7 @@
 import type { LLMProvider, LLMRequest, LLMEvent, LLMMessage, ToolDefinition } from './types';
 import type { ModelConfig } from '../config/modelConfig';
 import { parseSSEStream } from './streamParser';
+import * as logger from '../logger';
 
 /** OpenAI message 格式 */
 interface OpenAIMessage {
@@ -72,6 +73,7 @@ export class OpenAIProvider implements LLMProvider {
 				body: JSON.stringify(body),
 			});
 		} catch (err) {
+			logger.notifyError('[LLM] 网络请求失败', { url, error: err instanceof Error ? err.message : String(err) });
 			yield {
 				type: 'error',
 				error: `网络请求失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -81,6 +83,7 @@ export class OpenAIProvider implements LLMProvider {
 
 		if (!response.ok || !response.body) {
 			const errorText = await response.text().catch(() => '');
+			logger.notifyError('[LLM] API 返回错误', { status: response.status, url, errorText: errorText.slice(0, 300) });
 			yield {
 				type: 'error',
 				error: `LLM 返回错误 ${response.status}: ${errorText.slice(0, 500)}`,

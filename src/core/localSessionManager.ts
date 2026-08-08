@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 import type { AgentLoop } from '../agent/agentLoop';
 import type { MessageStore } from '../memory/messageStore';
 import type { Message } from '../memory/types';
+import * as logger from '../logger';
 
 /** 前端期望的历史消息格式。 */
 export interface HistoryEntry {
@@ -27,17 +28,22 @@ export class LocalSessionManager {
 	createSession(): string {
 		const sessionId = randomUUID();
 		this.currentSessionId = sessionId;
+		logger.log(`[SessionManager] 创建会话 sessionId=${sessionId}`);
 		return sessionId;
 	}
 
 	/** 发送用户消息，委托给 AgentLoop.run()。 */
 	sendMessage(sessionId: string, text: string): void {
 		this.currentSessionId = sessionId;
-		void this.agentLoop.run(sessionId, text);
+		logger.log(`[SessionManager] 发送消息 sessionId=${sessionId} 文本长度=${text.length}`);
+		void this.agentLoop.run(sessionId, text).catch((err) => {
+			logger.notifyError('[SessionManager] AgentLoop.run 异常', err instanceof Error ? err.message : String(err));
+		});
 	}
 
 	/** 取消当前会话的 Agent Loop。 */
 	cancel(sessionId: string): void {
+		logger.log(`[SessionManager] 取消会话 sessionId=${sessionId}`);
 		this.agentLoop.cancel();
 	}
 

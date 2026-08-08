@@ -39,12 +39,12 @@ import { AgentLoop } from './agent/agentLoop';
 import type { CompactionConfig } from './agent/compaction';
 import * as logger from './logger';
 
-// 全局崩溃捕获：进程死之前把错误写进 OutputChannel
+// 全局崩溃捕获：进程死之前把错误写进 OutputChannel + 弹窗通知
 process.on('uncaughtException', (err) => {
-	logger.error('[FATAL] uncaughtException:', err instanceof Error ? err.stack ?? err.message : err);
+	logger.notifyError('[FATAL] uncaughtException', err instanceof Error ? err.stack ?? err.message : err);
 });
 process.on('unhandledRejection', (reason) => {
-	logger.error('[FATAL] unhandledRejection:', reason instanceof Error ? reason.stack ?? reason?.toString?.() ?? String(reason) : String(reason));
+	logger.notifyError('[FATAL] unhandledRejection', reason instanceof Error ? reason.stack ?? reason?.toString?.() ?? String(reason) : String(reason));
 });
 
 export async function activate(context: vscode.ExtensionContext) {

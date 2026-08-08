@@ -9,6 +9,7 @@ import type { ToolContext } from '../tools/baseTool';
 import type { ApprovalGateway } from './approvalGateway';
 import { SecurityAudit } from './securityAudit';
 import { ToolExecutionJournal, type ToolExecutionIdentity } from './toolExecutionJournal';
+import * as logger from '../logger';
 
 export class ToolRouter {
 	constructor(
@@ -20,10 +21,12 @@ export class ToolRouter {
 
 	/** 路由并执行一个工具调用。 */
 	async route(call: ToolCall, context: ToolContext): Promise<ToolResult> {
+		logger.log(`[ToolRouter] 路由工具 ${call.tool} call_id=${call.call_id}`);
 		const tool = this.registry.lookup(call.tool);
 		tool.validate(call.args);
 		const audit = this.audit.audit(call, tool, context);
 		if (!audit.allowed) {
+			logger.notifyError(`[ToolRouter] 安全审计拒绝工具 ${call.tool}`, audit.rejection?.error);
 			return audit.rejection!;
 		}
 		if (audit.warning) {
@@ -49,7 +52,8 @@ export class ToolRouter {
 				this.approvalScope(call, context)
 			);
 			if (decision === 'deny') {
-				return {
+			logger.log(`[ToolRouter] 用户拒绝执行工具 ${call.tool}`);
+			return {
 					call_id: call.call_id,
 					status: 'cancelled',
 					error: '用户拒绝执行',
@@ -82,8 +86,10 @@ export class ToolRouter {
 			if (!context.abortSignal?.aborted) {
 				await this.journal.complete(identity, result);
 			}
+			logger.log(`[ToolRouter] 工具 ${call.tool} 执行成功 status=${result.status}`);
 			return result;
 		} catch (error) {
+			logger.notifyError(`[ToolRouter] 工具 ${call.tool} 执行失败`, error instanceof Error ? error.message : String(error));
 			if (!context.abortSignal?.aborted) {
 				await this.journal.complete(identity, {
 					call_id: call.call_id,

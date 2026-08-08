@@ -19,6 +19,7 @@ import { toolSchemasToDefinitions, llmToolCallToCoreToolCall, toolResultToConten
 import { buildSystemPrompt } from './systemPrompt';
 import type { CompactionConfig } from './compaction';
 import { compactIfNeeded } from './compaction';
+import * as logger from '../logger';
 
 /** AgentLoop 配置 */
 export interface AgentLoopConfig {
@@ -71,6 +72,7 @@ export class AgentLoop {
 
 		this.messageStore.append(sessionId, { role: 'user', content: userText });
 		this.emitRunStateChange(sessionId, 'running');
+		logger.log(`[AgentLoop] run 开始 sessionId=${sessionId} 用户消息长度=${userText.length}`);
 
 		let step = 0;
 
@@ -79,6 +81,7 @@ export class AgentLoop {
 
 		while (true) {
 				if (signal.aborted) {
+					logger.log('[AgentLoop] 循环中断: abort signal');
 					break;
 				}
 
@@ -134,6 +137,7 @@ export class AgentLoop {
 				const pendingToolCalls: Array<{ id: string; name: string; arguments: string }> = [];
 				let hasError = false;
 				let errorMessage = '';
+				logger.log(`[AgentLoop] step=${step} 调用 LLM model=${this.config.model} 消息数=${messages.length} tools=${tools?.length ?? 0} toolChoice=${toolChoice}`);
 
 				for await (const event of eventStream) {
 					if (signal.aborted) {
@@ -154,6 +158,7 @@ export class AgentLoop {
 							arguments: event.arguments,
 						});
 					} else if (event.type === 'usage') {
+						logger.log(`[AgentLoop] token 用量: input=${event.inputTokens} output=${event.outputTokens}`);
 						this.eventBus.emit({
 							type: 'token_usage',
 							sessionId,
@@ -182,6 +187,7 @@ export class AgentLoop {
 
 				// 处理中断
 				if (signal.aborted) {
+					logger.log('[AgentLoop] 用户中断，保存部分回复');
 					this.messageStore.append(sessionId, {
 						role: 'assistant',
 						content: textContent,
@@ -193,9 +199,11 @@ export class AgentLoop {
 
 				// 处理错误
 				if (hasError) {
+					logger.notifyError('[AgentLoop] LLM 返回错误', { step, errorMessage, sessionId });
 					// Context overflow 恢复：assistant 尚未输出时触发压缩后重试
 					const isOverflow = /context_length|maximum context|too many tokens|token limit/i.test(errorMessage);
 					if (isOverflow && !textContent && this.config.compaction?.enabled) {
+						logger.log('[AgentLoop] 检测到上下文溢出，尝试压缩后重试');
 						const allMessages = this.messageStore.loadHistory(sessionId);
 						const compacted = await compactIfNeeded(
 							sessionId, allMessages, this.provider, this.config.model,
@@ -213,6 +221,7 @@ export class AgentLoop {
 
 				// 无工具调用 -> 循环结束
 				if (pendingToolCalls.length === 0) {
+					logger.log(`[AgentLoop] step=${step} 无工具调用，循环结束 文本长度=${textContent.length}`);
 					this.messageStore.append(sessionId, {
 						role: 'assistant',
 						content: textContent,
@@ -221,6 +230,7 @@ export class AgentLoop {
 				}
 
 				// 有工具调用 -> 追加 assistant 消息（含 toolCalls），执行工具，续轮
+				logger.log(`[AgentLoop] step=${step} 收到 ${pendingToolCalls.length} 个工具调用: ${pendingToolCalls.map(tc => tc.name).join(', ')}`);
 				this.messageStore.append(sessionId, {
 					role: 'assistant',
 					content: textContent,
@@ -250,7 +260,9 @@ export class AgentLoop {
 					let result: ToolResult;
 					try {
 						result = await this.toolRouter.route(coreCall, toolContext);
+						logger.log(`[AgentLoop] 工具 ${tc.name} 执行完成 status=${result.status}`);
 					} catch (error) {
+						logger.notifyError(`[AgentLoop] 工具 ${tc.name} 执行异常`, error instanceof Error ? error.message : String(error));
 						result = {
 							call_id: tc.id,
 							status: 'error',
@@ -296,8 +308,10 @@ export class AgentLoop {
 			// 正常完成
 			this.emitRunStateChange(sessionId, 'completed');
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
+			logger.log(`[AgentLoop] 正常完成 sessionId=${sessionId} 共 ${step} 步`);
 		} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error);
+		logger.notifyError('[AgentLoop] 未捕获异常', { sessionId, msg });
 		this.eventBus.emit({
 			type: 'error',
 			sessionId,

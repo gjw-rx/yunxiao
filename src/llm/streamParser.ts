@@ -4,6 +4,7 @@
  * 合并 tool_calls 增量片段，以 LLMEvent 序列 yield。
  */
 import type { LLMEvent } from './types';
+import * as logger from '../logger';
 
 /** OpenAI SSE chunk 中的 delta.tool_calls 片段 */
 interface ToolCallDelta {
@@ -84,6 +85,7 @@ export async function* parseSSEStream(
 				try {
 					chunk = JSON.parse(data) as SSEChunk;
 				} catch {
+					logger.error('[StreamParser] JSON 解析失败', data.slice(0, 200));
 					// 跳过无法解析的行
 					continue;
 				}

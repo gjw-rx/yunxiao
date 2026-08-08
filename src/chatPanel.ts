@@ -5,6 +5,7 @@ import type { ToolRegistry } from './core/toolRegistry';
 import type { EventBus, AgentEvent } from './core/eventBus';
 import type { LocalSessionManager } from './core/localSessionManager';
 import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
+import * as logger from './logger';
 
 interface ChatViewDeps {
   readonly sessionManager: LocalSessionManager;
@@ -172,6 +173,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const view = this._view;
     if (!view) { return; }
 
+    logger.log(`[ChatPanel] 收到 webview 消息: ${msg.command}`);
+
     switch (msg.command) {
       case 'createSession': {
         const requestId = ++this._createSessionRequest;
@@ -220,6 +223,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (resolver) {
           this._pendingApprovals.delete(callId);
           resolver(decision);
+        } else {
+          logger.error(`[ChatPanel] 审批回调未找到 call_id=${callId}`);
         }
         break;
       }
