@@ -17,11 +17,9 @@ export function toolSchemaToDefinition(schema: ToolSchema): ToolDefinition {
 	};
 }
 
-/** 批量转换，仅保留 site='local' 的工具。 */
+/** 批量转换。 */
 export function toolSchemasToDefinitions(schemas: readonly ToolSchema[]): ToolDefinition[] {
-	return schemas
-		.filter((s) => s.site === 'local')
-		.map(toolSchemaToDefinition);
+	return schemas.map(toolSchemaToDefinition);
 }
 
 /** 将 LLM 返回的工具调用转换为 core 层 ToolCall 格式。arguments 解析失败时 args 设为 {}。 */
@@ -36,7 +34,6 @@ export function llmToolCallToCoreToolCall(llmCall: LLMToolCall): ToolCall {
 		call_id: llmCall.id,
 		tool: llmCall.name,
 		args,
-		site: 'local' as const,
 	};
 }
 

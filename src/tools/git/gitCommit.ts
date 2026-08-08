@@ -30,7 +30,6 @@ export class GitCommitTool extends BaseTool {
 			required: ['message'],
 		},
 		permissions: 'write',
-		site: 'local',
 	};
 
 	private readonly createClient: (workspaceRoot: string) => SimpleGit;

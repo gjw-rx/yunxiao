@@ -68,7 +68,6 @@ export class FindReferencesTool extends BaseTool {
 			required: ['file', 'line', 'column'],
 		},
 		permissions: 'read',
-		site: 'local',
 	};
 
 	private readonly vscodeImpl: VsCodeRefShim;

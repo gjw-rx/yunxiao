@@ -52,12 +52,6 @@
     "configuration": {
       "title": "云效 Agent",
       "properties": {
-        "yunxiaoAgent.serviceBaseUrl": {
-          "type": "string",
-          "default": "http://127.0.0.1:8002",
-          "description": "AI 服务的 Base URL（FastAPI 服务地址）",
-          "scope": "window"
-        },
         "yunxiaoAgent.model.provider": {
           "type": "string",
           "default": "openai",
@@ -117,7 +111,9 @@
         },
         "yunxiaoAgent.scopedApprovals": {
           "type": "array",
-          "items": { "type": "object" },
+          "items": {
+            "type": "object"
+          },
           "default": [],
           "description": "本地工具的范围授权记录（工作区、工具、资源、有效期）；由扩展维护",
           "scope": "window"
@@ -161,7 +157,7 @@
         "yunxiaoAgent.toolResultLimit": {
           "type": "number",
           "default": 10000,
-          "description": "所有本地工具结果回传云端前的统一文本长度上限（字符）",
+          "description": "所有工具结果的统一文本长度上限（字符）",
           "scope": "window"
         },
         "yunxiaoAgent.skills.directories": {
@@ -169,8 +165,40 @@
           "items": {
             "type": "string"
           },
-          "default": [".vscode/skills"],
+          "default": [
+            ".vscode/skills"
+          ],
           "description": "Skill 搜索目录列表（相对工作区根的路径），插件将从这些目录加载 Markdown 格式的 Skill",
+          "scope": "window"
+        },
+        "yunxiaoAgent.agent.maxSteps": {
+          "type": "number",
+          "default": 50,
+          "description": "Agent Loop 最大步数（每步 = 一次 LLM 调用 + 工具执行）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.agent.systemPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "自定义 Agent 系统提示词（留空使用默认）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.compaction.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否启用上下文自动压缩",
+          "scope": "window"
+        },
+        "yunxiaoAgent.compaction.keepTokens": {
+          "type": "number",
+          "default": 8000,
+          "description": "压缩时保留的近期 token 数",
+          "scope": "window"
+        },
+        "yunxiaoAgent.compaction.buffer": {
+          "type": "number",
+          "default": 20000,
+          "description": "触发压缩的 buffer token 数",
           "scope": "window"
         }
       }

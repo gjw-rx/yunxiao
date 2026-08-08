@@ -48,7 +48,6 @@ export class CodeEditTool extends BaseTool {
 			required: ['path'],
 		},
 		permissions: 'write',
-		site: 'local',
 	};
 
 	/** 自行处理审批（diff 预览后再确认）。 */

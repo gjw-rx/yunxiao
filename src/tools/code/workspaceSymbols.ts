@@ -92,7 +92,6 @@ export class WorkspaceSymbolsTool extends BaseTool {
 			required: ['query'],
 		},
 		permissions: 'read',
-		site: 'local',
 	};
 
 	private readonly vscode: VsCodeCommandsShim;

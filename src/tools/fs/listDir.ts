@@ -52,7 +52,6 @@ export class ListDirTool extends BaseTool {
 			required: ['path'],
 		},
 		permissions: 'read',
-		site: 'local',
 	};
 
 	validate(args: Record<string, unknown>): void {

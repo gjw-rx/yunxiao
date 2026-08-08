@@ -88,7 +88,6 @@ export class GitStatusTool extends BaseTool {
 		description: '查询工作区 git 状态：当前分支、暂存/未暂存/未跟踪文件列表。',
 		parameters: { type: 'object', properties: {} },
 		permissions: 'read',
-		site: 'local',
 	};
 
 	private readonly createClient: (workspaceRoot: string) => SimpleGit;

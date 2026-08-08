@@ -1,17 +1,14 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { ChatViewProvider } from './chatPanel';
-import { AIClient } from './aiClient';
 import { ToolRegistry } from './core/toolRegistry';
 import { ToolRouter } from './core/toolRouter';
 import { SecurityAudit } from './core/securityAudit';
 import { ReliabilityMetrics } from './core/reliabilityMetrics';
 import { EventBus } from './core/eventBus';
-import { SessionManager } from './core/sessionManager';
-import { RunStore } from './core/runStore';
 import { ToolExecutionJournal } from './core/toolExecutionJournal';
-import { RollbackManager } from './core/rollbackManager';
 import { ApprovalGateway } from './core/approvalGateway';
+import { LocalSessionManager } from './core/localSessionManager';
 import { ReadFileTool, DEFAULT_MAX_FILE_SIZE } from './tools/fs/readFile';
 import { WriteFileTool } from './tools/fs/writeFile';
 import { ListDirTool } from './tools/fs/listDir';
@@ -35,6 +32,11 @@ import { getWorkspaceRoots } from './tools/fs/pathGuard';
 import { SkillRegistry } from './skill/skillRegistry';
 import { loadSkillsFromDirectory } from './skill/skillLoader';
 import { SkillTool } from './skill/skillTool';
+import { getModelConfig } from './config/modelConfig';
+import { createProvider } from './llm/provider';
+import { MessageStore } from './memory/messageStore';
+import { AgentLoop } from './agent/agentLoop';
+import type { CompactionConfig } from './agent/compaction';
 import * as logger from './logger';
 
 // 全局崩溃捕获：进程死之前把错误写进 OutputChannel
@@ -44,12 +46,6 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason) => {
 	logger.error('[FATAL] unhandledRejection:', reason instanceof Error ? reason.stack ?? reason?.toString?.() ?? String(reason) : String(reason));
 });
-
-function getServiceBaseUrl(): string {
-	return vscode.workspace
-		.getConfiguration('yunxiaoAgent')
-		.get<string>('serviceBaseUrl', 'http://127.0.0.1:8002');
-}
 
 export async function activate(context: vscode.ExtensionContext) {
 	logger.log('[Extension] 云效 Agent 扩展已激活');
@@ -64,19 +60,20 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 async function _activate(context: vscode.ExtensionContext) {
-
-	const baseUrl = getServiceBaseUrl();
-	const client = new AIClient(baseUrl);
+	const config = vscode.workspace.getConfiguration('yunxiaoAgent');
 	const eventBus = new EventBus();
-	const rollbackManager = new RollbackManager(client);
+
+	// 消息存储
+	const messageStore = new MessageStore(context.workspaceState);
+
+	// 本地工具注册表
+	const registry = new ToolRegistry();
 
 	// 先创建 provider（作为审批 prompter 的实现方）
 	const provider = new ChatViewProvider(context, {
-		client,
-		registry: new ToolRegistry(),
-		sessionManager: null as unknown as SessionManager,
+		sessionManager: null as unknown as LocalSessionManager,
+		registry,
 		eventBus,
-		rollbackManager,
 	});
 
 	// 审批网关：使用 webview 内嵌审批卡片
@@ -102,9 +99,6 @@ async function _activate(context: vscode.ExtensionContext) {
 		},
 	});
 
-	// 本地工具注册表
-	const registry = new ToolRegistry();
-	const config = vscode.workspace.getConfiguration('yunxiaoAgent');
 	registry.register(new ReadFileTool());
 	registry.register(new WriteFileTool());
 	registry.register(new ListDirTool());
@@ -115,13 +109,13 @@ async function _activate(context: vscode.ExtensionContext) {
 		new CodeEditTool({ approval, diffViewer: new DiffViewer() })
 	);
 
-	// Phase 3: 代码智能工具（只读，无需审批）
+	// 代码智能工具（只读，无需审批）
 	registry.register(new GetDiagnosticsTool());
 	registry.register(new WorkspaceSymbolsTool());
 	registry.register(new FindReferencesTool());
 	registry.register(new GoToDefinitionTool());
 
-	// Phase 4: 终端执行与 Git 集成
+	// 终端执行与 Git 集成
 	const shellWhitelist = new ShellWhitelist(
 		config.get<string[]>('shellWhitelist', [])
 	);
@@ -155,37 +149,57 @@ async function _activate(context: vscode.ExtensionContext) {
 	}
 	registry.register(new SkillTool(skillRegistry));
 
+	// 工具路由
 	const metrics = new ReliabilityMetrics();
-	const runStore = new RunStore(context.workspaceState);
 	const journal = new ToolExecutionJournal(context.workspaceState);
 	const router = new ToolRouter(registry, approval, new SecurityAudit(metrics), journal);
 
-	const sessionManager = new SessionManager({
-		client,
-		router,
-		eventBus,
-		approval,
-		metrics,
-		runStore,
-		toolTimeoutMs: config.get<number>('toolTimeoutMs', 30_000),
-		getWorkspaceRoots: () => getWorkspaceRoots(),
-		getMaxFileSize: () =>
-			config.get<number>('maxFileSize', DEFAULT_MAX_FILE_SIZE),
-		getTerminalOutputLimit: () =>
-			config.get<number>('terminalOutputLimit', 10_000),
-		getToolResultLimit: () => config.get<number>('toolResultLimit', 10_000),
-		getToolTimeoutMs: (toolName) =>
-			toolName === 'terminal.exec'
-				? config.get<number>('terminalTimeoutMs', 300_000)
-				: undefined,
-	});
-	for (const run of runStore.listRestorable()) {
-		sessionManager.restoreRun(run);
+	// 模型配置与 LLM Provider
+	const modelConfig = getModelConfig();
+	if (!modelConfig.apiKey) {
+		logger.log('[Extension] 警告: 未配置 API Key，请在设置中配置 yunxiaoAgent.model.apiKey');
 	}
+	if (!modelConfig.model) {
+		logger.log('[Extension] 警告: 未配置模型名称，请在设置中配置 yunxiaoAgent.model.model');
+	}
+	const llmProvider = createProvider(modelConfig);
+
+	// 上下文压缩配置
+	const compactionConfig: CompactionConfig = {
+		enabled: config.get<boolean>('compaction.enabled', true),
+		keepTokens: config.get<number>('compaction.keepTokens', 8000),
+		buffer: config.get<number>('compaction.buffer', 20000),
+		contextWindow: 128000,
+	};
+
+	// Agent Loop
+	const agentLoop = new AgentLoop(
+		llmProvider,
+		messageStore,
+		router,
+		registry,
+		eventBus,
+		{
+			model: modelConfig.model,
+			temperature: modelConfig.temperature,
+			maxTokens: modelConfig.maxTokens,
+			maxSteps: config.get<number>('agent.maxSteps', 50),
+			workspaceRoots,
+			maxFileSize: config.get<number>('maxFileSize', DEFAULT_MAX_FILE_SIZE),
+			toolTimeoutMs: config.get<number>('toolTimeoutMs', 30_000),
+			terminalOutputLimit: config.get<number>('terminalOutputLimit', 10_000),
+			toolResultLimit: config.get<number>('toolResultLimit', 10_000),
+			agentPrompt: config.get<string>('agent.systemPrompt', '') || undefined,
+			skillRegistry,
+			compaction: compactionConfig,
+		}
+	);
+
+	// 本地会话管理器
+	const sessionManager = new LocalSessionManager(agentLoop, messageStore);
 
 	// 回填 provider 的依赖（解决循环依赖：provider -> approval -> provider）
-	(provider as unknown as { _registry: ToolRegistry; _sessionManager: SessionManager })._registry = registry;
-	(provider as unknown as { _registry: ToolRegistry; _sessionManager: SessionManager })._sessionManager = sessionManager;
+	(provider as unknown as { _sessionManager: LocalSessionManager })._sessionManager = sessionManager;
 
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider('yunxiaoAgent.chatView', provider, {
@@ -204,46 +218,6 @@ async function _activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('yunxiaoAgent.newSession', () => {
 			provider.triggerNewSession();
-		})
-	);
-
-	// 回退对话命令
-	context.subscriptions.push(
-		vscode.commands.registerCommand('yunxiaoAgent.rollback', async () => {
-			const sessionId = provider.getCurrentSessionId();
-			if (!sessionId) {
-				vscode.window.showWarningMessage('当前无活跃会话，无法回退');
-				return;
-			}
-			const turnInput = await vscode.window.showInputBox({
-				prompt: '输入要回退到的轮次（1-based）',
-				placeHolder: '如：2',
-				validateInput: (v) => {
-					const n = Number(v);
-					return Number.isInteger(n) && n >= 1 ? null : '请输入正整数';
-				},
-			});
-			if (!turnInput) {
-				return;
-			}
-			const targetTurn = parseInt(turnInput, 10);
-			try {
-				const result = await rollbackManager.requestRollback(sessionId, targetTurn);
-				const parts: string[] = [`已回退 ${result.rolled_back_turns.length} 轮`];
-				if (result.applied.length > 0) {
-					parts.push(`文件回退 ${result.applied.length} 处`);
-				}
-				if (result.conflicts.length > 0) {
-					parts.push(`版本冲突跳过 ${result.conflicts.length} 处`);
-				}
-				if (result.non_reversible.length > 0) {
-					parts.push(`不可逆工具: ${result.non_reversible.join(', ')}`);
-				}
-				vscode.window.showInformationMessage(parts.join('，'));
-				provider.refreshHistory();
-			} catch (e) {
-				vscode.window.showErrorMessage(`回退失败: ${e instanceof Error ? e.message : String(e)}`);
-			}
 		})
 	);
 }

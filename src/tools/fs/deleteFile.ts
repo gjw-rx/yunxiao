@@ -58,7 +58,6 @@ export class DeleteFileTool extends BaseTool {
 			required: ['path'],
 		},
 		permissions: 'destructive',
-		site: 'local',
 	};
 
 	private readonly deleteFn: DeleteFn;

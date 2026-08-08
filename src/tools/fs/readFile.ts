@@ -62,7 +62,6 @@ export class ReadFileTool extends BaseTool {
 			required: ['path'],
 		},
 		permissions: 'read',
-		site: 'local',
 		canParallel: true,
 	};
 

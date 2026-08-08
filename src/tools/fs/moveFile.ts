@@ -29,7 +29,6 @@ export class MoveFileTool extends BaseTool {
 			required: ['from', 'to'],
 		},
 		permissions: 'write',
-		site: 'local',
 	};
 
 	validate(args: Record<string, unknown>): void {

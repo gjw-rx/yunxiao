@@ -72,7 +72,6 @@ export class TerminalExecTool extends BaseTool {
 			required: ['command'],
 		},
 		permissions: 'execute',
-		site: 'local',
 	};
 
 	readonly handlesOwnApproval = true;

@@ -74,7 +74,6 @@ export class GoToDefinitionTool extends BaseTool {
 			required: ['file', 'line', 'column'],
 		},
 		permissions: 'read',
-		site: 'local',
 	};
 
 	private readonly vscodeImpl: VsCodeDefShim;

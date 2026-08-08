@@ -28,7 +28,6 @@ export class SkillTool extends BaseTool {
 			required: ['name'],
 		},
 		permissions: 'read',
-		site: 'local',
 		canParallel: true,
 	};
 

@@ -10,7 +10,7 @@ import {
 } from '../../tools/baseTool';
 import type { ToolCall, ToolSchema } from '../../core/types';
 import { ToolExecutionJournal } from '../../core/toolExecutionJournal';
-import type { WorkspaceState } from '../../core/runStore';
+import type { WorkspaceState } from '../../core/toolExecutionJournal';
 
 /** 测试用本地写工具：记录是否被执行。 */
 class FakeWriteTool extends BaseTool {
@@ -24,7 +24,6 @@ class FakeWriteTool extends BaseTool {
 			required: ['path', 'content'],
 		},
 		permissions: 'write',
-		site: 'local',
 	};
 	validate(args: Record<string, unknown>): void {
 		requireStringArg(args, 'path');
@@ -59,7 +58,6 @@ describe('ToolRouter approval gating', () => {
 			call_id: 'c1',
 			tool: 'fs.write_file',
 			args: { path: 'a.ts', content: 'x' },
-			site: 'local',
 		};
 		// Act
 		const result = await router.route(call, CTX);
@@ -82,7 +80,6 @@ describe('ToolRouter approval gating', () => {
 			call_id: 'c2',
 			tool: 'fs.write_file',
 			args: { path: 'a.ts', content: 'x' },
-			site: 'local',
 		};
 		// Act
 		const result = await router.route(call, CTX);
@@ -102,7 +99,6 @@ describe('ToolRouter approval gating', () => {
 					description: 'fake read',
 					parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
 					permissions: 'read',
-					site: 'local',
 				};
 				validate(args: Record<string, unknown>): void {
 					requireStringArg(args, 'path');
@@ -120,7 +116,7 @@ describe('ToolRouter approval gating', () => {
 		const router = new ToolRouter(reg, gw);
 		// Act
 		const result = await router.route(
-			{ call_id: 'c3', tool: 'fs.read_file', args: { path: 'a.ts' }, site: 'local' },
+			{ call_id: 'c3', tool: 'fs.read_file', args: { path: 'a.ts' } },
 			CTX
 		);
 		// Assert
@@ -142,8 +138,6 @@ describe('ToolRouter approval gating', () => {
 			call_id: 'c4',
 			tool: 'fs.write_file',
 			args: { path: 'a.ts', content: 'x' },
-			site: 'local',
-			require_approval: false, // 云端未置位
 		};
 		// Act
 		const result = await router.route(call, CTX);
@@ -160,7 +154,7 @@ describe('ToolRouter approval gating', () => {
 		const router = new ToolRouter(reg); // 无 gateway
 		// Act
 		const result = await router.route(
-			{ call_id: 'c5', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' }, site: 'local' },
+			{ call_id: 'c5', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' } },
 			CTX
 		);
 		// Assert
@@ -173,7 +167,7 @@ describe('ToolRouter approval gating', () => {
 		const tool = new FakeWriteTool();
 		reg.register(tool);
 		const router = new ToolRouter(reg, undefined, undefined, new ToolExecutionJournal(new MemoryState()));
-		const call: ToolCall = { call_id: 'c6', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' }, site: 'local' };
+		const call: ToolCall = { call_id: 'c6', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' } };
 		const first = await router.route(call, { ...CTX, runId: 'run-1' });
 		const second = await router.route(call, { ...CTX, runId: 'run-1' });
 		assert.deepStrictEqual(second, first);
@@ -188,7 +182,7 @@ describe('ToolRouter approval gating', () => {
 		await journal.begin({ scopeId: 'run-1', callId: 'c7' }, 'fs.write_file');
 		const router = new ToolRouter(reg, undefined, undefined, journal);
 		const result = await router.route(
-			{ call_id: 'c7', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' }, site: 'local' },
+			{ call_id: 'c7', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' } },
 			{ ...CTX, runId: 'run-1' },
 		);
 		assert.strictEqual(result.status, 'error');
@@ -209,7 +203,7 @@ describe('ToolRouter approval gating', () => {
 		const journal = new ToolExecutionJournal(new MemoryState());
 		const router = new ToolRouter(reg, undefined, undefined, journal);
 		const controller = new AbortController();
-		const call: ToolCall = { call_id: 'c8', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' }, site: 'local' };
+		const call: ToolCall = { call_id: 'c8', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' } };
 		const pending = router.route(call, { ...CTX, runId: 'run-1', abortSignal: controller.signal });
 		controller.abort();
 		await pending;

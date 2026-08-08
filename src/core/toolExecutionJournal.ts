@@ -1,6 +1,11 @@
 /** 非幂等本地工具的持久化执行回执。 */
 import type { ToolResult } from './types';
-import type { WorkspaceState } from './runStore';
+
+/** workspaceState 接口（与 vscode.Memento 兼容）。 */
+export interface WorkspaceState {
+	get<T>(key: string): T | undefined;
+	update(key: string, value: unknown): Thenable<void>;
+}
 
 export interface ToolExecutionIdentity {
 	readonly scopeId: string;

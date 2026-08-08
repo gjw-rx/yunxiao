@@ -42,7 +42,6 @@ export class GitBranchTool extends BaseTool {
 			},
 		},
 		permissions: 'write',
-		site: 'local',
 	};
 
 	private readonly createClient: (workspaceRoot: string) => SimpleGit;

@@ -3,7 +3,7 @@ import { BaseTool, type ToolContext, type ToolExecutionResult } from '../../tool
 import type { ToolSchema } from '../../core/types';
 
 class TestTool extends BaseTool {
-	readonly schema: ToolSchema = { name: 'test.tool', description: 'test', parameters: {}, permissions: 'read', site: 'local' };
+	readonly schema: ToolSchema = { name: 'test.tool', description: 'test', parameters: {}, permissions: 'read' };
 	async execute(): Promise<ToolExecutionResult> { return { status: 'success', result: 'ok' }; }
 }
 

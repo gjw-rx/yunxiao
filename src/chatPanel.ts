@@ -1,41 +1,15 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { promises as fs } from 'fs';
-import { AIClient } from './aiClient';
 import type { ToolRegistry } from './core/toolRegistry';
-import type { SessionManager } from './core/sessionManager';
 import type { EventBus, AgentEvent } from './core/eventBus';
-import type { RollbackManager } from './core/rollbackManager';
+import type { LocalSessionManager } from './core/localSessionManager';
 import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
 
 interface ChatViewDeps {
-  readonly client: AIClient;
+  readonly sessionManager: LocalSessionManager;
   readonly registry: ToolRegistry;
-  readonly sessionManager: SessionManager;
   readonly eventBus: EventBus;
-  readonly rollbackManager: RollbackManager;
-}
-
-function getServiceBaseUrl(): string {
-  return vscode.workspace
-    .getConfiguration('yunxiaoAgent')
-    .get<string>('serviceBaseUrl', 'http://127.0.0.1:8002');
-}
-
-function friendlyError(err: unknown, baseUrl: string): string {
-  const message = err instanceof Error ? err.message : String(err);
-  if (
-    message.includes('ECONNREFUSED') ||
-    message.includes('ENOTFOUND') ||
-    message.includes('fetch failed') ||
-    message.includes('connect')
-  ) {
-    return `无法连接 AI 服务，请确认服务已启动且地址正确（当前: ${baseUrl}）`;
-  }
-  if (message.includes('会话不存在')) {
-    return '会话已失效，请新建会话';
-  }
-  return message;
 }
 
 function getNonce(): string {
@@ -52,29 +26,21 @@ type ApprovalResolver = (decision: 'allow' | 'always' | 'deny') => void;
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
-  private readonly _client: AIClient;
   private readonly _registry: ToolRegistry;
-  private readonly _sessionManager: SessionManager;
+  private readonly _sessionManager: LocalSessionManager;
   private readonly _eventBus: EventBus;
-  private readonly _rollbackManager: RollbackManager;
-  private _baseUrl: string;
-  private _configListener?: vscode.Disposable;
   private _currentSessionId?: string;
   private _createSessionRequest = 0;
   private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
-  private readonly _compressingSessions = new Set<string>();
   private readonly _sessionNames = new Map<string, string>();
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
     deps: ChatViewDeps
   ) {
-    this._baseUrl = getServiceBaseUrl();
-    this._client = deps.client;
     this._registry = deps.registry;
     this._sessionManager = deps.sessionManager;
     this._eventBus = deps.eventBus;
-    this._rollbackManager = deps.rollbackManager;
   }
 
   resolveWebviewView(
@@ -102,23 +68,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._context.subscriptions
     );
 
-    this._configListener = vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('yunxiaoAgent.serviceBaseUrl')) {
-        const newUrl = getServiceBaseUrl();
-        if (newUrl !== this._baseUrl) {
-          this._baseUrl = newUrl;
-          vscode.window.showInformationMessage(
-            `云效 Agent: 服务地址已更新为 ${this._baseUrl}，请重新加载窗口以生效`
-          );
-        }
-      }
-    });
-
-    this._context.subscriptions.push(this._configListener);
-
     // 订阅事件总线，将当前会话的事件转发给 webview
     const unsub = this._eventBus.onAll((e) => this._forwardEvent(e));
     this._context.subscriptions.push({ dispose: unsub });
+
+    // 发送当前模型名称到 webview
+    const modelConfig = vscode.workspace.getConfiguration('yunxiaoAgent.model');
+    const modelName = modelConfig.get<string>('model', '');
+    if (modelName) {
+      webviewView.webview.postMessage({ command: 'modelInfo', model: modelName });
+    }
   }
 
   /** 将当前会话的事件总线事件转发给 webview。 */
@@ -130,17 +89,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     switch (e.type) {
       case 'content':
         view.webview.postMessage({ command: 'replyChunk', text: e.payload as string });
-        break;
-      case 'content_batch': {
-        const payload = e.payload as { content?: unknown };
-        if (typeof payload.content === 'string') {
-          view.webview.postMessage({ command: 'replyChunk', text: payload.content });
-        }
-        break;
-      }
-      case 'budget_update':
-      case 'budget_exhausted':
-        view.webview.postMessage({ command: 'budgetEvent', type: e.type, payload: e.payload });
         break;
       case 'token_usage':
         view.webview.postMessage({ command: 'tokenUsage', payload: e.payload });
@@ -181,19 +129,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage({ command: 'triggerNewSession' });
   }
 
-  /** 获取当前会话 ID（供回退命令使用） */
+  /** 获取当前会话 ID */
   getCurrentSessionId(): string | undefined {
     return this._currentSessionId;
-  }
-
-  /** 刷新当前会话的历史消息（回退后调用） */
-  refreshHistory(): void {
-    if (this._currentSessionId && this._view) {
-      this._view.webview.postMessage({
-        command: 'loadHistory',
-        sessionId: this._currentSessionId,
-      });
-    }
   }
 
   /**
@@ -235,45 +173,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!view) { return; }
 
     switch (msg.command) {
-      case 'requestAgents': {
-        try {
-          const agents = await this._client.listAgents();
-          view.webview.postMessage({ command: 'agentsLoaded', agents });
-        } catch (err: unknown) {
-          view.webview.postMessage({
-            command: 'error',
-            message: `获取 Agent 列表失败: ${friendlyError(err, this._baseUrl)}`,
-          });
-        }
-        break;
-      }
       case 'createSession': {
         const requestId = ++this._createSessionRequest;
-        try {
-          const previousSessionId = this._currentSessionId;
-          const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-          const result = await this._client.createSession(
-            msg.agentId as string,
-            this._registry.localSchemas(),
-            workspaceRoot
-          );
-          if (requestId !== this._createSessionRequest) {
-            break;
-          }
-          if (previousSessionId) {
-            this._sessionManager.reset(previousSessionId);
-          }
-          this._currentSessionId = result.session_id;
-          view.webview.postMessage({ command: 'sessionCreated', sessionId: result.session_id });
-        } catch (err: unknown) {
-          if (requestId !== this._createSessionRequest) {
-            break;
-          }
-          view.webview.postMessage({
-            command: 'error',
-            message: `创建会话失败: ${friendlyError(err, this._baseUrl)}`,
-          });
+        const previousSessionId = this._currentSessionId;
+        if (previousSessionId) {
+          this._sessionManager.reset(previousSessionId);
         }
+        const sessionId = this._sessionManager.createSession();
+        if (requestId !== this._createSessionRequest) {
+          break;
+        }
+        this._currentSessionId = sessionId;
+        view.webview.postMessage({ command: 'sessionCreated', sessionId });
         break;
       }
       case 'sendMessage': {
@@ -292,49 +203,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._sessionManager.sendMessage(sessionId, text);
         break;
       }
-      case 'compressSession': {
-        const sessionId = msg.sessionId as string;
-        if (!sessionId || sessionId !== this._currentSessionId) {
-          view.webview.postMessage({
-            command: 'compressError',
-            sessionId,
-            message: '当前会话已切换，无法压缩',
-          });
-          break;
-        }
-        if (this._compressingSessions.has(sessionId)) {
-          break;
-        }
-        this._compressingSessions.add(sessionId);
-        try {
-          const result = await this._client.compressSession(sessionId);
-          view.webview.postMessage({ command: 'compressCompleted', sessionId, result });
-        } catch (err: unknown) {
-          view.webview.postMessage({
-            command: 'compressError',
-            sessionId,
-            message: friendlyError(err, this._baseUrl),
-          });
-        } finally {
-          this._compressingSessions.delete(sessionId);
-        }
-        break;
-      }
       case 'stopStream': {
         const sessionId = msg.sessionId as string;
         this._sessionManager.cancel(sessionId);
         break;
       }
       case 'loadHistory': {
-        try {
-          const history = await this._client.getHistory(msg.sessionId as string);
-          view.webview.postMessage({ command: 'historyLoaded', messages: history });
-        } catch (err: unknown) {
-          view.webview.postMessage({
-            command: 'error',
-            message: `加载历史失败: ${friendlyError(err, this._baseUrl)}`,
-          });
-        }
+        const history = this._sessionManager.loadHistory(msg.sessionId as string);
+        view.webview.postMessage({ command: 'historyLoaded', messages: history });
         break;
       }
       case 'approvalDecision': {
@@ -396,47 +272,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const name = msg.name as string;
         if (sessionId && name) {
           this._sessionNames.set(sessionId, name);
-        }
-        break;
-      }
-      case 'showHistory': {
-        // 简化版：返回当前会话名称列表
-        const sessions: { session_id: string; name: string }[] = [];
-        for (const [sid, name] of this._sessionNames) {
-          sessions.push({ session_id: sid, name });
-        }
-        if (this._currentSessionId && !this._sessionNames.has(this._currentSessionId)) {
-          sessions.unshift({ session_id: this._currentSessionId, name: 'Untitled' });
-        }
-        view.webview.postMessage({ command: 'historyList', sessions });
-        break;
-      }
-      case 'rollbackSession': {
-        const sessionId = msg.sessionId as string;
-        const targetTurn = msg.targetTurn as number;
-        if (!sessionId || !targetTurn) {
-          break;
-        }
-        try {
-          const result = await this._rollbackManager.requestRollback(sessionId, targetTurn);
-          const parts: string[] = [`已回退 ${result.rolled_back_turns.length} 轮`];
-          if (result.applied.length > 0) {
-            parts.push(`文件回退 ${result.applied.length} 处`);
-          }
-          if (result.conflicts.length > 0) {
-            parts.push(`版本冲突跳过 ${result.conflicts.length} 处`);
-          }
-          if (result.non_reversible.length > 0) {
-            parts.push(`不可逆工具: ${result.non_reversible.join(', ')}`);
-          }
-          vscode.window.showInformationMessage(parts.join('，'));
-          // 通知前端刷新历史
-          view.webview.postMessage({ command: 'rollbackDone', sessionId, targetTurn, text: msg.text });
-        } catch (err: unknown) {
-          view.webview.postMessage({
-            command: 'error',
-            message: `回退失败: ${err instanceof Error ? err.message : String(err)}`,
-          });
         }
         break;
       }
@@ -620,142 +455,17 @@ ${this._getJs()}
       background: var(--input-bg);
     }
 
-    /* ── Compact Agent selector (in toolbar) ── */
-    .agent-selector-compact {
-      position: relative;
-      flex-shrink: 0;
-    }
-
-    .agent-compact-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      min-width: 150px;
-      max-width: 210px;
-      height: 38px;
-      padding: 5px 12px;
-      background: #ffffff;
-      color: var(--fg);
-      border: 1px solid #e1e6e4;
-      border-radius: 8px;
-      cursor: pointer;
-      font-family: var(--font);
-      font-size: 12px;
-      text-align: left;
-      transition: border-color 0.15s, background 0.15s, box-shadow 0.15s, transform 0.15s;
-    }
-    .agent-compact-btn:hover {
-      border-color: #9bcfc3;
-      background: #fbfdfc;
-      box-shadow: 0 4px 12px rgba(30, 75, 65, 0.08);
-    }
-    .agent-compact-btn:active { transform: scale(0.98); }
-    .agent-compact-btn:focus-visible { outline: 1px solid var(--vscode-focusBorder, #bdbdbd); outline-offset: 2px; }
-    .agent-compact-btn.open {
-      border-color: #77bcae;
-      background: #fbfdfc;
-      box-shadow: 0 4px 12px rgba(30, 75, 65, 0.1);
-    }
-
-    .agent-compact-btn .agent-icon-dot {
-      display: none;
-    }
-
-    .agent-compact-name {
-      min-width: 0;
-      max-width: 126px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      font-weight: 600;
-      letter-spacing: 0;
-    }
-
-    .agent-compact-model {
-      display: block;
-      margin-top: 1px;
-      color: var(--muted);
-      font-size: 10px;
-      font-weight: 400;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .agent-compact-btn .chevron {
-      width: 10px;
-      height: 10px;
-      flex: 0 0 auto;
-      color: var(--vscode-descriptionForeground, #8a8a8a);
-      opacity: 0.9;
-    }
-
-    /* Dropdown panel (shared) */
-    #agentDropdown {
-      position: absolute;
-      bottom: calc(100% + 4px);
-      right: 0;
-      left: auto;
-      min-width: 240px;
-      background: #ffffff;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      box-shadow: 0 12px 28px rgba(34, 48, 58, 0.14);
-      z-index: 100;
-      max-height: 280px;
-      overflow-y: auto;
-      display: none;
-    }
-    #agentDropdown.show { display: block; }
-
-    /* Dropdown card content (shared) */
-    .agent-info {
+    /* ── Model info display ── */
+    .model-info {
       flex: 1;
       min-width: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 1px;
-    }
-    .agent-name {
-      font-weight: 500;
+      padding: 4px 8px;
       font-size: 12px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .agent-model {
-      font-size: 10px;
+      font-weight: 500;
       color: var(--muted);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-    }
-
-    .agent-card {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 8px 10px;
-      cursor: pointer;
-      transition: background 0.12s;
-      border-bottom: 1px solid var(--border-light);
-    }
-    .agent-card:last-child { border-bottom: none; }
-    .agent-card:hover { background: #f5faf8; }
-    .agent-card.selected {
-      background: #edf7f4;
-      box-shadow: inset 3px 0 0 #4ba998;
-    }
-
-    .agent-card .agent-icon-dot { width: 28px; height: 28px; font-size: 12px; }
-    .agent-card .agent-info .agent-name { font-size: 13px; }
-    .agent-card .agent-info .agent-model { font-size: 11px; }
-
-    .agent-card-desc {
-      font-size: 11px;
-      color: var(--muted);
-      margin-top: 2px;
-      line-height: 1.4;
     }
 
     /* ── Buttons ── */
@@ -1441,22 +1151,6 @@ ${this._getJs()}
     #error:not(:empty) { border-color: var(--border); }
     #error:empty { display: none; }
 
-    .compact-notice {
-      align-self: center;
-      margin: 6px auto;
-      padding: 5px 9px;
-      border: 1px solid var(--border-light);
-      border-radius: 999px;
-      color: var(--muted);
-      background: var(--vscode-badge-background, var(--hover-bg));
-      font-size: 10px;
-      line-height: 1.4;
-    }
-    .compact-notice.success {
-      color: var(--success);
-      border-color: color-mix(in srgb, var(--success) 36%, transparent);
-    }
-
     /* ── Input area ── */
     #inputArea {
       position: relative;
@@ -1642,7 +1336,7 @@ ${this._getJs()}
       gap: 4px;
     }
 
-    .open-file-btn, .compact-btn {
+    .open-file-btn {
       width: 28px;
       height: 28px;
       padding: 0;
@@ -1650,30 +1344,14 @@ ${this._getJs()}
       color: var(--muted);
       transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s;
     }
-    .open-file-btn:hover:not(:disabled), .compact-btn:hover:not(:disabled) {
+    .open-file-btn:hover:not(:disabled) {
       color: var(--fg);
       background: var(--hover-bg);
       border-color: var(--border-light);
     }
-    .open-file-btn:active:not(:disabled), .compact-btn:active:not(:disabled) { transform: scale(0.92); }
-    .open-file-btn:focus-visible, .compact-btn:focus-visible { outline: 1px solid var(--focus); outline-offset: 1px; }
-    .open-file-btn svg, .compact-btn svg { width: 15px; height: 15px; }
-    .compact-btn.compressing svg { animation: compact-spin 0.8s linear infinite; }
-    @keyframes compact-spin { to { transform: rotate(360deg); } }
-
-    /* Shared icon-dot style (used in compact agent btn + dropdown cards) */
-    .agent-icon-dot {
-      width: 20px;
-      height: 20px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      font-size: 11px;
-      font-weight: 600;
-      color: #fff;
-    }
+    .open-file-btn:active:not(:disabled) { transform: scale(0.92); }
+    .open-file-btn:focus-visible { outline: 1px solid var(--focus); outline-offset: 1px; }
+    .open-file-btn svg { width: 15px; height: 15px; }
 
     .chevron {
       width: 12px;
@@ -1682,7 +1360,6 @@ ${this._getJs()}
       transition: transform 0.2s;
       color: var(--muted);
     }
-    .agent-compact-btn.open .chevron { transform: rotate(180deg); }
 
     #sendBtn, #stopBtn {
       width: 28px;
@@ -1767,14 +1444,10 @@ ${this._getJs()}
       background: var(--hover-bg);
     }
 
-    /* ── Delete & rollback action buttons ── */
+    /* ── Delete action button ── */
     .msg-action-btn.delete-btn:hover:not(:disabled) {
       color: var(--error);
       background: color-mix(in srgb, var(--error) 10%, transparent);
-    }
-    .msg-action-btn.rollback-btn:hover:not(:disabled) {
-      color: var(--accent);
-      background: color-mix(in srgb, var(--accent) 10%, transparent);
     }
 
     .token-usage {
@@ -1819,11 +1492,6 @@ ${this._getJs()}
       <button id="newSessionIconBtn" class="btn btn-icon" title="新建会话">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M7.25 1a.75.75 0 0 1 .75.75V7h5.25a.75.75 0 0 1 0 1.5H8v5.25a.75.75 0 0 1-1.5 0V8.5H1.25a.75.75 0 0 1 0-1.5H6.5V1.75A.75.75 0 0 1 7.25 1z"/></svg>
       </button>
-      <button id="historyBtn" class="btn btn-icon" title="历史会话">
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M8 2C4.69 2 2 4.69 2 8s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm0 11c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm.5-8H7v3.21l2.65 2.65.71-.71L8.5 7.79V5z"/>
-      </svg>
-      </button>
     </div>
   </div>
 
@@ -1859,25 +1527,10 @@ ${this._getJs()}
             <path d="M8 2v12M2 8h12" />
           </svg>
         </button>
-        <button id="compactBtn" class="btn btn-icon compact-btn" disabled title="压缩当前会话上下文" aria-label="压缩当前会话上下文">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M2.5 5.5h3v-3M13.5 5.5h-3v-3M2.5 10.5h3v3M13.5 10.5h-3v3" />
-            <path d="M5.5 5.5 2.5 2.5M10.5 5.5l3-3M5.5 10.5l-3 3M10.5 10.5l3 3" />
-          </svg>
-        </button>
       </div>
       <div class="toolbar-right">
-        <div id="agentSelectorCompact" class="agent-selector-compact">
-          <button id="agentBtn" class="agent-compact-btn" aria-haspopup="listbox" title="选择 Agent">
-            <span class="agent-info">
-              <span class="agent-compact-name" id="agentName">Agent</span>
-              <span class="agent-compact-model" id="agentModel">--</span>
-            </span>
-            <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M4 6l4 4 4-4H4z"/>
-            </svg>
-          </button>
-          <div id="agentDropdown" role="listbox"></div>
+        <div class="model-info">
+          <span id="modelName">--</span>
         </div>
         <button id="sendBtn" class="btn btn-icon" disabled title="发送 (Enter)">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
@@ -1906,15 +1559,9 @@ ${this._getJs()}
     const sendBtn      = document.getElementById('sendBtn');
     const stopBtn      = document.getElementById('stopBtn');
     const openFileBtn  = document.getElementById('openFileBtn');
-    const compactBtn   = document.getElementById('compactBtn');
     const newSessBtn   = document.getElementById('newSessionIconBtn');
-    const historyBtn   = document.getElementById('historyBtn');
     const sessionNameInput = document.getElementById('sessionNameInput');
     const errorEl      = document.getElementById('error');
-    const agentBtn     = document.getElementById('agentBtn');
-    const agentDropdown= document.getElementById('agentDropdown');
-    const agentName    = document.getElementById('agentName');
-    const agentModel   = document.getElementById('agentModel');
     const filePicker   = document.getElementById('filePicker');
     const filePickerList = document.getElementById('filePickerList');
     const fileReferenceList = document.getElementById('fileReferenceList');
@@ -1922,11 +1569,8 @@ ${this._getJs()}
     const slashCommandList = document.getElementById('slashCommandList');
 
     // ── State ──
-    let agents = [];
-    let selectedAgentId = null;
     let currentSessionId = null;
     let isStreaming = false;
-    let isCompressing = false;
     let workspaceFiles = [];
     let filePickerIndex = 0;
     let filePickerAtStart = -1;
@@ -1934,13 +1578,7 @@ ${this._getJs()}
     let selectedFiles = [];
     let slashCommandIndex = 0;
     let filteredSlashCommands = [];
-    const slashCommands = [
-      {
-        command: 'compact',
-        label: '/compact',
-        description: '压缩当前会话上下文',
-      },
-    ];
+    const slashCommands = [];
 
     /* 「回合」模型：一轮对话 = 过程时间线（思考/工具/审批）+ 最终回复。
        时间线容器先于回复气泡插入 DOM，因此过程天然呈现在回复之上。 */
@@ -1998,16 +1636,7 @@ ${this._getJs()}
       }
     }
 
-    // ── Agent dropdown ──
-    agentBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleAgentDropdown();
-    });
-
     document.addEventListener('click', (e) => {
-      if (!agentDropdown.contains(e.target) && e.target !== agentBtn) {
-        closeAgentDropdown();
-      }
       if (!filePicker.contains(e.target) && e.target !== inputEl) {
         closeFilePicker();
       }
@@ -2015,54 +1644,6 @@ ${this._getJs()}
         closeSlashCommandPicker();
       }
     });
-
-    function toggleAgentDropdown() {
-      if (agentDropdown.classList.contains('show')) {
-        closeAgentDropdown();
-      } else {
-        openAgentDropdown();
-      }
-    }
-
-    function openAgentDropdown() {
-      agentDropdown.classList.add('show');
-      agentBtn.classList.add('open');
-    }
-
-    function closeAgentDropdown() {
-      agentDropdown.classList.remove('show');
-      agentBtn.classList.remove('open');
-    }
-
-    function renderAgentDropdown() {
-      agentDropdown.innerHTML = '';
-      for (const a of agents) {
-        const card = document.createElement('div');
-        card.className = 'agent-card' + (a.agent_id === selectedAgentId ? ' selected' : '');
-        card.setAttribute('role', 'option');
-        card.innerHTML = \`
-          <span class="agent-info">
-            <span class="agent-name">\${escapeHtml(a.agent_name)}</span>
-            <span class="agent-model">\${escapeHtml(a.model || '--')}</span>
-            <span class="agent-card-desc">\${escapeHtml(a.description || '')}</span>
-          </span>
-        \`;
-        card.addEventListener('click', () => selectAgent(a.agent_id));
-        agentDropdown.appendChild(card);
-      }
-    }
-
-    function selectAgent(agentId) {
-      const agent = agents.find(a => a.agent_id === agentId);
-      if (!agent) return;
-      const changed = selectedAgentId && selectedAgentId !== agentId;
-      selectedAgentId = agentId;
-      agentName.textContent = agent.agent_name;
-      agentModel.textContent = agent.model || '--';
-      closeAgentDropdown();
-      renderAgentDropdown();
-      if (changed) startNewSession();
-    }
 
     // ══ 回合与过程时间线 ══
 
@@ -2349,7 +1930,6 @@ ${this._getJs()}
 
     // ── Event bindings ──
     sendBtn.addEventListener('click', handleSend);
-    compactBtn.addEventListener('click', startCompact);
 
     stopBtn.addEventListener('click', () => {
       if (currentSessionId) {
@@ -2361,10 +1941,6 @@ ${this._getJs()}
 
     openFileBtn.addEventListener('click', () => {
       vscode.postMessage({ command: 'openFile' });
-    });
-
-    historyBtn.addEventListener('click', () => {
-      vscode.postMessage({ command: 'showHistory' });
     });
 
     // ── Session name editing ──
@@ -2413,11 +1989,6 @@ ${this._getJs()}
         }
         if (e.key === 'Enter') { e.preventDefault(); selectFile(filteredFiles[filePickerIndex]); return; }
         if (e.key === 'Escape') { e.preventDefault(); closeFilePicker(); return; }
-      }
-      if (e.key === 'Enter' && !e.shiftKey && inputEl.value.trim() === '/compact') {
-        e.preventDefault();
-        startCompact();
-        return;
       }
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
     });
@@ -2480,9 +2051,6 @@ ${this._getJs()}
       inputEl.value = '';
       autoResize();
       closeSlashCommandPicker();
-      if (command.command === 'compact') {
-        startCompact();
-      }
     }
 
     function closeSlashCommandPicker() {
@@ -2577,38 +2145,15 @@ ${this._getJs()}
       inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
     }
 
-    function startCompact() {
-      if (!currentSessionId || isStreaming || isCompressing) return;
-      if (inputEl.value.trim() === '/compact') {
-        inputEl.value = '';
-        autoResize();
-      }
-      closeSlashCommandPicker();
-      closeFilePicker();
-      setCompressing(true);
-      vscode.postMessage({ command: 'compressSession', sessionId: currentSessionId });
-    }
-
     function startNewSession() {
-      if (isCompressing) return;
-      if (!selectedAgentId) {
-        // Try first agent if available
-        if (agents.length > 0) {
-          selectAgent(agents[0].agent_id);
-        } else {
-          showError('请先选择一个 Agent');
-          return;
-        }
-      }
-      // 重置会话名称
       sessionNameInput.value = 'Untitled';
-      vscode.postMessage({ command: 'createSession', agentId: selectedAgentId });
+      vscode.postMessage({ command: 'createSession' });
     }
 
     function handleSend() {
       const userText = inputEl.value.trim();
       const files = selectedFiles.slice();
-      if ((!userText && files.length === 0) || !currentSessionId || isStreaming || isCompressing) return;
+      if ((!userText && files.length === 0) || !currentSessionId || isStreaming) return;
 
       finishTurn(); // 收束上一回合，新回合从这条用户消息之后开始
       // 用户气泡展示引用文件（纯文本提示，不含 @ 符号，避免污染工具调用路径）
@@ -2668,31 +2213,23 @@ ${this._getJs()}
       }
     }
 
-    /** 用户消息轮次计数器（1-based，用于回退定位） */
+    /** 用户消息轮次计数器（1-based） */
     let userTurnCount = 0;
 
     function appendUserMsg(text) {
       clearPlaceholder();
       userTurnCount++;
-      const turn = userTurnCount;
       const row = document.createElement('div');
       row.className = 'msg-row user-row';
-      row.dataset.turn = String(turn);
+      row.dataset.turn = String(userTurnCount);
       const bubble = document.createElement('div');
       bubble.className = 'message user';
       bubble.textContent = text;
       row.appendChild(bubble);
 
-      // 悬停操作：回退 + 删除
+      // 悬停操作：删除
       const actions = document.createElement('div');
       actions.className = 'msg-actions';
-
-      const rollbackBtn = document.createElement('button');
-      rollbackBtn.className = 'msg-action-btn rollback-btn';
-      rollbackBtn.title = '回退：将内容放回输入框并清空后续对话';
-      rollbackBtn.innerHTML = ROLLBACK_ICON;
-      rollbackBtn.addEventListener('click', () => rollbackUserMessage(row, text, turn));
-      actions.appendChild(rollbackBtn);
 
       const deleteBtn = document.createElement('button');
       deleteBtn.className = 'msg-action-btn delete-btn';
@@ -2716,25 +2253,12 @@ ${this._getJs()}
       row.remove();
     }
 
-    /** 回退到指定用户消息：通知 extension host 调用云端回退 API */
-    function rollbackUserMessage(row, text, turn) {
-      if (isStreaming) return;
-      if (!currentSessionId) return;
-      vscode.postMessage({
-        command: 'rollbackSession',
-        sessionId: currentSessionId,
-        targetTurn: turn,
-        text,
-      });
-    }
-
     /** 复制图标 SVG */
     const COPY_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="8" height="10" rx="1.5"/><path d="M3 5v7a1.5 1.5 0 0 0 1.5 1.5H11"/></svg>\`;
     const COPIED_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6"/></svg>\`;
     const LIKE_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5L5.5 6.5v7h6l1.5-4V8h-4l.5-2.5L7 3.5z"/><path d="M5.5 6.5H3.5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h2"/></svg>\`;
     const LIKED_ICON = \`<svg viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5L5.5 6.5v7h6l1.5-4V8h-4l.5-2.5L7 3.5z"/><path d="M5.5 6.5H3.5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h2"/></svg>\`;
     const DELETE_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M5.5 4V2.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V4M4.5 4v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4"/><path d="M6.5 7.5v3.5M9.5 7.5v3.5"/></svg>\`;
-    const ROLLBACK_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h6a3 3 0 0 1 0 6H5"/><path d="M5.5 3.5L3 6L5.5 8.5"/></svg>\`;
 
     /** 执行复制操作 */
     async function copyText(text, btn) {
@@ -2974,21 +2498,6 @@ ${this._getJs()}
       addStep(step);
     }
 
-    /** 将云端确认的预算状态作为时间线步骤展示 */
-    function showBudgetEvent(type, payload) {
-      const step = document.createElement('div');
-      step.className = 'step ' + (type === 'budget_exhausted' ? 'error' : 'progress');
-      const exhausted = type === 'budget_exhausted';
-      step.innerHTML = '<span class="step-dot"></span><div class="step-head"><span class="step-icon">' +
-        (exhausted ? '!' : '◷') + '</span><span class="step-name">' +
-        (exhausted ? '预算已耗尽' : '预算状态') + '</span></div>';
-      const body = document.createElement('div');
-      body.className = 'step-body';
-      body.textContent = JSON.stringify(payload);
-      step.appendChild(body);
-      addStep(step);
-    }
-
     /** 显示 token 用量信息 */
     function showTokenUsage(payload) {
       if (!payload) return;
@@ -3013,27 +2522,10 @@ ${this._getJs()}
       setTimeout(() => { if (errorEl.textContent === msg) errorEl.textContent = ''; }, 5000);
     }
 
-    function showCompactNotice(result) {
-      messagesEl.querySelector('.compact-notice')?.remove();
-      const notice = document.createElement('div');
-      notice.className = 'compact-notice' + (result.compressed ? ' success' : '');
-      notice.textContent = result.compressed
-        ? '上下文已压缩：' + result.before_count + ' → ' + result.after_count
-          + ' 条 · 累计 ' + result.compress_count + ' 次'
-        : '当前上下文无需压缩，共 ' + result.before_count + ' 条消息';
-      messagesEl.appendChild(notice);
-      scrollToBottom();
-    }
-
     function updateInteractionState() {
-      const busy = isStreaming || isCompressing;
-      sendBtn.disabled = busy || !currentSessionId;
-      inputEl.disabled = busy || !currentSessionId;
-      compactBtn.disabled = busy || !currentSessionId;
-      openFileBtn.disabled = busy;
-      newSessBtn.disabled = isCompressing;
-      historyBtn.disabled = isCompressing;
-      agentBtn.disabled = isCompressing;
+      sendBtn.disabled = isStreaming || !currentSessionId;
+      inputEl.disabled = isStreaming || !currentSessionId;
+      openFileBtn.disabled = isStreaming;
     }
 
     function setStreaming(state) {
@@ -3044,31 +2536,14 @@ ${this._getJs()}
       updateInteractionState();
     }
 
-    function setCompressing(state) {
-      isCompressing = state;
-      compactBtn.classList.toggle('compressing', state);
-      compactBtn.title = state ? '正在压缩上下文…' : '压缩当前会话上下文';
-      updateInteractionState();
-    }
 
     // ── Host message handler ──
     window.addEventListener('message', (e) => {
       const msg = e.data;
       switch (msg.command) {
-        case 'agentsLoaded': {
-          agents = msg.agents || [];
-          renderAgentDropdown();
-          if (agents.length > 0 && !selectedAgentId) {
-            selectAgent(agents[0].agent_id);
-            // 自动创建会话
-            startNewSession();
-          }
-          break;
-        }
         case 'sessionCreated': {
           currentSessionId = msg.sessionId;
           resetConversation();
-          setCompressing(false);
           setStreaming(false);
           vscode.postMessage({ command: 'loadHistory', sessionId: currentSessionId });
           break;
@@ -3084,18 +2559,6 @@ ${this._getJs()}
           // currentAssistantRow 由 token_usage 事件更新后清理
           finishTurn();
           break;
-        case 'compressCompleted':
-          if (msg.sessionId === currentSessionId) {
-            setCompressing(false);
-            showCompactNotice(msg.result);
-          }
-          break;
-        case 'compressError':
-          if (msg.sessionId === currentSessionId) {
-            setCompressing(false);
-            showError(msg.message);
-          }
-          break;
         case 'toolState':
           showToolState(msg.tool, msg.state, msg.error, msg.call_id, msg.args, msg.output);
           break;
@@ -3104,9 +2567,6 @@ ${this._getJs()}
           break;
         case 'plan':
           showPlan(msg.steps);
-          break;
-        case 'budgetEvent':
-          showBudgetEvent(msg.type, msg.payload);
           break;
         case 'tokenUsage':
           showTokenUsage(msg.payload);
@@ -3154,37 +2614,14 @@ ${this._getJs()}
           }
           break;
         }
-        case 'historyList': {
-          // 简单实现：如果有会话则切换加载
-          const sessions = msg.sessions || [];
-          if (sessions.length === 0) {
-            showError('暂无历史会话');
-          } else {
-            // 简化版：加载最近的会话
-            const latest = sessions[0];
-            if (latest && latest.session_id) {
-              currentSessionId = latest.session_id;
-              sessionNameInput.value = latest.name || 'Untitled';
-              vscode.postMessage({ command: 'loadHistory', sessionId: currentSessionId });
-            }
-          }
+        case 'modelInfo':
+          document.getElementById('modelName').textContent = msg.model || '--';
           break;
-        }
-        case 'rollbackDone': {
-          // 回退成功：重新加载历史并恢复用户输入框文本
-          vscode.postMessage({ command: 'loadHistory', sessionId: currentSessionId });
-          if (msg.text) {
-            inputEl.value = msg.text;
-            autoResize();
-            inputEl.focus();
-          }
-          break;
-        }
       }
     });
 
-    // init
-    vscode.postMessage({ command: 'requestAgents' });
+    // init - auto-create first session
+    vscode.postMessage({ command: 'createSession' });
 `;
   }
 }

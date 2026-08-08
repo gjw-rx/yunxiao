@@ -29,7 +29,6 @@ export class WriteFileTool extends BaseTool {
 			required: ['path', 'content'],
 		},
 		permissions: 'write',
-		site: 'local',
 	};
 
 	validate(args: Record<string, unknown>): void {

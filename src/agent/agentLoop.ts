@@ -145,7 +145,7 @@ export class AgentLoop {
 						this.eventBus.emit({
 							type: 'content',
 							sessionId,
-							payload: { text: event.text },
+							payload: event.text,
 						});
 					} else if (event.type === 'toolCall') {
 						pendingToolCalls.push({
@@ -172,10 +172,10 @@ export class AgentLoop {
 						hasError = true;
 						errorMessage = event.error;
 						this.eventBus.emit({
-							type: 'error',
-							sessionId,
-							payload: { error: event.error },
-						});
+						type: 'error',
+						sessionId,
+						payload: event.error,
+					});
 						break;
 					}
 				}
@@ -242,10 +242,10 @@ export class AgentLoop {
 					const coreCall = llmToolCallToCoreToolCall(tc);
 
 					this.eventBus.emit({
-						type: 'tool_state_change',
-						sessionId,
-						payload: { callId: tc.id, tool: tc.name, state: 'running' },
-					});
+					type: 'tool_state_change',
+					sessionId,
+					payload: { call_id: tc.id, tool: tc.name, state: 'running', args: coreCall.args },
+				});
 
 					let result: ToolResult;
 					try {
@@ -259,10 +259,16 @@ export class AgentLoop {
 					}
 
 					this.eventBus.emit({
-						type: 'tool_state_change',
-						sessionId,
-						payload: { callId: tc.id, tool: tc.name, state: result.status },
-					});
+					type: 'tool_state_change',
+					sessionId,
+					payload: {
+						call_id: tc.id,
+						tool: tc.name,
+						state: result.status,
+						error: result.error,
+						output: result.result,
+					},
+				});
 
 					this.eventBus.emit({
 						type: 'tool_result',
@@ -291,12 +297,12 @@ export class AgentLoop {
 			this.emitRunStateChange(sessionId, 'completed');
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 		} catch (error) {
-			const msg = error instanceof Error ? error.message : String(error);
-			this.eventBus.emit({
-				type: 'error',
-				sessionId,
-				payload: { error: msg },
-			});
+		const msg = error instanceof Error ? error.message : String(error);
+		this.eventBus.emit({
+			type: 'error',
+			sessionId,
+			payload: msg,
+		});
 			this.emitRunStateChange(sessionId, 'failed', msg);
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 		}

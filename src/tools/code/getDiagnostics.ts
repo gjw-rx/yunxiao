@@ -167,7 +167,6 @@ export class GetDiagnosticsTool extends BaseTool {
 			},
 		},
 		permissions: 'read',
-		site: 'local',
 	};
 
 	private readonly vscode: VsCodeLanguageShim;

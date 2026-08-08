@@ -3,9 +3,6 @@
  * 后续所有模块（注册表、协议层、会话状态机、工具实现）均依赖此文件。
  */
 
-/** 工具执行位置：本地执行 or 云端执行。 */
-export type ExecutionSite = 'local' | 'cloud';
-
 /** 工具权限级别。Phase 1 仅使用 read；write/execute/destructive 留待 Phase 2+ 审批网关。 */
 export type Permission = 'read' | 'write' | 'execute' | 'destructive';
 
@@ -30,13 +27,11 @@ export interface RunStateChangePayload {
 	readonly error?: string;
 }
 
-/** 云端下发的工具调用请求。 */
+/** 本地执行的工具调用请求。 */
 export interface ToolCall {
 	readonly call_id: string;
 	readonly tool: string;
 	readonly args: Record<string, unknown>;
-	readonly site: ExecutionSite;
-	readonly require_approval?: boolean;
 }
 
 /** 工具结果可选元数据。 */
@@ -71,27 +66,24 @@ export interface ToolResult {
 	readonly metadata?: ToolResultMetadata;
 }
 
-/** 工具 schema：声明工具元数据，用于注册、路由与上报云端。 */
+/** 工具 schema：声明工具元数据，用于注册、路由与转换为 LLM 工具定义。 */
 export interface ToolSchema {
 	readonly name: string;
 	readonly description: string;
 	/** JSON Schema 描述工具参数。 */
 	readonly parameters: Record<string, unknown>;
 	readonly permissions: Permission;
-	readonly site: ExecutionSite;
 	/** 可与其他只读工具并行执行；默认 false。 */
 	readonly canParallel?: boolean;
 }
 
-// ── SSE 事件 payload 类型 ──
+// ── 事件 payload 类型 ──
 
 /** tool_call 事件 data。 */
 export interface ToolCallEventData {
 	readonly call_id: string;
 	readonly tool: string;
 	readonly args: Record<string, unknown>;
-	readonly site: ExecutionSite;
-	readonly require_approval?: boolean;
 }
 
 /** tool_start 事件 data（云端工具开始，run_id 用于配对 tool_end）。 */

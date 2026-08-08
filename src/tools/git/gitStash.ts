@@ -41,7 +41,6 @@ export class GitStashTool extends BaseTool {
 			},
 		},
 		permissions: 'write',
-		site: 'local',
 	};
 
 	private readonly createClient: (workspaceRoot: string) => SimpleGit;

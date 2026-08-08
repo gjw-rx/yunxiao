@@ -1,6 +1,6 @@
 /**
  * 工具注册表 - 本地工具的发现、注册与列举。
- * 工具按 namespaced name（如 fs.read_file）唯一注册，供路由层与云端上报使用。
+ * 工具按 namespaced name（如 fs.read_file）唯一注册，供路由层与 LLM 工具定义转换使用。
  */
 import type { ToolSchema } from './types';
 import type { BaseTool } from '../tools/baseTool';
@@ -35,10 +35,5 @@ export class ToolRegistry {
 	/** 列举所有工具 schema。 */
 	list(): ToolSchema[] {
 		return [...this.tools.values()].map((t) => t.schema);
-	}
-
-	/** 仅返回本地工具 schema，供会话创建时上报云端。 */
-	localSchemas(): ToolSchema[] {
-		return this.list().filter((s) => s.site === 'local');
 	}
 }

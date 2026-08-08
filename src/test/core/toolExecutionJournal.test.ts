@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { ToolExecutionJournal } from '../../core/toolExecutionJournal';
-import type { WorkspaceState } from '../../core/runStore';
+import type { WorkspaceState } from '../../core/toolExecutionJournal';
 
 class MemoryState implements WorkspaceState {
 	readonly values = new Map<string, unknown>();

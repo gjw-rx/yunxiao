@@ -44,7 +44,6 @@ export class GitDiffTool extends BaseTool {
 			},
 		},
 		permissions: 'read',
-		site: 'local',
 	};
 
 	private readonly createClient: (workspaceRoot: string) => SimpleGit;

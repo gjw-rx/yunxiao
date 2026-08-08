@@ -52,7 +52,6 @@ export class SearchFilesTool extends BaseTool {
 			required: ['pattern'],
 		},
 		permissions: 'read',
-		site: 'local',
 	};
 
 	validate(args: Record<string, unknown>): void {
