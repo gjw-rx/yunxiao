@@ -163,6 +163,15 @@
           "default": 10000,
           "description": "所有本地工具结果回传云端前的统一文本长度上限（字符）",
           "scope": "window"
+        },
+        "yunxiaoAgent.skills.directories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [".vscode/skills"],
+          "description": "Skill 搜索目录列表（相对工作区根的路径），插件将从这些目录加载 Markdown 格式的 Skill",
+          "scope": "window"
         }
       }
     }

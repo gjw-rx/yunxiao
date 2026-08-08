@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { ChatViewProvider } from './chatPanel';
 import { AIClient } from './aiClient';
 import { ToolRegistry } from './core/toolRegistry';
@@ -31,6 +32,9 @@ import { GitCommitTool } from './tools/git/gitCommit';
 import { GitBranchTool } from './tools/git/gitBranch';
 import { GitStashTool } from './tools/git/gitStash';
 import { getWorkspaceRoots } from './tools/fs/pathGuard';
+import { SkillRegistry } from './skill/skillRegistry';
+import { loadSkillsFromDirectory } from './skill/skillLoader';
+import { SkillTool } from './skill/skillTool';
 import * as logger from './logger';
 
 // 全局崩溃捕获：进程死之前把错误写进 OutputChannel
@@ -134,6 +138,22 @@ async function _activate(context: vscode.ExtensionContext) {
 	registry.register(new GitCommitTool());
 	registry.register(new GitBranchTool());
 	registry.register(new GitStashTool());
+
+	// Skill 系统：扫描配置目录并注册，注册 skill 工具
+	const skillRegistry = new SkillRegistry();
+	const skillDirs = config.get<string[]>('skills.directories', ['.vscode/skills']);
+	const workspaceRoots = getWorkspaceRoots();
+	for (const dir of skillDirs) {
+		const absDir = path.isAbsolute(dir) ? dir : path.join(workspaceRoots[0] ?? process.cwd(), dir);
+		const loaded = await loadSkillsFromDirectory(absDir);
+		for (const skill of loaded) {
+			skillRegistry.register(skill);
+		}
+		if (loaded.length > 0) {
+			logger.log(`[Extension] 从 ${absDir} 加载了 ${loaded.length} 个 Skill`);
+		}
+	}
+	registry.register(new SkillTool(skillRegistry));
 
 	const metrics = new ReliabilityMetrics();
 	const runStore = new RunStore(context.workspaceState);

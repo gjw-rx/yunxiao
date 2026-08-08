@@ -14,7 +14,9 @@ import type { ToolRegistry } from '../core/toolRegistry';
 import type { EventBus } from '../core/eventBus';
 import type { ToolContext } from '../tools/baseTool';
 import type { ToolResult } from '../core/types';
+import type { SkillRegistry } from '../skill/skillRegistry';
 import { toolSchemasToDefinitions, llmToolCallToCoreToolCall, toolResultToContent } from './toolAdapter';
+import { buildSystemPrompt } from './systemPrompt';
 
 /** AgentLoop 配置 */
 export interface AgentLoopConfig {
@@ -36,21 +38,15 @@ export interface AgentLoopConfig {
 	readonly terminalOutputLimit?: number;
 	/** 工具结果文本截断上限（字符） */
 	readonly toolResultLimit?: number;
+	/** 自定义 Agent 系统提示词（覆盖默认） */
+	readonly agentPrompt?: string;
+	/** Skill 注册表（为 null 时系统提示词不含 Skill guidance） */
+	readonly skillRegistry?: SkillRegistry | null;
 }
 
 const MAX_STEPS_PROMPT =
 	'You have reached the maximum number of steps. ' +
 	'Please summarize what you have accomplished and what remains to be done.';
-
-/** 临时系统提示词，Phase 4 将替换为完整的 buildSystemPrompt。 */
-const TEMP_SYSTEM_PROMPT = `You are an AI coding assistant integrated into VSCode. You help users with software engineering tasks by understanding their codebase, making changes, and running commands.
-
-## Guidelines
-- Always read files before editing them
-- Make surgical changes - touch only what's necessary
-- Use tools to verify your changes (diagnostics, tests)
-- Explain what you're doing and why
-- If unsure, ask for clarification`;
 
 export class AgentLoop {
 	private abortController: AbortController | null = null;
@@ -81,13 +77,22 @@ export class AgentLoop {
 				}
 
 				// 加载历史
-				const history = loadHistoryForLLM(sessionId, this.messageStore);
+			const history = loadHistoryForLLM(sessionId, this.messageStore);
 
-				// 构建消息：系统提示词 + 历史
-				const messages: LLMMessage[] = [
-					{ role: 'system', content: TEMP_SYSTEM_PROMPT },
-					...history,
-				];
+			// 构建系统提示词
+			const systemPrompt = buildSystemPrompt({
+				agentPrompt: this.config.agentPrompt,
+				skills: this.config.skillRegistry?.list() ?? [],
+				workspaceRoot: this.config.workspaceRoots[0] ?? '',
+				platform: process.platform,
+				date: new Date().toISOString().slice(0, 10),
+			});
+
+			// 构建消息：系统提示词 + 历史
+			const messages: LLMMessage[] = [
+				{ role: 'system', content: systemPrompt },
+				...history,
+			];
 
 				// 物化工具定义
 				const tools = toolSchemasToDefinitions(this.toolRegistry.list());
