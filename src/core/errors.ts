@@ -57,6 +57,20 @@ export class ToolValidationError extends Error {
 	}
 }
 
+/**
+ * 工具参数不符合 schema 的校验错误。
+ * 文案含具体字段明细与"请重写输入以满足 schema"的指导语,便于模型修正后重试。
+ */
+export class InvalidArgumentsError extends ToolValidationError {
+	constructor(toolName: string, details: readonly string[]) {
+		super(
+			`工具 ${toolName} 参数无效: ${details.join('; ')}。` +
+				'Please rewrite the input so it satisfies the expected schema.'
+		);
+		this.name = 'InvalidArgumentsError';
+	}
+}
+
 /** 将任意错误转为用户可读的友好提示。 */
 export function formatErrorForUser(err: unknown): string {
 	if (err instanceof PathGuardError) {

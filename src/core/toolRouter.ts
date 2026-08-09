@@ -5,7 +5,7 @@
  */
 import type { ToolCall, ToolResult } from './types';
 import type { ToolRegistry } from './toolRegistry';
-import type { ToolContext } from '../tools/baseTool';
+import type { ToolContext, BaseTool } from '../tools/baseTool';
 import type { ApprovalGateway } from './approvalGateway';
 import { SecurityAudit } from './securityAudit';
 import { ToolExecutionJournal, type ToolExecutionIdentity } from './toolExecutionJournal';
@@ -22,8 +22,14 @@ export class ToolRouter {
 	/** 路由并执行一个工具调用。 */
 	async route(call: ToolCall, context: ToolContext): Promise<ToolResult> {
 		logger.log(`[ToolRouter] 路由工具 ${call.tool} call_id=${call.call_id}`);
-		const tool = this.registry.lookup(call.tool);
-		tool.validate(call.args);
+		// 查找 + 参数校验(JSON Schema + 手写 validate):失败转结构化错误,不抛未捕获异常
+		let tool: BaseTool;
+		try {
+			tool = this.registry.lookup(call.tool);
+			this.registry.validateArgs(call.tool, call.args);
+		} catch (error) {
+			return this.toErrorResult(call, context, error);
+		}
 		const audit = this.audit.audit(call, tool, context);
 		if (!audit.allowed) {
 			logger.notifyError(`[ToolRouter] 安全审计拒绝工具 ${call.tool}`, audit.rejection?.error);
@@ -52,8 +58,8 @@ export class ToolRouter {
 				this.approvalScope(call, context)
 			);
 			if (decision === 'deny') {
-			logger.log(`[ToolRouter] 用户拒绝执行工具 ${call.tool}`);
-			return {
+				logger.log(`[ToolRouter] 用户拒绝执行工具 ${call.tool}`);
+				return {
 					call_id: call.call_id,
 					status: 'cancelled',
 					error: '用户拒绝执行',
@@ -62,8 +68,12 @@ export class ToolRouter {
 		}
 
 		if (tool.permission === 'read' || !this.journal) {
-			const partial = tool.governResult(await tool.execute(call.args, context), context);
-			return { ...partial, call_id: call.call_id };
+			try {
+				const partial = tool.governResult(await tool.execute(call.args, context), context);
+				return { ...partial, call_id: call.call_id };
+			} catch (error) {
+				return this.toErrorResult(call, context, error);
+			}
 		}
 
 		const identity = this.executionIdentity(call, context);
@@ -89,17 +99,38 @@ export class ToolRouter {
 			logger.log(`[ToolRouter] 工具 ${call.tool} 执行成功 status=${result.status}`);
 			return result;
 		} catch (error) {
-			logger.notifyError(`[ToolRouter] 工具 ${call.tool} 执行失败`, error instanceof Error ? error.message : String(error));
+			const result = this.toErrorResult(call, context, error);
 			if (!context.abortSignal?.aborted) {
-				await this.journal.complete(identity, {
-					call_id: call.call_id,
-					status: 'error',
-					error: error instanceof Error ? error.message : String(error),
-					metadata: { retryable: false },
-				});
+				await this.journal.complete(identity, result);
 			}
-			throw error;
+			return result;
 		}
+	}
+
+	/**
+	 * 统一异常转结构化失败结果:仅保留 error.message(不含堆栈),堆栈只入日志不弹窗;
+	 * 中断(abortSignal)返回 cancelled,不自动重放;其余返回 error + retryable:false(重试决策交给模型)。
+	 */
+	private toErrorResult(call: ToolCall, context: ToolContext, error: unknown): ToolResult {
+		const message = error instanceof Error ? error.message : String(error);
+		logger.error(
+			`[ToolRouter] 工具 ${call.tool} 执行失败 - call_id=${call.call_id}, error=${message}`,
+			error instanceof Error ? error.stack ?? '' : '',
+		);
+		if (context.abortSignal?.aborted) {
+			logger.log(`[ToolRouter] 工具 ${call.tool} 已中断,返回 cancelled`);
+			return {
+				call_id: call.call_id,
+				status: 'cancelled',
+				error: '工具执行已中断',
+			};
+		}
+		return {
+			call_id: call.call_id,
+			status: 'error',
+			error: message,
+			metadata: { retryable: false },
+		};
 	}
 
 	/** 仅明确声明可并行的只读工具允许在同一轮并发执行。 */

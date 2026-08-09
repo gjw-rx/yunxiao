@@ -91,7 +91,25 @@
         "yunxiaoAgent.maxFileSize": {
           "type": "number",
           "default": 1048576,
-          "description": "fs.read_file 读取文件大小上限（字节），默认 1MB",
+          "description": "fs.read_file 读取文件大小上限（字节），作为分页读取的护栏，默认 1MB",
+          "scope": "window"
+        },
+        "yunxiaoAgent.readFile.maxLines": {
+          "type": "number",
+          "default": 2000,
+          "description": "fs.read_file 单页最大行数（默认 2000），配合 offset 分页续读",
+          "scope": "window"
+        },
+        "yunxiaoAgent.readFile.maxBytes": {
+          "type": "number",
+          "default": 51200,
+          "description": "fs.read_file 单页累计字节预算（默认 50KB），超过即停止并提示 offset 续读",
+          "scope": "window"
+        },
+        "yunxiaoAgent.readFile.maxLineLength": {
+          "type": "number",
+          "default": 2000,
+          "description": "fs.read_file 单行最大字符数（默认 2000），超出截断并标注",
           "scope": "window"
         },
         "yunxiaoAgent.toolTimeoutMs": {
@@ -157,7 +175,19 @@
         "yunxiaoAgent.toolResultLimit": {
           "type": "number",
           "default": 10000,
-          "description": "所有工具结果的统一文本长度上限（字符）",
+          "description": "所有工具结果的统一文本长度上限（字符），作为治理的字符兜底",
+          "scope": "window"
+        },
+        "yunxiaoAgent.toolResult.maxLines": {
+          "type": "number",
+          "default": 2000,
+          "description": "工具结果治理的最大行数（默认 2000），超出截断并标注",
+          "scope": "window"
+        },
+        "yunxiaoAgent.toolResult.maxBytes": {
+          "type": "number",
+          "default": 51200,
+          "description": "工具结果治理的最大字节数（默认 50KB，UTF-8），超出截断并标注",
           "scope": "window"
         },
         "yunxiaoAgent.skills.directories": {

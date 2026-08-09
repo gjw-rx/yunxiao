@@ -44,6 +44,16 @@ export interface AgentLoopConfig {
 	readonly workspaceRoots: string[];
 	/** 读文件大小上限（字节） */
 	readonly maxFileSize?: number;
+	/** 读文件分页：单页最大行数（默认 2000）。 */
+	readonly readMaxLines?: number;
+	/** 读文件分页：累计字节预算（默认 50KB，受 maxFileSize 护栏约束）。 */
+	readonly readMaxBytes?: number;
+	/** 读文件分页：单行最大字符数（默认 2000）。 */
+	readonly readMaxLineLength?: number;
+	/** 结果治理：最大行数（默认 2000）。 */
+	readonly governMaxLines?: number;
+	/** 结果治理：最大字节数（默认 50KB）。 */
+	readonly governMaxBytes?: number;
 	/** 工具执行超时（毫秒） */
 	readonly toolTimeoutMs?: number;
 	/** 终端输出截断上限（字符） */
@@ -364,6 +374,11 @@ export class AgentLoop {
 		return {
 			workspaceRoots: this.config.workspaceRoots,
 			maxFileSize: this.config.maxFileSize,
+			readMaxLines: this.config.readMaxLines,
+			readMaxBytes: this.config.readMaxBytes,
+			readMaxLineLength: this.config.readMaxLineLength,
+			governMaxLines: this.config.governMaxLines,
+			governMaxBytes: this.config.governMaxBytes,
 			toolTimeoutMs: this.config.toolTimeoutMs,
 			sessionId,
 			runId,

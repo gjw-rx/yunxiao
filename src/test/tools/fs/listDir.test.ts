@@ -13,6 +13,11 @@ describe('ListDirTool', () => {
 		return { workspaceRoots: [workspace], ...overrides };
 	}
 
+	/** 解析条目 JSON（结果可能带分页提示后缀，先按空行分隔取 JSON 部分）。 */
+	function parseEntries(result: string): Array<{ name: string; type: string; size: number; mtime: number; path: string }> {
+		return JSON.parse(result.split('\n\n(')[0]);
+	}
+
 	async function writeFile(rel: string, content: string): Promise<void> {
 		const abs = path.join(workspace, rel);
 		await fs.mkdir(path.dirname(abs), { recursive: true });
@@ -37,12 +42,13 @@ describe('ListDirTool', () => {
 		const result = await tool.execute({ path: '.' }, await makeContext());
 		// Assert
 		assert.strictEqual(result.status, 'success');
-		const entries = JSON.parse(result.result as string);
+		const entries = parseEntries(result.result as string);
 		const names = entries.map((e: { name: string }) => e.name);
 		assert.ok(names.includes('a.ts'));
 		assert.ok(names.includes('src'));
 		assert.ok(names.includes('lib'));
 		const a = entries.find((e: { name: string }) => e.name === 'a.ts');
+		assert.ok(a); // 条目必须存在
 		assert.strictEqual(a.type, 'file');
 		assert.ok(a.size > 0);
 	});
@@ -54,7 +60,7 @@ describe('ListDirTool', () => {
 		// Act
 		const result = await tool.execute({ path: '.', type: 'dir' }, await makeContext());
 		// Assert
-		const entries = JSON.parse(result.result as string);
+		const entries = parseEntries(result.result as string);
 		assert.ok(entries.every((e: { type: string }) => e.type === 'dir'));
 	});
 
@@ -71,7 +77,7 @@ describe('ListDirTool', () => {
 		);
 
 		// 断言
-		const entries = JSON.parse(result.result as string);
+		const entries = parseEntries(result.result as string);
 		assert.ok(entries.some((entry: { type: string }) => entry.type === 'file'));
 		assert.ok(entries.some((entry: { type: string }) => entry.type === 'dir'));
 	});
@@ -84,7 +90,7 @@ describe('ListDirTool', () => {
 		// Act
 		const result = await tool.execute({ path: '.' }, await makeContext());
 		// Assert
-		const names = JSON.parse(result.result as string).map((e: { name: string }) => e.name);
+		const names = parseEntries(result.result as string).map((e: { name: string }) => e.name);
 		assert.ok(!names.includes('node_modules'));
 		assert.ok(names.includes('real.ts'));
 	});
@@ -98,7 +104,7 @@ describe('ListDirTool', () => {
 		// Act
 		const result = await tool.execute({ path: '.' }, await makeContext());
 		// Assert
-		const names = JSON.parse(result.result as string).map((e: { name: string }) => e.name);
+		const names = parseEntries(result.result as string).map((e: { name: string }) => e.name);
 		assert.ok(!names.includes('app.log'));
 		assert.ok(!names.includes('secret.txt'));
 		assert.ok(names.includes('keep.ts'));
@@ -115,7 +121,7 @@ describe('ListDirTool', () => {
 			await makeContext()
 		);
 		// Assert
-		const paths = JSON.parse(result.result as string).map((e: { path: string }) => e.path);
+		const paths = parseEntries(result.result as string).map((e: { path: string }) => e.path);
 		assert.ok(paths.includes('a.ts'));
 		assert.ok(paths.includes('src/b.ts'));
 		assert.ok(paths.includes('src/sub/c.ts'));
@@ -138,5 +144,33 @@ describe('ListDirTool', () => {
 		// Assert
 		assert.strictEqual(result.status, 'error');
 		assert.ok(result.error?.includes('不是目录'));
+	});
+
+	it('条目超过 limit 时返回首页并提示续读', async () => {
+		// Arrange
+		for (let i = 0; i < 5; i++) {
+			await writeFile(`f${i}.ts`, 'x');
+		}
+		// Act
+		const result = await tool.execute({ path: '.', limit: 2 }, await makeContext());
+		// Assert
+		assert.strictEqual(result.status, 'success');
+		const entries = parseEntries(result.result as string);
+		assert.strictEqual(entries.length, 2);
+		assert.ok(result.result?.includes('Showing 2 of'));
+		assert.ok(result.result?.includes('Use offset=3 to continue'));
+		assert.strictEqual(result.metadata?.truncated, true);
+	});
+
+	it('条目在 limit 内时不带续读提示', async () => {
+		// Arrange
+		await writeFile('a.ts', 'x');
+		await writeFile('b.ts', 'x');
+		// Act
+		const result = await tool.execute({ path: '.' }, await makeContext());
+		// Assert
+		assert.strictEqual(result.status, 'success');
+		assert.ok(!result.result?.includes('Use offset='));
+		assert.strictEqual(result.metadata?.truncated, false);
 	});
 });

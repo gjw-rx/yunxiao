@@ -209,4 +209,51 @@ describe('ToolRouter approval gating', () => {
 		await pending;
 		assert.deepStrictEqual(await journal.begin({ scopeId: 'run-1', callId: 'c8' }, 'fs.write_file'), { kind: 'unknown' });
 	});
+
+	it('execute 抛异常转结构化 error（无堆栈、不 rejects）', async () => {
+		// Arrange
+		const reg = new ToolRegistry();
+		reg.register(
+			new (class extends BaseTool {
+				readonly schema: ToolSchema = { name: 'boom.tool', description: 'boom', parameters: {}, permissions: 'read' };
+				async execute(): Promise<ToolExecutionResult> {
+					throw new Error('boom');
+				}
+			})()
+		);
+		const router = new ToolRouter(reg);
+		// Act
+		const result = await router.route({ call_id: 'c9', tool: 'boom.tool', args: {} }, CTX);
+		// Assert
+		assert.strictEqual(result.status, 'error');
+		assert.strictEqual(result.error, 'boom');
+		assert.ok(!result.error?.includes('at ')); // 不含堆栈
+		assert.strictEqual(result.metadata?.retryable, false);
+	});
+
+	it('abort 后失败返回 cancelled 而非 error', async () => {
+		// Arrange
+		const reg = new ToolRegistry();
+		reg.register(
+			new (class extends BaseTool {
+				readonly schema: ToolSchema = { name: 'abort.tool', description: 'abort', parameters: {}, permissions: 'read' };
+				async execute(): Promise<ToolExecutionResult> {
+					await new Promise((resolve) => setTimeout(resolve, 10));
+					throw new Error('boom after abort');
+				}
+			})()
+		);
+		const router = new ToolRouter(reg);
+		const controller = new AbortController();
+		// Act
+		const pending = router.route(
+			{ call_id: 'c10', tool: 'abort.tool', args: {} },
+			{ ...CTX, abortSignal: controller.signal }
+		);
+		controller.abort();
+		const result = await pending;
+		// Assert
+		assert.strictEqual(result.status, 'cancelled');
+		assert.ok(result.error?.includes('中断'));
+	});
 });

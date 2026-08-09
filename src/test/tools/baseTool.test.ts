@@ -33,4 +33,33 @@ describe('BaseTool result governance', () => {
 		);
 		assert.strictEqual(result.result, '<binary content>');
 	});
+
+	it('行数超限裁剪并标记', () => {
+		const result = new TestTool().governResult(
+			{ status: 'success', result: Array.from({ length: 10 }, (_, i) => `line${i}`).join('\n') },
+			{ workspaceRoots: [], governMaxLines: 3 }
+		);
+		assert.strictEqual(result.metadata?.truncated, true);
+		assert.ok(result.result?.includes('行数已裁剪'));
+	});
+
+	it('字节超限裁剪并附续读指引', () => {
+		const result = new TestTool().governResult(
+			{ status: 'success', result: 'x'.repeat(100) },
+			{ workspaceRoots: [], governMaxBytes: 10 }
+		);
+		assert.strictEqual(result.metadata?.truncated, true);
+		assert.ok(result.result?.includes('字节数已裁剪'));
+		assert.ok(result.result?.includes('offset'));
+	});
+
+	it('字符兜底（toolResultLimit）仍生效且附续读指引', () => {
+		const result = new TestTool().governResult(
+			{ status: 'success', result: 'y'.repeat(100) },
+			{ workspaceRoots: [], toolResultLimit: 32 }
+		);
+		assert.strictEqual(result.metadata?.truncated, true);
+		assert.ok(result.result?.includes('结果已裁剪'));
+		assert.ok(result.result?.includes('offset'));
+	});
 });

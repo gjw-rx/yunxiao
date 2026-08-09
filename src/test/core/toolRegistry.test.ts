@@ -3,7 +3,6 @@ import { ToolRegistry } from '../../core/toolRegistry';
 import { ToolRouter } from '../../core/toolRouter';
 import { BaseTool, requireStringArg, type ToolContext, type ToolExecutionResult } from '../../tools/baseTool';
 import { ToolNotFoundError } from '../../core/errors';
-import { ToolValidationError } from '../../core/errors';
 import type { ToolCall, ToolSchema } from '../../core/types';
 
 /** 测试用本地只读工具：回显读取的 path。 */
@@ -81,17 +80,20 @@ describe('ToolRouter', () => {
 		assert.strictEqual(result.result, 'content of a.ts');
 	});
 
-	it('throws ToolNotFoundError for unregistered local tool', async () => {
+	it('未注册工具返回结构化 error（不抛未捕获异常）', async () => {
 		const router = new ToolRouter(new ToolRegistry());
 		const call: ToolCall = {
 			call_id: 'c3',
 			tool: 'fs.missing',
 			args: {},
 		};
-		await assert.rejects(() => router.route(call, CTX), ToolNotFoundError);
+		const result = await router.route(call, CTX);
+		assert.strictEqual(result.status, 'error');
+		assert.ok(result.error?.includes('未找到工具'));
+		assert.strictEqual(result.metadata?.retryable, false);
 	});
 
-	it('validates args before executing', async () => {
+	it('参数校验失败返回结构化 error（含重写指导文案）', async () => {
 		const reg = new ToolRegistry();
 		reg.register(new FakeReadTool());
 		const router = new ToolRouter(reg);
@@ -100,6 +102,10 @@ describe('ToolRouter', () => {
 			tool: 'fs.read_file',
 			args: {},
 		};
-		await assert.rejects(() => router.route(call, CTX), ToolValidationError);
+		const result = await router.route(call, CTX);
+		assert.strictEqual(result.status, 'error');
+		assert.ok(result.error?.includes('缺少必填参数'));
+		assert.ok(result.error?.includes('rewrite the input'));
+		assert.strictEqual(result.metadata?.retryable, false);
 	});
 });
