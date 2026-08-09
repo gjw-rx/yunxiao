@@ -1254,8 +1254,10 @@ ${this._getJs()}
     .file-picker-heading { display: flex; justify-content: space-between; padding: 8px 10px 6px; color: var(--muted); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
     .file-picker-hint { opacity: 0.7; text-transform: none; letter-spacing: 0; }
     #filePickerList { max-height: 220px; overflow-y: auto; padding: 0 4px 4px; }
-    .file-option { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; text-align: left; font: inherit; }
-    .file-option:hover, .file-option.active { background: var(--vscode-list-activeSelectionBackground, var(--hover-bg)); color: var(--vscode-list-activeSelectionForeground, var(--fg)); }
+    .file-option { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; text-align: left; font: inherit; user-select: none; }
+    /* 鼠标悬停为浅色预览，键盘选中为深色高亮，两者区分避免“两个选中”的观感 */
+    .file-option:hover { background: color-mix(in srgb, var(--vscode-list-activeSelectionBackground, var(--hover-bg)) 45%, transparent); }
+    .file-option.active { background: var(--vscode-list-activeSelectionBackground, var(--hover-bg)); color: var(--vscode-list-activeSelectionForeground, var(--fg)); }
     .file-option-icon { color: var(--muted); flex: 0 0 auto; }
     .file-option-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
     .file-picker-empty { padding: 12px 10px; color: var(--muted); font-size: 12px; }
@@ -1276,9 +1278,11 @@ ${this._getJs()}
       cursor: pointer;
       text-align: left;
       font: inherit;
+      user-select: none;
       transition: background 0.1s ease;
     }
-    .slash-command-option:hover { background: var(--vscode-quickInputList-focusBackground, var(--hover-bg)); }
+    /* 鼠标悬停为浅色预览，键盘选中为深色高亮，两者区分避免“两个选中”的观感 */
+    .slash-command-option:hover { background: color-mix(in srgb, var(--vscode-quickInputList-focusBackground, var(--hover-bg)) 45%, transparent); }
     .slash-command-option.active {
       color: var(--vscode-quickInputList-focusForeground, var(--fg));
       background: var(--vscode-quickInputList-focusBackground, var(--hover-bg));
@@ -2193,42 +2197,47 @@ ${this._getJs()}
       }
     });
 
-    inputEl.addEventListener('keydown', (e) => {
+    /** 弹窗键盘处理（上下选择 / Enter 确认 / Esc 关闭）。返回 true 表示按键已被弹窗消费。 */
+    function handlePickerKeys(e) {
       if (slashCommandPicker.classList.contains('show')) {
         if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           e.preventDefault();
-          if (filteredSlashCommands.length === 0) return;
+          if (filteredSlashCommands.length === 0) return true;
           slashCommandIndex = (
             slashCommandIndex
             + (e.key === 'ArrowDown' ? 1 : -1)
             + filteredSlashCommands.length
           ) % filteredSlashCommands.length;
           renderSlashCommands();
-          return;
+          return true;
         }
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          selectSlashCommand(filteredSlashCommands[slashCommandIndex]);
-          return;
-        }
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          closeSlashCommandPicker();
-          return;
-        }
+        if (e.key === 'Enter') { e.preventDefault(); selectSlashCommand(filteredSlashCommands[slashCommandIndex]); return true; }
+        if (e.key === 'Escape') { e.preventDefault(); closeSlashCommandPicker(); return true; }
       }
       if (filePicker.classList.contains('show')) {
         if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           e.preventDefault();
-          if (filteredFiles.length === 0) return;
+          if (filteredFiles.length === 0) return true;
           filePickerIndex = (filePickerIndex + (e.key === 'ArrowDown' ? 1 : -1) + filteredFiles.length) % filteredFiles.length;
           renderFilePicker();
-          return;
+          return true;
         }
-        if (e.key === 'Enter') { e.preventDefault(); selectFile(filteredFiles[filePickerIndex]); return; }
-        if (e.key === 'Escape') { e.preventDefault(); closeFilePicker(); return; }
+        if (e.key === 'Enter') { e.preventDefault(); selectFile(filteredFiles[filePickerIndex]); return true; }
+        if (e.key === 'Escape') { e.preventDefault(); closeFilePicker(); return true; }
       }
+      return false;
+    }
+
+    inputEl.addEventListener('keydown', (e) => {
+      if (handlePickerKeys(e)) return;
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); handleSend(); }
+    });
+
+    // 弹窗按键兜底：鼠标点击弹窗（滚动条/选项）可能使 textarea 失焦，
+    // 改为在 document 层继续响应，保证鼠标操作弹窗后键盘上下/Enter/Esc 依然有效
+    document.addEventListener('keydown', (e) => {
+      if (e.target === inputEl) return; // textarea 聚焦时已由 inputEl 处理，避免重复
+      handlePickerKeys(e);
     });
 
     inputEl.addEventListener('input', autoResize);
@@ -2303,6 +2312,9 @@ ${this._getJs()}
           selectSlashCommand(filteredSlashCommands[Number(option.dataset.index)]);
         });
       });
+      // 高亮项移出可视区时，滚动弹窗列表跟随，保证键盘/鼠标选择始终可见
+      const activeSlashOption = slashCommandList.querySelector('.slash-command-option.active');
+      if (activeSlashOption) activeSlashOption.scrollIntoView({ block: 'nearest' });
     }
 
     function selectSlashCommand(command) {
@@ -2408,6 +2420,9 @@ ${this._getJs()}
         option.addEventListener('mousedown', (e) => e.preventDefault());
         option.addEventListener('click', () => selectFile(filteredFiles[Number(option.dataset.index)]));
       });
+      // 高亮项移出可视区时，滚动弹窗列表跟随，保证键盘/鼠标选择始终可见
+      const activeFileOption = filePickerList.querySelector('.file-option.active');
+      if (activeFileOption) activeFileOption.scrollIntoView({ block: 'nearest' });
     }
 
     function selectFile(file) {
