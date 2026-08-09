@@ -35,7 +35,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _currentSessionId?: string;
   private _createSessionRequest = 0;
   private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
-  private readonly _sessionNames = new Map<string, string>();
   private _skillRegistry?: SkillRegistry;
 
   constructor(
@@ -199,6 +198,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage({ command: 'triggerNewSession' });
   }
 
+  /**
+   * 从历史视图打开会话（回放/继续对话共用）：切换当前会话并通知前端加载历史。
+   * @param sessionId 会话 ID
+   */
+  openSession(sessionId: string): void {
+    this._sessionManager.setCurrentSessionId(sessionId);
+    this._currentSessionId = sessionId;
+    this._view?.webview.postMessage({ command: 'openSession', sessionId });
+  }
+
   /** 获取当前会话 ID */
   getCurrentSessionId(): string | undefined {
     return this._currentSessionId;
@@ -247,10 +256,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     switch (msg.command) {
       case 'createSession': {
         const requestId = ++this._createSessionRequest;
-        const previousSessionId = this._currentSessionId;
-        if (previousSessionId) {
-          this._sessionManager.reset(previousSessionId);
-        }
+        // 新建会话保留旧会话数据（历史永存），仅切换当前指针
         const sessionId = this._sessionManager.createSession();
         if (requestId !== this._createSessionRequest) {
           break;
@@ -265,11 +271,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const files = Array.isArray(msg.files)
           ? (msg.files as { path: string }[])
           : [];
-        // 读取引用文件内容，拼接为结构化上下文前置到用户文本（见 _buildFileContext）
+        const skills = Array.isArray(msg.skills)
+          ? (msg.skills as string[])
+          : [];
         let text = userText;
+        // 已选 Skill 引用块转成斜杠命令文本（如 /plan），前置到用户消息
+        if (skills.length > 0) {
+          const skillBlock = skills.map((name) => `/${name}`).join('\n');
+          text = userText ? `${skillBlock}\n\n${userText}` : skillBlock;
+        }
+        // 读取引用文件内容，拼接为结构化上下文前置到用户文本（见 _buildFileContext）
         if (files.length > 0) {
           const contextBlock = await this._buildFileContext(files);
-          text = userText ? `${contextBlock}\n\n${userText}` : contextBlock;
+          text = text ? `${contextBlock}\n\n${text}` : contextBlock;
         }
         // 经会话状态机发起流；事件经事件总线回流（见 _forwardEvent）
         this._sessionManager.sendMessage(sessionId, text);
@@ -349,7 +363,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const sessionId = msg.sessionId as string;
         const name = msg.name as string;
         if (sessionId && name) {
-          this._sessionNames.set(sessionId, name);
+          // 持久化到会话索引（customTitle=true，优先于默认标题）
+          this._sessionManager.renameSession(sessionId, name);
         }
         break;
       }
@@ -1192,8 +1207,8 @@ ${this._getJs()}
     #filePicker, #slashCommandPicker {
       position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); display: none;
       overflow: hidden; background: var(--vscode-quickInput-background, var(--vscode-editor-background, #252526));
-      border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 30px rgba(0,0,0,0.28); z-index: 110;
-      animation: picker-rise 0.14s ease-out both;
+      border: 1px solid var(--vscode-widget-border, var(--border)); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.18); z-index: 110;
+      animation: picker-rise 0.12s ease-out both;
     }
     #filePicker.show, #slashCommandPicker.show { display: block; }
     .file-picker-heading { display: flex; justify-content: space-between; padding: 8px 10px 6px; color: var(--muted); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
@@ -1204,42 +1219,56 @@ ${this._getJs()}
     .file-option-icon { color: var(--muted); flex: 0 0 auto; }
     .file-option-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
     .file-picker-empty { padding: 12px 10px; color: var(--muted); font-size: 12px; }
-    #slashCommandList { padding: 0 4px 4px; }
-    .slash-command-group-label { padding: 6px 8px 4px; color: var(--muted); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
+    #slashCommandList { max-height: 264px; overflow-y: auto; padding: 4px 4px 6px; }
+    .slash-command-group-label { padding: 7px 10px 3px; color: var(--vscode-descriptionForeground, var(--muted)); font-size: 9px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
     .slash-command-option {
-      display: grid;
-      grid-template-columns: 24px minmax(0, 1fr) auto;
+      position: relative;
+      display: flex;
       align-items: center;
       gap: 8px;
       width: 100%;
-      padding: 8px;
+      min-height: 30px;
+      padding: 4px 10px;
       border: 0;
-      border-radius: 7px;
+      border-radius: 6px;
       background: transparent;
       color: var(--fg);
       cursor: pointer;
       text-align: left;
       font: inherit;
+      transition: background 0.1s ease;
     }
-    .slash-command-option:hover, .slash-command-option.active {
-      color: var(--vscode-list-activeSelectionForeground, var(--fg));
-      background: var(--vscode-list-activeSelectionBackground, var(--hover-bg));
+    .slash-command-option:hover { background: var(--vscode-quickInputList-focusBackground, var(--hover-bg)); }
+    .slash-command-option.active {
+      color: var(--vscode-quickInputList-focusForeground, var(--fg));
+      background: var(--vscode-quickInputList-focusBackground, var(--hover-bg));
+    }
+    /* 选中指示条：对齐 Claude Code for VSCode 的列表聚焦样式 */
+    .slash-command-option.active::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 5px; bottom: 5px;
+      width: 2px;
+      border-radius: 1px;
+      background: var(--accent);
     }
     .slash-command-icon {
       display: grid;
       place-items: center;
-      width: 22px;
-      height: 22px;
-      border: 1px solid var(--border-light);
-      border-radius: 6px;
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
       color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
       font-family: var(--mono);
+      font-size: 11px;
       font-weight: 700;
     }
-    .slash-command-copy { min-width: 0; }
-    .slash-command-name { display: block; font-family: var(--mono); font-size: 12px; font-weight: 600; }
-    .slash-command-description { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
-    .slash-command-key { color: var(--muted); font-size: 9px; }
+    .slash-command-copy { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1; }
+    .slash-command-name { font-family: var(--mono); font-size: 12px; font-weight: 600; white-space: nowrap; }
+    .slash-command-description { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+    .slash-command-key { flex: 0 0 auto; color: var(--muted); font-size: 9px; }
     @keyframes picker-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
     #inputWrapper {
@@ -1332,6 +1361,57 @@ ${this._getJs()}
     .file-reference-remove:focus-visible {
       outline: 1px solid var(--focus);
       outline-offset: 1px;
+    }
+
+    /* Skill 引用块：选中 skill 命令后在对话框生成，带入场动画 */
+    .skill-reference-list { margin-bottom: 2px; }
+    .skill-reference-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      max-width: 100%;
+      height: 24px;
+      padding: 0 3px 0 5px;
+      border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+      border-radius: 5px;
+      color: var(--input-fg);
+      background: color-mix(in srgb, var(--accent) 8%, var(--vscode-editor-background, #ffffff));
+      font: inherit;
+      animation: chip-pop 0.18s ease-out;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .skill-reference-chip:hover {
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 14%, var(--vscode-editor-background, #ffffff));
+    }
+    .skill-reference-prefix {
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      min-width: 17px;
+      height: 16px;
+      padding: 0 2px;
+      border-radius: 3px;
+      color: #ffffff;
+      background: var(--accent);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .skill-reference-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1;
+    }
+    @keyframes chip-pop {
+      from { opacity: 0; transform: scale(0.85) translateY(2px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
     }
 
     #input {
@@ -1589,6 +1669,7 @@ ${this._getJs()}
     </div>
     <div id="inputWrapper">
       <div id="fileReferenceList" class="file-reference-list" aria-label="已引用文件"></div>
+      <div id="skillReferenceList" class="file-reference-list skill-reference-list" aria-label="已选 Skill"></div>
       <textarea id="input" rows="1" placeholder="输入消息... 使用 @ 引用文件" disabled></textarea>
     </div>
     <div id="inputToolbar" class="input-toolbar">
@@ -1636,6 +1717,7 @@ ${this._getJs()}
     const filePicker   = document.getElementById('filePicker');
     const filePickerList = document.getElementById('filePickerList');
     const fileReferenceList = document.getElementById('fileReferenceList');
+    const skillReferenceList = document.getElementById('skillReferenceList');
     const slashCommandPicker = document.getElementById('slashCommandPicker');
     const slashCommandList = document.getElementById('slashCommandList');
 
@@ -1650,6 +1732,7 @@ ${this._getJs()}
     let slashCommandIndex = 0;
     let filteredSlashCommands = [];
     let slashCommandGroups = [];
+    let selectedSkills = []; // 已选 Skill 引用块（选中后生成 chip，发送时随消息提交）
 
     /* 「回合」模型：一轮对话 = 过程时间线（思考/工具/审批）+ 最终回复。
        时间线容器先于回复气泡插入 DOM，因此过程天然呈现在回复之上。 */
@@ -2084,13 +2167,15 @@ ${this._getJs()}
       for (const label of Object.keys(byGroup)) {
         html += '<div class="slash-command-group-label">' + escapeHtml(label) + '</div>';
         for (const command of byGroup[label]) {
+          // skill 命令选中后生成引用块加入对话框（不直接发送），基础命令回车直达
+          const keyHint = (command.id && command.id.indexOf('skill.') === 0) ? '↵ 加入对话框' : 'Enter';
           html += '<button class="slash-command-option' + (idx === slashCommandIndex ? ' active' : '') +
             '" role="option" data-index="' + idx + '">' +
             '<span class="slash-command-icon">/</span>' +
             '<span class="slash-command-copy"><span class="slash-command-name">' +
             escapeHtml(command.label) + '</span><span class="slash-command-description">' +
             escapeHtml(command.description || '') + '</span></span>' +
-            '<span class="slash-command-key">Enter</span></button>';
+            '<span class="slash-command-key">' + keyHint + '</span></button>';
           idx++;
         }
       }
@@ -2117,6 +2202,11 @@ ${this._getJs()}
         }
         return;
       }
+      // skill 命令：禁止直接发起会话，改为在对话框生成引用块（chip），由用户确认后发送
+      if (command.id && command.id.indexOf('skill.') === 0) {
+        addSkillCommand(command);
+        return;
+      }
       // 回填命令文本
       inputEl.value = '/' + command.command;
       autoResize();
@@ -2126,6 +2216,35 @@ ${this._getJs()}
       } else {
         inputEl.focus();
       }
+    }
+
+    /** 选中 skill 命令：加入已选列表并在对话框生成引用块（带入场动画），等待用户确认发送。 */
+    function addSkillCommand(command) {
+      if (!command) return;
+      if (!selectedSkills.some((s) => s.id === command.id)) {
+        selectedSkills.push(command);
+      }
+      renderSkillReferences();
+      closeSlashCommandPicker();
+      inputEl.focus();
+    }
+
+    /** 渲染已选 Skill 引用块列表（支持逐个移除）。 */
+    function renderSkillReferences() {
+      skillReferenceList.innerHTML = selectedSkills.map((skill, index) =>
+        '<span class="skill-reference-chip" title="' + escapeAttribute(skill.description || '') + '">' +
+        '<span class="skill-reference-prefix">/</span>' +
+        '<span class="skill-reference-name">' + escapeHtml(skill.label) + '</span>' +
+        '<button type="button" class="file-reference-remove" data-index="' + index +
+        '" aria-label="移除 Skill ' + escapeAttribute(skill.label) + '" title="移除">&times;</button></span>'
+      ).join('');
+      skillReferenceList.querySelectorAll('.file-reference-remove').forEach((button) => {
+        button.addEventListener('click', () => {
+          selectedSkills.splice(Number(button.dataset.index), 1);
+          renderSkillReferences();
+          inputEl.focus();
+        });
+      });
     }
 
     function closeSlashCommandPicker() {
@@ -2228,13 +2347,17 @@ ${this._getJs()}
     function handleSend() {
       const userText = inputEl.value.trim();
       const files = selectedFiles.slice();
-      if ((!userText && files.length === 0) || !currentSessionId || isStreaming) return;
+      const skills = selectedSkills.slice();
+      if ((!userText && files.length === 0 && skills.length === 0) || !currentSessionId || isStreaming) return;
 
       finishTurn(); // 收束上一回合，新回合从这条用户消息之后开始
-      // 用户气泡展示引用文件（纯文本提示，不含 @ 符号，避免污染工具调用路径）
+      // 用户气泡展示引用文件与已选 Skill（纯文本提示，不污染工具调用路径）
       const displayParts = [];
       if (files.length > 0) {
         displayParts.push('引用文件: ' + files.map((file) => file.path).join(', '));
+      }
+      if (skills.length > 0) {
+        displayParts.push('调用 Skill: ' + skills.map((s) => '/' + s.command).join(', '));
       }
       if (userText) {
         displayParts.push(userText);
@@ -2242,15 +2365,23 @@ ${this._getJs()}
       appendUserMsg(displayParts.join('\\n'));
       inputEl.value = '';
       selectedFiles = [];
+      selectedSkills = [];
       renderFileReferences();
+      renderSkillReferences();
       autoResize();
       setStreaming(true);
       currentAssistantTxt = '';
       currentAssistantEl = null;
       currentAssistantRow = null;
 
-      // 文件引用作为独立字段传递，由扩展主进程读取内容注入结构化上下文
-      vscode.postMessage({ command: 'sendMessage', sessionId: currentSessionId, text: userText, files });
+      // 文件引用与 Skill 作为独立字段传递，由扩展主进程拼装上下文注入
+      vscode.postMessage({
+        command: 'sendMessage',
+        sessionId: currentSessionId,
+        text: userText,
+        files,
+        skills: skills.map((s) => s.command),
+      });
     }
 
     // ── Message rendering ──
@@ -2263,7 +2394,9 @@ ${this._getJs()}
     function resetConversation() {
       messagesEl.innerHTML = '';
       selectedFiles = [];
+      selectedSkills = [];
       renderFileReferences();
+      renderSkillReferences();
       toolEntries.clear();
       approvalCards.clear();
       diffCards.clear();
@@ -2728,6 +2861,7 @@ ${this._getJs()}
     window.addEventListener('message', (e) => {
       const msg = e.data;
       switch (msg.command) {
+        case 'openSession':
         case 'sessionCreated': {
           currentSessionId = msg.sessionId;
           resetConversation();

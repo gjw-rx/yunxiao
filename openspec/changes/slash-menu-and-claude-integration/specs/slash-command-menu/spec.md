@@ -35,12 +35,17 @@
 
 ### Requirement: 键盘导航与选中行为
 
-菜单 SHALL 支持 ↑/↓ 在命令间移动焦点、Enter 选中、Esc 关闭菜单。选中命令时：`send` 为 true 的命令 SHALL 直接发送对应消息（如 `sendMessage` 或对应命令消息）；其余命令 SHALL 将命令文本回填输入框并聚焦，由用户编辑后发送。选中后菜单 SHALL 关闭。
+菜单 SHALL 支持 ↑/↓ 在命令间移动焦点、Enter 选中、Esc 关闭菜单。选中命令时：基础功能命令 `send` 为 true 的 SHALL 直接发送对应消息（如 `sendMessage` 或对应命令消息）；skill 命令（子智能体 / SKILL与命令分组）SHALL 禁止直接发起会话，改为在对话框输入区生成 Skill 引用块（chip，带入场动画，可移除、可重复添加不同 Skill），由用户确认后随消息发送。其余命令 SHALL 将命令文本回填输入框并聚焦，由用户编辑后发送。选中后菜单 SHALL 关闭。
 
-#### Scenario: 回车直接发送
+#### Scenario: 基础功能命令回车直接发送
 
-- **WHEN** 用户选中 `send: true` 的命令并按 Enter
+- **WHEN** 用户选中 `send: true` 的基础功能命令并按 Enter
 - **THEN** 菜单关闭，直接触发对应的消息发送（如发送命令文本到会话）
+
+#### Scenario: 选中 skill 命令生成引用块
+
+- **WHEN** 用户选中子智能体或 SKILL与命令分组中的 skill 命令并按 Enter
+- **THEN** 菜单关闭，对话框输入区生成该 Skill 的引用块（chip，带入场动画），会话消息不被发送；发送时引用块随消息一起提交为斜杠命令文本（如 `/plan`）
 
 #### Scenario: 回填输入框
 

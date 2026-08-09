@@ -7,6 +7,7 @@
 import { randomUUID } from 'crypto';
 import type { AgentLoop } from '../agent/agentLoop';
 import type { MessageStore } from '../memory/messageStore';
+import type { SessionMeta } from '../memory/sessionFileStore';
 import type { Message } from '../memory/types';
 import * as logger from '../logger';
 
@@ -30,10 +31,12 @@ export class LocalSessionManager {
 		private readonly messageStore: MessageStore,
 	) {}
 
-	/** 创建新会话，返回会话 ID。 */
+	/** 创建新会话，返回会话 ID。旧会话数据保留（不清空），仅切换当前指针。 */
 	createSession(): string {
 		const sessionId = randomUUID();
 		this.currentSessionId = sessionId;
+		// 文件存储：建立索引条目并记录为当前会话；workspaceState 模式为空操作
+		this.messageStore.createSession(sessionId);
 		logger.log(`[SessionManager] 创建会话 sessionId=${sessionId}`);
 		return sessionId;
 	}
@@ -80,6 +83,40 @@ export class LocalSessionManager {
 			});
 	}
 
+	/** 返回全部会话元数据（按最近更新时间降序），供历史视图展示。 */
+	listSessions(): SessionMeta[] {
+		return this.messageStore.listSessions();
+	}
+
+	/**
+	 * 删除会话：取消进行中的 Agent Loop 并移除存储数据（文件 + 索引）。
+	 * @param sessionId 会话 ID
+	 */
+	deleteSession(sessionId: string): void {
+		logger.log(`[SessionManager] 删除会话 sessionId=${sessionId}`);
+		this.agentLoop.cancel();
+		this.messageStore.clear(sessionId);
+	}
+
+	/**
+	 * 持久化用户自定义会话标题（优先于默认标题展示）。
+	 * @param sessionId 会话 ID
+	 * @param title 自定义标题
+	 */
+	renameSession(sessionId: string, title: string): void {
+		this.messageStore.renameSession(sessionId, title);
+		logger.log(`[SessionManager] 重命名会话 sessionId=${sessionId} 标题=${title.slice(0, 40)}`);
+	}
+
+	/**
+	 * 订阅会话数据变更（新建/追加/删除/重命名/切换当前会话）。
+	 * @param listener 变更回调
+	 * @returns 取消订阅函数
+	 */
+	onDidChangeSessions(listener: () => void): () => void {
+		return this.messageStore.onDidChangeSessions(listener);
+	}
+
 	/** 重置会话：取消 AgentLoop + 清空 MessageStore。 */
 	reset(sessionId: string): void {
 		this.agentLoop.cancel();
@@ -91,8 +128,9 @@ export class LocalSessionManager {
 		return this.currentSessionId;
 	}
 
-	/** 设置当前会话 ID（用于历史会话切换）。 */
+	/** 设置当前会话 ID（用于历史会话切换），并同步到存储索引。 */
 	setCurrentSessionId(sessionId: string): void {
 		this.currentSessionId = sessionId;
+		this.messageStore.setCurrentSessionId(sessionId);
 	}
 }

@@ -39,7 +39,10 @@ import { getSyncEnabled, onClaudeConfigChange } from './config/claudeConfig';
 import { getSyncEnabled as getTraeSyncEnabled, onTraeConfigChange } from './config/traeConfig';
 import { createProvider } from './llm/provider';
 import { MessageStore } from './memory/messageStore';
+import { SessionFileStore } from './memory/sessionFileStore';
+import type { Message } from './memory/types';
 import { AgentLoop } from './agent/agentLoop';
+import { HistoryTreeProvider, registerHistoryCommands } from './historyTree';
 import type { CompactionConfig } from './agent/compaction';
 import * as logger from './logger';
 
@@ -67,8 +70,14 @@ async function _activate(context: vscode.ExtensionContext) {
 	const config = vscode.workspace.getConfiguration('yunxiaoAgent');
 	const eventBus = new EventBus();
 
-	// 消息存储
-	const messageStore = new MessageStore(context.workspaceState);
+	// 工作区根（会话存储按 workspace 隔离）
+	const workspaceRoots = getWorkspaceRoots();
+	const workspaceRoot = workspaceRoots[0] ?? process.cwd();
+
+	// 消息存储：~/.yunForce JSONL 文件后端（会话历史可长期保留、可查看、可迁移）
+	const fileStore = new SessionFileStore(workspaceRoot);
+	await migrateLegacyMessages(context, fileStore);
+	const messageStore = new MessageStore(fileStore);
 
 	// 本地工具注册表
 	const registry = new ToolRegistry();
@@ -141,7 +150,6 @@ async function _activate(context: vscode.ExtensionContext) {
 	// Skill 系统：扫描配置目录并注册，注册 skill 工具
 	const skillRegistry = new SkillRegistry();
 	const skillDirs = config.get<string[]>('skills.directories', ['.vscode/skills']);
-	const workspaceRoots = getWorkspaceRoots();
 	for (const dir of skillDirs) {
 		const absDir = path.isAbsolute(dir) ? dir : path.join(workspaceRoots[0] ?? process.cwd(), dir);
 		const loaded = await loadSkillsFromDirectory(absDir);
@@ -308,6 +316,14 @@ async function _activate(context: vscode.ExtensionContext) {
 	// 回填 provider 的依赖（解决循环依赖：provider -> approval -> provider）
 	(provider as unknown as { _sessionManager: LocalSessionManager })._sessionManager = sessionManager;
 
+	// 历史会话视图（侧边栏 TreeView）：列出/打开/删除会话，订阅变更自动刷新
+	const historyTreeProvider = new HistoryTreeProvider(sessionManager);
+	context.subscriptions.push(
+		vscode.window.registerTreeDataProvider('yunxiaoAgent.historyView', historyTreeProvider),
+		historyTreeProvider,
+	);
+	registerHistoryCommands(context, historyTreeProvider, sessionManager, provider);
+
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider('yunxiaoAgent.chatView', provider, {
 			webviewOptions: { retainContextWhenHidden: true },
@@ -327,6 +343,43 @@ async function _activate(context: vscode.ExtensionContext) {
 			provider.triggerNewSession();
 		})
 	);
+}
+
+/**
+ * 迁移旧 workspaceState 中的会话消息到文件存储（一次性、幂等）。
+ * 已迁移的会话（索引已有条目）跳过，避免上次中断后重复追加；
+ * 全部落盘完成后再清理旧键，防止清理后数据丢失。
+ * @param context 扩展上下文
+ * @param fileStore 文件存储
+ */
+async function migrateLegacyMessages(context: vscode.ExtensionContext, fileStore: SessionFileStore): Promise<void> {
+	const legacy = context.workspaceState.get<Record<string, Message[]>>('yunxiaoAgent.messages');
+	if (!legacy || Object.keys(legacy).length === 0) {
+		return;
+	}
+	let migrated = 0;
+	let skipped = 0;
+	for (const [sessionId, messages] of Object.entries(legacy)) {
+		if (fileStore.getSession(sessionId)) {
+			skipped++;
+			continue;
+		}
+		try {
+			fileStore.createSession(sessionId);
+			for (const m of messages) {
+				fileStore.appendMessage(sessionId, m);
+			}
+			migrated++;
+		} catch (err) {
+			logger.error(`[Extension] 迁移会话失败 sessionId=${sessionId}:`, err instanceof Error ? err.message : String(err));
+		}
+	}
+	// 等待全部会话落盘后再清理旧键
+	await fileStore.flush();
+	void context.workspaceState.update('yunxiaoAgent.messages', undefined).then(undefined, () => {
+		logger.error('[Extension] 清理旧 workspaceState 键失败（忽略）');
+	});
+	logger.log(`[Extension] 迁移旧会话数据完成 迁移=${migrated} 跳过=${skipped}`);
 }
 
 export function deactivate() { }

@@ -35,6 +35,12 @@
           "name": "对话",
           "icon": "media/icon-view.svg",
           "retainContextWhenHidden": true
+        },
+        {
+          "type": "tree",
+          "id": "yunxiaoAgent.historyView",
+          "name": "历史",
+          "icon": "media/icon-history.svg"
         }
       ]
     },
@@ -47,8 +53,37 @@
         "command": "yunxiaoAgent.newSession",
         "title": "云效 Agent: 新建会话",
         "icon": "$(add)"
+      },
+      {
+        "command": "yunxiaoAgent.history.open",
+        "title": "打开历史会话"
+      },
+      {
+        "command": "yunxiaoAgent.history.delete",
+        "title": "删除会话"
+      },
+      {
+        "command": "yunxiaoAgent.history.refresh",
+        "title": "刷新历史会话",
+        "icon": "$(refresh)"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "yunxiaoAgent.history.refresh",
+          "when": "view == yunxiaoAgent.historyView",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "yunxiaoAgent.history.delete",
+          "when": "view == yunxiaoAgent.historyView && viewItem == session",
+          "group": "inline"
+        }
+      ]
+    },
     "configuration": {
       "title": "云效 Agent",
       "properties": {

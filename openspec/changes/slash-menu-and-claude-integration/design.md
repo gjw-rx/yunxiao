@@ -55,7 +55,7 @@ interface SlashCommand {
 - 基础功能：内置静态命令表（常量，如 新建会话、停止回复、插入项目文件），`send: false` 回填或直接触发对应消息。
 - 子智能体：`skillRegistry.list()` 中 `type === 'agent'` 的 skill。
 - SKILL与命令：其余 skill（含 `slash === true` 的斜杠 skill）。
-- `selectSlashCommand(cmd)`：`cmd.send` 为真 → 直接 `postMessage sendMessage`（或对应命令消息）；否则回填输入框并聚焦，由用户编辑后发送。
+- `selectSlashCommand(cmd)`：基础功能命令 `cmd.send` 为真 → 直接 `postMessage sendMessage`（或对应命令消息）；skill 命令（`skill.*`）选中后**不直接发送**，在对话框输入区生成 Skill 引用块（chip，带入场动画、可移除、去重），发送时随 `sendMessage` 以 `skills` 字段提交，扩展侧转成斜杠命令文本前置到用户消息；否则回填输入框并聚焦，由用户编辑后发送。
 
 替代方案：webview 内嵌静态命令表。否决——子智能体/SKILL 数据来自扩展侧 skillRegistry，静态表无法覆盖，且配置变更后无法热更新。
 
