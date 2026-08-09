@@ -7,7 +7,7 @@
     "url": "https://github.com/gjw-rx/yunxiao.git"
   },
   "description": "码力云效-对接自有ai服务",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "icon": "media/icon.png",
   "engines": {
@@ -33,7 +33,7 @@
         {
           "type": "webview",
           "id": "yunxiaoAgent.chatView",
-          "name": "对话",
+          "name": "对话面板",
           "icon": "media/icon-view.svg",
           "retainContextWhenHidden": true
         }

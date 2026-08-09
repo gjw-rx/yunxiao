@@ -28,7 +28,7 @@ function getNonce(): string {
 type ApprovalResolver = (decision: 'allow' | 'always' | 'deny') => void;
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
-  private _view?: vscode.WebviewView;
+  private _panel?: vscode.WebviewPanel; // 编辑区对话面板（单例，用户关闭后置空）
   private readonly _registry: ToolRegistry;
   private readonly _sessionManager: LocalSessionManager;
   private readonly _eventBus: EventBus;
@@ -58,8 +58,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * 向 webview 推送最新的斜杠命令分组数据（webview 未就绪时忽略）。
    */
-  private _pushSlashCommands(view: vscode.WebviewView): void {
-    view.webview.postMessage({
+  private _pushSlashCommands(panel: vscode.WebviewPanel): void {
+    panel.webview.postMessage({
       command: 'slashCommands',
       groups: buildSlashCommandGroups(this._skillRegistry),
     });
@@ -69,29 +69,59 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * 刷新斜杠命令数据：skill 注册/配置变更后由扩展侧调用，重新推送分组。
    */
   refreshSlashCommands(): void {
-    if (this._view) {
-      this._pushSlashCommands(this._view);
+    if (this._panel) {
+      this._pushSlashCommands(this._panel);
     }
   }
 
+  /**
+   * 打开对话面板：在编辑器区域创建（或聚焦）单例 WebviewPanel。
+   * 命令面板与侧边栏图标入口均会调用；面板已存在时仅聚焦不重建。
+   */
+  show(): void {
+    if (this._panel) {
+      this._panel.reveal(vscode.ViewColumn.Active);
+      return;
+    }
+    this._panel = this._createPanel();
+  }
+
+  /**
+   * 侧边栏 WebviewView 入口（点击 activity bar 图标触发）：
+   * 在编辑区打开对话面板，侧边栏渲染引导提示页。
+   */
   resolveWebviewView(
     webviewView: vscode.WebviewView,
     _ctx: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken
   ): void {
-    this._view = webviewView;
+    webviewView.webview.html = this._getSidebarGuideHtml();
+    this.show();
+  }
 
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [
-        vscode.Uri.file(path.join(this._context.extensionPath, 'dist')),
-        vscode.Uri.file(path.join(this._context.extensionPath, 'media')),
-      ],
-    };
+  /**
+   * 创建编辑区对话面板并完成 webview 初始化（消息监听、事件总线订阅、初始数据推送）。
+   * @returns 新创建的 WebviewPanel
+   */
+  private _createPanel(): vscode.WebviewPanel {
+    const panel = vscode.window.createWebviewPanel(
+      'yunxiaoAgent.chatPanel',
+      '云效 Agent',
+      vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [
+          vscode.Uri.file(path.join(this._context.extensionPath, 'dist')),
+          vscode.Uri.file(path.join(this._context.extensionPath, 'media')),
+        ],
+      }
+    );
+    panel.iconPath = vscode.Uri.file(path.join(this._context.extensionPath, 'media', 'icon.png'));
 
-    webviewView.webview.html = this._getHtml(webviewView.webview);
+    panel.webview.html = this._getHtml(panel.webview);
 
-    webviewView.webview.onDidReceiveMessage(
+    panel.webview.onDidReceiveMessage(
       async (msg: { command: string;[key: string]: unknown }) => {
         await this._handleMessage(msg);
       },
@@ -99,45 +129,83 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._context.subscriptions
     );
 
-    // 订阅事件总线，将当前会话的事件转发给 webview
+    // 订阅事件总线，将当前会话的事件转发给 webview；面板关闭时取消订阅，避免重复转发
     const unsub = this._eventBus.onAll((e) => this._forwardEvent(e));
     this._context.subscriptions.push({ dispose: unsub });
+
+    // 面板关闭时清空引用、取消事件订阅，并将未决审批回退为 deny（避免 AgentLoop 挂起）
+    panel.onDidDispose(
+      () => {
+        logger.log('[ChatPanel] 编辑区对话面板已关闭');
+        if (this._panel === panel) {
+          this._panel = undefined;
+        }
+        unsub();
+        for (const resolve of this._pendingApprovals.values()) {
+          resolve('deny');
+        }
+        this._pendingApprovals.clear();
+      },
+      undefined,
+      this._context.subscriptions
+    );
 
     // 发送当前模型名称到 webview
     const modelConfig = vscode.workspace.getConfiguration('yunxiaoAgent.model');
     const modelName = modelConfig.get<string>('model', '');
     if (modelName) {
-      webviewView.webview.postMessage({ command: 'modelInfo', model: modelName });
+      panel.webview.postMessage({ command: 'modelInfo', model: modelName });
     }
 
     // 推送斜杠命令分组（webview 侧亦可主动 requestSlashCommands 拉取）
-    this._pushSlashCommands(webviewView);
+    this._pushSlashCommands(panel);
+
+    logger.log('[ChatPanel] 编辑区对话面板已打开');
+    return panel;
+  }
+
+  /**
+   * 侧边栏入口的引导提示页（对话界面实际在编辑区，此处仅提示）。
+   * @returns 引导页 HTML
+   */
+  private _getSidebarGuideHtml(): string {
+    return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+</head>
+<body style="margin:0;padding:16px;font-family:var(--vscode-font-family);color:var(--vscode-foreground);">
+  <p>云效 Agent 对话面板已在编辑区打开。</p>
+  <p><a href="command:yunxiaoAgent.openPanel">在编辑区打开对话面板</a></p>
+</body>
+</html>`;
   }
 
   /** 将当前会话的事件总线事件转发给 webview。 */
   private _forwardEvent(e: AgentEvent): void {
-    const view = this._view;
-    if (!view || e.sessionId !== this._currentSessionId) {
+    const panel = this._panel;
+    if (!panel || e.sessionId !== this._currentSessionId) {
       return;
     }
     switch (e.type) {
       case 'content':
-        view.webview.postMessage({ command: 'replyChunk', text: e.payload as string });
+        panel.webview.postMessage({ command: 'replyChunk', text: e.payload as string });
         break;
       case 'step_end':
-        view.webview.postMessage({ command: 'stepEnd' });
+        panel.webview.postMessage({ command: 'stepEnd' });
         break;
       case 'token_usage':
-        view.webview.postMessage({ command: 'tokenUsage', payload: e.payload });
+        panel.webview.postMessage({ command: 'tokenUsage', payload: e.payload });
         break;
       case 'session_token_usage':
-        view.webview.postMessage({ command: 'sessionTokenUsage', payload: e.payload });
+        panel.webview.postMessage({ command: 'sessionTokenUsage', payload: e.payload });
         break;
       case 'stream_end':
-        view.webview.postMessage({ command: 'replyEnd' });
+        panel.webview.postMessage({ command: 'replyEnd' });
         break;
       case 'error':
-        view.webview.postMessage({ command: 'error', message: e.payload as string });
+        panel.webview.postMessage({ command: 'error', message: e.payload as string });
         break;
       case 'tool_state_change': {
         const p = e.payload as {
@@ -148,12 +216,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           args?: unknown;
           output?: unknown;
         };
-        view.webview.postMessage({ command: 'toolState', ...p });
+        panel.webview.postMessage({ command: 'toolState', ...p });
         // code.edit 成功且有 diff 数据时，额外发送 diffResult 命令
         if (p.tool === 'code.edit' && p.state === 'success' && p.output) {
           const out = p.output as Record<string, unknown>;
           if (out.diff) {
-            view.webview.postMessage({
+            panel.webview.postMessage({
               command: 'diffResult',
               call_id: p.call_id,
               file_path: out.file_path ?? out.path ?? '',
@@ -167,25 +235,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'tool_call': {
         const p = e.payload as { call_id: string; tool: string; args?: unknown };
-        view.webview.postMessage({ command: 'toolCall', ...p });
+        panel.webview.postMessage({ command: 'toolCall', ...p });
         break;
       }
       case 'tool_result': {
         const p = e.payload as { call_id: string; status: string; result?: unknown; error?: string };
-        view.webview.postMessage({ command: 'toolResult', ...p });
+        panel.webview.postMessage({ command: 'toolResult', ...p });
         break;
       }
       case 'thought':
-        view.webview.postMessage({ command: 'thought', text: e.payload as string });
+        panel.webview.postMessage({ command: 'thought', text: e.payload as string });
         break;
       case 'progress': {
         const p = e.payload as { phase?: string };
-        view.webview.postMessage({ command: 'progress', phase: p.phase });
+        panel.webview.postMessage({ command: 'progress', phase: p.phase });
         break;
       }
       case 'plan': {
         const p = e.payload as { steps: string[] };
-        view.webview.postMessage({ command: 'plan', steps: p.steps });
+        panel.webview.postMessage({ command: 'plan', steps: p.steps });
         break;
       }
       default:
@@ -195,7 +263,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** 从工具栏"新建会话"按钮触发 */
   triggerNewSession(): void {
-    this._view?.webview.postMessage({ command: 'triggerNewSession' });
+    this._panel?.webview.postMessage({ command: 'triggerNewSession' });
   }
 
   /**
@@ -206,7 +274,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   openSession(sessionId: string, title?: string): void {
     this._sessionManager.setCurrentSessionId(sessionId);
     this._currentSessionId = sessionId;
-    this._view?.webview.postMessage({ command: 'openSession', sessionId, title });
+    this._panel?.webview.postMessage({ command: 'openSession', sessionId, title });
   }
 
   /** 获取当前会话 ID */
@@ -230,15 +298,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     filePath: string | undefined,
     sessionId: string
   ): Promise<'allow' | 'always' | 'deny'> {
-    const view = this._view;
+    const panel = this._panel;
     return new Promise<'allow' | 'always' | 'deny'>((resolve) => {
-      if (!view || sessionId !== this._currentSessionId) {
+      if (!panel || sessionId !== this._currentSessionId) {
         // 视图不可见或会话不匹配，回退为 deny（安全保守）
         resolve('deny');
         return;
       }
       this._pendingApprovals.set(callId, resolve);
-      view.webview.postMessage({
+      panel.webview.postMessage({
         command: 'approvalRequest',
         call_id: callId,
         tool_name: toolName,
@@ -249,8 +317,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async _handleMessage(msg: { command: string;[key: string]: unknown }): Promise<void> {
-    const view = this._view;
-    if (!view) { return; }
+    const panel = this._panel;
+    if (!panel) { return; }
 
     logger.log(`[ChatPanel] 收到 webview 消息: ${msg.command}`);
 
@@ -263,7 +331,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         this._currentSessionId = sessionId;
-        view.webview.postMessage({ command: 'sessionCreated', sessionId });
+        panel.webview.postMessage({ command: 'sessionCreated', sessionId });
         break;
       }
       case 'sendMessage': {
@@ -297,7 +365,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'loadHistory': {
         const history = this._sessionManager.loadHistory(msg.sessionId as string);
-        view.webview.postMessage({ command: 'historyLoaded', messages: history });
+        panel.webview.postMessage({ command: 'historyLoaded', messages: history });
         break;
       }
       case 'approvalDecision': {
@@ -332,12 +400,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'requestSlashCommands': {
         // webview 主动拉取斜杠命令分组（应对 webview 重建后的数据丢失）
-        this._pushSlashCommands(view);
+        this._pushSlashCommands(panel);
         break;
       }
       case 'requestWorkspaceFiles': {        const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
         if (workspaceFolders.length === 0) {
-          view.webview.postMessage({ command: 'workspaceFiles', files: [] });
+          panel.webview.postMessage({ command: 'workspaceFiles', files: [] });
           break;
         }
         const uris = await vscode.workspace.findFiles(
@@ -357,7 +425,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return { path: displayPath, name: path.basename(uri.fsPath) };
           })
           .sort((a, b) => a.path.localeCompare(b.path));
-        view.webview.postMessage({ command: 'workspaceFiles', files });
+        panel.webview.postMessage({ command: 'workspaceFiles', files });
         break;
       }
       case 'renameSession': {
@@ -373,7 +441,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // 前端打开历史下拉时请求最新会话列表
         const sessions = this._sessionManager.listSessions();
         logger.log(`[ChatPanel] 返回会话列表 count=${sessions.length}`);
-        view.webview.postMessage({ command: 'sessionList', sessions });
+        panel.webview.postMessage({ command: 'sessionList', sessions });
         break;
       }
       case 'openSession': {
@@ -404,7 +472,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
         }
         // 无论是否删除都回推最新列表，前端据此判断当前会话是否已被删除
-        view.webview.postMessage({ command: 'sessionList', sessions: this._sessionManager.listSessions() });
+        panel.webview.postMessage({ command: 'sessionList', sessions: this._sessionManager.listSessions() });
         break;
       }
     }

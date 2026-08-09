@@ -6,10 +6,31 @@ import type { ToolRegistry } from '../core/toolRegistry';
 import type { EventBus } from '../core/eventBus';
 
 interface PanelInternals {
-	_view?: vscode.WebviewView;
+	_panel?: vscode.WebviewPanel;
 	_currentSessionId?: string;
+	show(): void;
 	_getHtml(webview: vscode.Webview): string;
 	_handleMessage(msg: { command: string; [key: string]: unknown }): Promise<void>;
+}
+
+/** 构造一个可用的假 WebviewPanel（记录 onDidDispose 回调，供测试触发）。 */
+function createFakePanel(disposeHandlers: (() => void)[]): vscode.WebviewPanel {
+	return {
+		iconPath: undefined,
+		webview: {
+			html: '',
+			cspSource: 'vscode-webview:',
+			asWebviewUri: (uri: vscode.Uri) => uri,
+			postMessage: () => {},
+			onDidReceiveMessage: () => ({ dispose: () => {} }),
+		},
+		onDidDispose: (handler: () => void) => {
+			disposeHandlers.push(handler);
+			return { dispose: () => {} };
+		},
+		reveal: () => {},
+		dispose: () => {},
+	} as unknown as vscode.WebviewPanel;
 }
 
 function setup() {
@@ -25,13 +46,13 @@ function setup() {
 				loadHistory: () => [],
 			} as unknown as LocalSessionManager,
 			registry: {} as ToolRegistry,
-			eventBus: {} as EventBus,
+			eventBus: { onAll: () => () => {} } as unknown as EventBus,
 		}
 	);
 	const internals = provider as unknown as PanelInternals;
-	internals._view = {
+	internals._panel = {
 		webview: { postMessage: (message: Record<string, unknown>) => messages.push(message) },
-	} as unknown as vscode.WebviewView;
+	} as unknown as vscode.WebviewPanel;
 	internals._currentSessionId = 'old-session';
 	return { messages, internals };
 }
@@ -177,5 +198,63 @@ describe('ChatViewProvider HTML rendering', () => {
 		assert.doesNotMatch(html, /'@' \+ file\.path/);
 		assert.match(html, /selectedFiles = \[\];[\s\S]*?renderFileReferences\(\);/);
 		assert.doesNotMatch(html, /const insert = '@' \+ file\.path \+ ' ';/);
+	});
+
+	describe('ChatViewProvider 编辑区面板（show 单例与关闭清理）', () => {
+		it('show() 打开面板为单例：已打开时复用不重建', () => {
+			const orig = vscode.window.createWebviewPanel;
+			let createdCount = 0;
+			vscode.window.createWebviewPanel = (() => {
+				createdCount++;
+				return createFakePanel([]);
+			}) as unknown as typeof vscode.window.createWebviewPanel;
+			try {
+				const { internals } = setup();
+				internals._panel = undefined; // 清除 setup 预设的假面板，验证 show() 的创建逻辑
+				internals.show();
+				const first = internals._panel;
+				assert.ok(first);
+				internals.show();
+				assert.strictEqual(internals._panel, first, '再次 show 应复用同一面板');
+				assert.strictEqual(createdCount, 1, '面板应只创建一次');
+			} finally {
+				vscode.window.createWebviewPanel = orig;
+			}
+		});
+
+		it('面板关闭：清空 _panel、取消事件订阅、未决审批回退 deny', () => {
+			const orig = vscode.window.createWebviewPanel;
+			const disposeHandlers: (() => void)[] = [];
+			vscode.window.createWebviewPanel = (() =>
+				createFakePanel(disposeHandlers)) as unknown as typeof vscode.window.createWebviewPanel;
+			let unsubCalled = false;
+			const decisions: string[] = [];
+			const provider = new ChatViewProvider(
+				{ extensionPath: '', subscriptions: [] } as unknown as vscode.ExtensionContext,
+				{
+					sessionManager: { createSession: () => 'new-session' } as unknown as LocalSessionManager,
+					registry: {} as ToolRegistry,
+					eventBus: {
+						onAll: () => () => {
+							unsubCalled = true;
+						},
+					} as unknown as EventBus,
+				}
+			);
+			const internals = provider as unknown as PanelInternals & {
+				_pendingApprovals: Map<string, (decision: string) => void>;
+			};
+			internals._pendingApprovals.set('call-1', (d) => decisions.push(d));
+			try {
+				internals.show();
+				assert.ok(internals._panel);
+				disposeHandlers.forEach((h) => h());
+				assert.strictEqual(internals._panel, undefined, '关闭后应清空面板引用');
+				assert.strictEqual(unsubCalled, true, '关闭后应取消事件订阅');
+				assert.deepStrictEqual(decisions, ['deny'], '未决审批应回退 deny');
+			} finally {
+				vscode.window.createWebviewPanel = orig;
+			}
+		});
 	});
 });

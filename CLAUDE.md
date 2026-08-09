@@ -98,7 +98,7 @@ npm test              # vscode-test（pretest 自动 compile-tests + compile + l
 | 模块 | 职责 |
 |------|------|
 | `src/extension.ts` | 激活入口：装配所有依赖（ToolRegistry、ApprovalGateway、SecurityAudit、AgentLoop、LocalSessionManager、Provider），注册命令与 Webview |
-| `src/chatPanel.ts` | 对话面板（WebviewViewProvider）：消息流式渲染、Markdown、新建会话、审批卡片（requestApproval） |
+| `src/chatPanel.ts` | 对话面板（编辑区 WebviewPanel，侧边栏图标入口自动在编辑区打开）：消息流式渲染、Markdown、新建会话、审批卡片（requestApproval） |
 | `src/agent/` | Agent 主循环（`agentLoop.ts`：每轮重载历史 → LLM 调用 → 工具执行 → doom loop 检测/上下文压缩）、`compaction.ts` 压缩、`tokenEstimator.ts` 估算、`systemPrompt.ts`、`toolAdapter.ts` schema 转换 |
 | `src/core/` | 基础设施：`toolRegistry` 注册表、`toolRouter` 路由（审批 + 执行 + 结果治理）、`approvalGateway` 审批、`securityAudit` 安全审计、`eventBus` 事件总线、`toolExecutionJournal` 执行台账、`localSessionManager` 会话、`errors.ts` 错误类型、`types.ts` 共享契约 |
 | `src/tools/` | 本地工具层（均继承 `BaseTool`，经 `schema`/`validate`/`execute` 契约）：`fs/` 文件读写与路径守卫（pathGuard）、`code/` 代码智能（editFile 需 diff 预览审批）、`git/`、`terminal/`（白名单 + 超时）、`diff/` |

@@ -280,16 +280,17 @@ async function _activate(context: vscode.ExtensionContext) {
 	// 回填 provider 的依赖（解决循环依赖：provider -> approval -> provider）
 	(provider as unknown as { _sessionManager: LocalSessionManager })._sessionManager = sessionManager;
 
+	// 侧边栏 activity bar 图标入口：点击展开容器时 provider 会在编辑区打开对话面板（见 ChatViewProvider.resolveWebviewView）
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider('yunxiaoAgent.chatView', provider, {
 			webviewOptions: { retainContextWhenHidden: true },
 		})
 	);
 
-	// 保留命令，让用户可以通过命令面板聚焦侧边栏
+	// 打开对话面板命令：在编辑器区域创建（或聚焦）WebviewPanel（与 Claude Code / Codex 一致）
 	context.subscriptions.push(
 		vscode.commands.registerCommand('yunxiaoAgent.openPanel', () => {
-			vscode.commands.executeCommand('yunxiaoAgent.chatView.focus');
+			provider.show();
 		})
 	);
 
