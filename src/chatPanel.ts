@@ -91,6 +91,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'content':
         view.webview.postMessage({ command: 'replyChunk', text: e.payload as string });
         break;
+      case 'step_end':
+        view.webview.postMessage({ command: 'stepEnd' });
+        break;
       case 'token_usage':
         view.webview.postMessage({ command: 'tokenUsage', payload: e.payload });
         break;
@@ -2456,13 +2459,26 @@ ${this._getJs()}
       return bubble;
     }
 
+    /** 流式文本轻量追加（纯文本，避免逐 chunk 全量 markdown 重渲染）。 */
     function updateAssistantMsg(chunk) {
       currentAssistantTxt += chunk;
       if (!currentAssistantEl) {
         currentAssistantEl = appendAssistantBubble(true);
       }
-      renderMarkdown(currentAssistantEl, currentAssistantTxt);
+      currentAssistantEl.textContent = currentAssistantTxt;
       smartScrollToBottom();
+    }
+
+    /** 步末终渲染：把当前步已完整的纯文本渲染为 markdown，收尾光标，准备下一条消息。 */
+    function finalizeStepText() {
+      if (currentAssistantEl) {
+        if (currentAssistantTxt) {
+          renderMarkdown(currentAssistantEl, currentAssistantTxt);
+        }
+        currentAssistantEl.classList.remove('cursor');
+      }
+      currentAssistantEl = null;
+      currentAssistantTxt = '';
     }
 
     function appendMsgFromHistory(role, text, tokenUsage) {
@@ -2607,11 +2623,12 @@ ${this._getJs()}
           break;
         case 'replyEnd':
           setStreaming(false);
-          if (currentAssistantEl) currentAssistantEl.classList.remove('cursor');
-          currentAssistantEl = null;
-          currentAssistantTxt = '';
+          finalizeStepText();
           // currentAssistantRow 由 token_usage 事件更新后清理
           finishTurn();
+          break;
+        case 'stepEnd':
+          finalizeStepText();
           break;
         case 'toolState':
           showToolState(msg.tool, msg.state, msg.error, msg.call_id, msg.args, msg.output);
@@ -2678,9 +2695,7 @@ ${this._getJs()}
           showError(msg.message);
           if (isStreaming) {
             setStreaming(false);
-            if (currentAssistantEl) currentAssistantEl.classList.remove('cursor');
-            currentAssistantEl = null;
-            currentAssistantTxt = '';
+            finalizeStepText();
             finishTurn();
           }
           break;

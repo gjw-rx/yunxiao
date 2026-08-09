@@ -164,11 +164,11 @@ async function _activate(context: vscode.ExtensionContext) {
 	}
 	const llmProvider = createProvider(modelConfig);
 
-	// 上下文压缩配置
+	// 上下文压缩配置（参考 opencode: keepTokens=8000, buffer=20000, 但调大以避免频繁压缩）
 	const compactionConfig: CompactionConfig = {
 		enabled: config.get<boolean>('compaction.enabled', true),
-		keepTokens: config.get<number>('compaction.keepTokens', 8000),
-		buffer: config.get<number>('compaction.buffer', 20000),
+		keepTokens: config.get<number>('compaction.keepTokens', 24000),
+		buffer: config.get<number>('compaction.buffer', 30000),
 		contextWindow: 128000,
 		messageThreshold: config.get<number>('compaction.messageThreshold', 40),
 	};
@@ -194,8 +194,6 @@ async function _activate(context: vscode.ExtensionContext) {
 			agentPrompt: config.get<string>('agent.systemPrompt', '') || undefined,
 			skillRegistry,
 			compaction: compactionConfig,
-			repeatThreshold: config.get<number>('agent.repeatThreshold', 3),
-			cacheReadTools: config.get<boolean>('agent.cacheReadTools', true),
 		}
 	);
 

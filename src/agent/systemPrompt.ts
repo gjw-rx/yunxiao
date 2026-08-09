@@ -73,7 +73,10 @@ For example, if the user asks you how to approach something, you should do your 
 # Loop prevention
 - Do not call the same tool with the same arguments more than twice. If a tool call fails, try a different approach instead of repeating.
 - If you find yourself stuck in a loop, step back and reconsider your approach.
-- When you have completed the task, provide your final answer directly without calling more tools.`;
+- When you have completed the task, provide your final answer directly without calling more tools.
+- Each tool call should progress toward completing the user's original task. If you are calling tools that you have already called with the same arguments, STOP and reconsider your approach.
+- The conversation history contains all previous tool results. Review it before calling tools again to avoid redundant calls.
+- When you have gathered enough information to act on the user's request, STOP exploring and START implementing.`;
 
 /** buildSystemPrompt 的上下文参数。 */
 export interface SystemPromptContext {

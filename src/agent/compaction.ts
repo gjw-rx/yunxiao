@@ -8,7 +8,7 @@
  * 4. 存储 CompactionMessage 作为检查点
  * 5. 后续历史加载从检查点开始
  */
-import type { Message } from '../memory/types';
+import type { Message, AssistantMessage } from '../memory/types';
 import type { MessageStore } from '../memory/messageStore';
 import type { LLMProvider, LLMMessage } from '../llm/types';
 import type { EventBus } from '../core/eventBus';
@@ -43,7 +43,10 @@ export interface SplitResult {
 /**
  * 按 token 预算将消息列表分割为 head 和 recent。
  * 从最新消息向前累积 token，达到预算时分割。
- * 边界消息不拆分，整体归入 head。
+ *
+ * 边界保护：不在 assistant(toolCalls) 和 tool 消息之间切断，
+ * 确保 recent 中的 tool result 始终携带对应的 assistant 调用上下文。
+ * 参考 opencode V1 prune 的 turn-based 分割思路，确保工具调用链完整。
  */
 export function selectMessages(messages: Message[], keepTokens: number): SplitResult {
 	const total = estimateMessages(messages);
@@ -58,7 +61,16 @@ export function selectMessages(messages: Message[], keepTokens: number): SplitRe
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const tokens = estimateMessage(messages[i]);
 		if (accumulated + tokens > keepTokens && recent.length > 0) {
-			// 超出预算且 recent 已有消息，停止
+			// 超出预算且 recent 已有消息，准备停止
+			// 边界保护：如果当前消息是 tool 消息，而 recent 的第一条是 assistant，
+			// 则继续纳入当前 tool 消息以保持调用链完整
+			const isToolMsg = messages[i].role === 'tool';
+			const recentStartsWithAssistant = recent.length > 0 && recent[0].role === 'assistant' && (recent[0] as AssistantMessage).toolCalls;
+			if (isToolMsg && recentStartsWithAssistant) {
+				recent.unshift(messages[i]);
+				accumulated += tokens;
+				continue;
+			}
 			break;
 		}
 		recent.unshift(messages[i]);
@@ -302,12 +314,12 @@ function messagesToText(messages: Message[]): string {
 				}
 				break;
 			case 'tool':
-				if (msg.content.startsWith('Error:') || msg.content.startsWith('Cancelled:')) {
-					lines.push(`[Tool Failed: ${msg.toolCallId}]: ${msg.content.slice(0, 500)}`);
-				} else {
-					lines.push(`[Tool Succeeded: ${msg.toolCallId}]: ${msg.content.slice(0, 500)}`);
-				}
-				break;
+			if (msg.content.startsWith('Error:') || msg.content.startsWith('Cancelled:')) {
+				lines.push(`[Tool Failed: ${msg.toolCallId}]: ${msg.content.slice(0, 500)}`);
+			} else {
+				lines.push(`[Tool Succeeded: ${msg.toolCallId}]: ${msg.content.slice(0, 2000)}`);
+			}
+			break;
 			case 'compaction':
 				lines.push(`[Compaction Summary]: ${msg.summary}`);
 				break;

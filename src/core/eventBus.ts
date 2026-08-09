@@ -7,6 +7,7 @@
 export type EventType =
 	| 'content'
 	| 'thought'
+	| 'step_end'
 	| 'tool_call'
 	| 'tool_result'
 	| 'plan'
@@ -53,6 +54,7 @@ export class EventBus {
 		const allTypes: EventType[] = [
 			'content',
 			'thought',
+			'step_end',
 			'tool_call',
 			'tool_result',
 			'plan',

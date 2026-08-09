@@ -1,27 +1,28 @@
 /**
  * Agent Loop - 本地 Agent 循环核心。
  *
- * 驱动 LLM 推理与工具调用的多轮交互：
- * 用户消息 -> LLM 响应 -> 工具调用 -> 续轮 -> 最终回复。
- *
- * 参考 opencode 双层循环设计，简化为单层 while + 工具续轮。
+ * 参照 opencode prompt.ts runLoop 设计改造：
+ * - 每轮重新加载完整历史（确保模型看到完整上下文）
+ * - 工具始终执行（无缓存机制）
+ * - doom loop 检测替代重复检测
+ * - 检查 assistant.finish 判断循环退出（而非仅检查 pendingToolCalls.length）
+ * - 上下文溢出时自动压缩重试
  */
-import { randomUUID } from 'crypto';
-import type { LLMProvider, LLMRequest, LLMMessage } from '../llm/types';
+import type { LLMProvider, LLMRequest, LLMMessage, LLMEvent } from '../llm/types';
 import type { MessageStore } from '../memory/messageStore';
 import { loadHistoryForLLM } from '../memory/historyLoader';
 import type { ToolRouter } from '../core/toolRouter';
 import type { ToolRegistry } from '../core/toolRegistry';
 import type { EventBus } from '../core/eventBus';
 import type { ToolContext } from '../tools/baseTool';
-import type { ToolResult } from '../core/types';
+import type { ToolResult, ToolCall } from '../core/types';
 import type { SkillRegistry } from '../skill/skillRegistry';
 import { toolSchemasToDefinitions, llmToolCallToCoreToolCall, toolResultToContent } from './toolAdapter';
 import { buildSystemPrompt } from './systemPrompt';
 import type { CompactionConfig } from './compaction';
 import { compactIfNeeded } from './compaction';
-import { ToolCallTracker } from './toolCallTracker';
-import { ToolResultCache } from './toolResultCache';
+import { randomUUID } from 'crypto';
+import { DoomLoopDetector } from './doomLoopDetector';
 import * as logger from '../logger';
 
 /** AgentLoop 配置 */
@@ -52,15 +53,20 @@ export interface AgentLoopConfig {
 	readonly skillRegistry?: SkillRegistry | null;
 	/** 上下文压缩配置（可选，不配置则不启用压缩） */
 	readonly compaction?: CompactionConfig;
-	/** 连续重复调用阈值（默认 3） */
-	readonly repeatThreshold?: number;
-	/** 是否缓存只读工具结果（默认 true） */
-	readonly cacheReadTools?: boolean;
 }
 
 const MAX_STEPS_PROMPT =
 	'You have reached the maximum number of steps. ' +
 	'Please summarize what you have accomplished and what remains to be done.';
+
+const DOOM_LOOP_GUIDANCE_PREFIX =
+	'You are repeatedly calling the same tool with the same arguments. ' +
+	'This suggests you may be stuck in a loop. ' +
+	'Stop re-collecting information you already have. ' +
+	'Review the conversation history and proceed with the actual task';
+
+/** 同一轮中只读可并行工具的最大并发数（参照 langchain maxConcurrency / Anthropic 并行 tool use 建议）。 */
+const MAX_PARALLEL_TOOLS = 3;
 
 export class AgentLoop {
 	private abortController: AbortController | null = null;
@@ -83,66 +89,65 @@ export class AgentLoop {
 		this.emitRunStateChange(sessionId, 'running');
 		logger.log(`[AgentLoop] run 开始 sessionId=${sessionId} 用户消息长度=${userText.length}`);
 
+		const doomDetector = new DoomLoopDetector();
+		// 本次 run 的唯一执行范围 ID（toolExecutionJournal 用 runId+callId 隔离回执）
+		const runId = randomUUID();
 		let step = 0;
-		const repeatThreshold = this.config.repeatThreshold ?? 3;
-		const cacheReadTools = this.config.cacheReadTools ?? true;
-		const callTracker = new ToolCallTracker();
-		const resultCache = new ToolResultCache();
 		let stepWarned = false;
 
 		try {
-			let overflowRetry = false;
-
-		while (true) {
+			while (true) {
 				if (signal.aborted) {
 					logger.log('[AgentLoop] 循环中断: abort signal');
 					break;
 				}
 
-				// 上下文压缩检查（每轮开始前）
-				if (this.config.compaction?.enabled && !overflowRetry) {
+				// ── 1. 上下文压缩检查（每轮开始前）──
+				if (this.config.compaction?.enabled) {
 					const allMessages = this.messageStore.loadHistory(sessionId);
-					await compactIfNeeded(sessionId, allMessages, this.provider, this.config.model, this.config.compaction, this.messageStore, this.eventBus);
+					await compactIfNeeded(
+						sessionId, allMessages, this.provider, this.config.model,
+						this.config.compaction, this.messageStore, this.eventBus,
+					);
 				}
-				overflowRetry = false;
 
-				// 加载历史
-			const history = loadHistoryForLLM(sessionId, this.messageStore);
+				// ── 2. 加载完整历史（每轮重新加载，确保模型看到完整上下文）──
+				const history = loadHistoryForLLM(sessionId, this.messageStore);
 
-			// 构建系统提示词
-			const systemPrompt = buildSystemPrompt({
-				agentPrompt: this.config.agentPrompt,
-				skills: this.config.skillRegistry?.list() ?? [],
-				workspaceRoot: this.config.workspaceRoots[0] ?? '',
-				platform: process.platform,
-				date: new Date().toISOString().slice(0, 10),
-				modelId: this.config.model,
-				providerId: this.config.providerId,
-			});
+				// ── 3. 构建系统提示词 ──
+				const systemPrompt = buildSystemPrompt({
+					agentPrompt: this.config.agentPrompt,
+					skills: this.config.skillRegistry?.list() ?? [],
+					workspaceRoot: this.config.workspaceRoots[0] ?? '',
+					platform: process.platform,
+					date: new Date().toISOString().slice(0, 10),
+					modelId: this.config.model,
+					providerId: this.config.providerId,
+				});
 
-			// 构建消息：系统提示词 + 历史
-			const messages: LLMMessage[] = [
-				{ role: 'system', content: systemPrompt },
-				...history,
-			];
+				// ── 4. 组装消息 ──
+				const messages: LLMMessage[] = [
+					{ role: 'system', content: systemPrompt },
+					...history,
+				];
 
-				// 物化工具定义
+				// ── 5. Max Steps 检查 ──
+				let toolChoice: 'auto' | 'none' = 'auto';
+				if (step >= this.config.maxSteps) {
+					toolChoice = 'none';
+					messages.push({ role: 'user', content: MAX_STEPS_PROMPT });
+				} else if (!stepWarned && step >= Math.floor(this.config.maxSteps * 0.8)) {
+					stepWarned = true;
+					const warning = `You are approaching the maximum step limit (${this.config.maxSteps} steps). You have used ${step} steps. Please wrap up your work and provide your final answer.`;
+					messages.push({ role: 'user', content: warning });
+					this.messageStore.append(sessionId, { role: 'user', content: warning });
+					logger.log(`[AgentLoop] step=${step} 接近 maxSteps=${this.config.maxSteps}，注入预警`);
+				}
+
+				// ── 6. 物化工具定义 ──
 				const tools = toolSchemasToDefinitions(this.toolRegistry.list());
 
-				// Max Steps 检查
-			let toolChoice: 'auto' | 'none' = 'auto';
-			if (step >= this.config.maxSteps) {
-				toolChoice = 'none';
-				messages.push({ role: 'user', content: MAX_STEPS_PROMPT });
-			} else if (!stepWarned && step >= Math.floor(this.config.maxSteps * 0.8)) {
-				stepWarned = true;
-				const warning = `You are approaching the maximum step limit (${this.config.maxSteps} steps). You have used ${step} steps. Please wrap up your work.`;
-				messages.push({ role: 'user', content: warning });
-				this.messageStore.append(sessionId, { role: 'user', content: warning });
-				logger.log(`[AgentLoop] step=${step} 接近 maxSteps=${this.config.maxSteps}，注入预警`);
-			}
-
-				// 构建 LLM 请求
+				// ── 7. 构建 LLM 请求并调用 ──
 				const request: LLMRequest = {
 					model: this.config.model,
 					messages,
@@ -153,70 +158,18 @@ export class AgentLoop {
 					stream: true,
 				};
 
-				// 调用 LLM 并消费流式事件
-				const eventStream = this.provider.chatCompletion(request);
-				let textContent = '';
-				const pendingToolCalls: Array<{ id: string; name: string; arguments: string }> = [];
-				let hasError = false;
-				let errorMessage = '';
 				logger.log(`[AgentLoop] step=${step} 调用 LLM model=${this.config.model} 消息数=${messages.length} tools=${tools?.length ?? 0} toolChoice=${toolChoice}`);
 
-				for await (const event of eventStream) {
-					if (signal.aborted) {
-						break;
-					}
+				// ── 8. 消费流式事件 ──
+				const streamResult = await this.consumeStream(
+					this.provider.chatCompletion(request),
+					sessionId,
+					signal,
+				);
 
-					if (event.type === 'textDelta') {
-						textContent += event.text;
-						this.eventBus.emit({
-							type: 'content',
-							sessionId,
-							payload: event.text,
-						});
-					} else if (event.type === 'toolCall') {
-					const callId = event.id || randomUUID();
-					pendingToolCalls.push({
-						id: callId,
-						name: event.name,
-						arguments: event.arguments,
-					});
-					let parsedArgs: unknown;
-					try {
-						parsedArgs = JSON.parse(event.arguments);
-					} catch {
-						parsedArgs = {};
-					}
-					this.eventBus.emit({
-						type: 'tool_call',
-						sessionId,
-						payload: { call_id: callId, tool: event.name, args: parsedArgs },
-					});
-				} else if (event.type === 'usage') {
-						logger.log(`[AgentLoop] token 用量: input=${event.inputTokens} output=${event.outputTokens}`);
-						this.eventBus.emit({
-							type: 'token_usage',
-							sessionId,
-							payload: {
-								token_usage: {
-									prompt_tokens: event.inputTokens,
-									completion_tokens: event.outputTokens,
-									total_tokens: event.inputTokens + event.outputTokens,
-								},
-								input_length: history.length,
-							},
-						});
-					} else if (event.type === 'finish') {
-						break;
-					} else if (event.type === 'error') {
-						hasError = true;
-						errorMessage = event.error;
-						this.eventBus.emit({
-						type: 'error',
-						sessionId,
-						payload: event.error,
-					});
-						break;
-					}
+				// 每步 LLM 输出结束：前端对该步文本做 markdown 终渲染，恢复回合边界
+				if (streamResult.textContent) {
+					this.eventBus.emit({ type: 'step_end', sessionId, payload: {} });
 				}
 
 				// 处理中断
@@ -224,7 +177,7 @@ export class AgentLoop {
 					logger.log('[AgentLoop] 用户中断，保存部分回复');
 					this.messageStore.append(sessionId, {
 						role: 'assistant',
-						content: textContent,
+						content: streamResult.textContent,
 					});
 					this.emitRunStateChange(sessionId, 'cancelled');
 					this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
@@ -232,11 +185,11 @@ export class AgentLoop {
 				}
 
 				// 处理错误
-				if (hasError) {
-					logger.notifyError('[AgentLoop] LLM 返回错误', { step, errorMessage, sessionId });
-					// Context overflow 恢复：assistant 尚未输出时触发压缩后重试
-					const isOverflow = /context_length|maximum context|too many tokens|token limit/i.test(errorMessage);
-					if (isOverflow && !textContent && this.config.compaction?.enabled) {
+				if (streamResult.hasError) {
+					logger.notifyError('[AgentLoop] LLM 返回错误', { step, errorMessage: streamResult.errorMessage, sessionId });
+					// Context overflow 恢复
+					const isOverflow = /context_length|maximum context|too many tokens|token limit/i.test(streamResult.errorMessage);
+					if (isOverflow && !streamResult.textContent && this.config.compaction?.enabled) {
 						logger.log('[AgentLoop] 检测到上下文溢出，尝试压缩后重试');
 						const allMessages = this.messageStore.loadHistory(sessionId);
 						const compacted = await compactIfNeeded(
@@ -244,150 +197,74 @@ export class AgentLoop {
 							this.config.compaction, this.messageStore, this.eventBus,
 						);
 						if (compacted) {
-							overflowRetry = true;
 							continue;
 						}
 					}
-					this.emitRunStateChange(sessionId, 'failed', errorMessage);
+					this.emitRunStateChange(sessionId, 'failed', streamResult.errorMessage);
 					this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 					return;
 				}
 
-				// 无工具调用 -> 循环结束
-				if (pendingToolCalls.length === 0) {
-					logger.log(`[AgentLoop] step=${step} 无工具调用，循环结束 文本长度=${textContent.length}`);
+				// ── 9. 判断循环退出条件（参照 opencode: finish && !tool-calls）──
+				const hasToolCalls = streamResult.pendingToolCalls.length > 0;
+				const finishReason = streamResult.finishReason;
+
+				if (!hasToolCalls || (finishReason && finishReason !== 'tool_use' && finishReason !== 'length')) {
+					// 无工具调用，或 LLM 明确表示完成 → 保存 assistant 消息，退出循环
+					logger.log(`[AgentLoop] step=${step} 循环结束 文本长度=${streamResult.textContent.length} finish=${finishReason} tools=${hasToolCalls}`);
 					this.messageStore.append(sessionId, {
 						role: 'assistant',
-						content: textContent,
+						content: streamResult.textContent,
 					});
 					break;
 				}
 
-				// 有工具调用 -> 追加 assistant 消息（含 toolCalls），执行工具，续轮
-				logger.log(`[AgentLoop] step=${step} 收到 ${pendingToolCalls.length} 个工具调用: ${pendingToolCalls.map(tc => tc.name).join(', ')}`);
+				// ── 10. 有工具调用 → 追加 assistant 消息，执行工具 ──
+				logger.log(`[AgentLoop] step=${step} 收到 ${streamResult.pendingToolCalls.length} 个工具调用: ${streamResult.pendingToolCalls.map(tc => tc.name).join(', ')}`);
 				this.messageStore.append(sessionId, {
 					role: 'assistant',
-					content: textContent,
-					toolCalls: pendingToolCalls.map((tc) => ({
+					content: streamResult.textContent,
+					toolCalls: streamResult.pendingToolCalls.map((tc) => ({
 						id: tc.id,
 						name: tc.name,
 						arguments: tc.arguments,
 					})),
 				});
 
-				const toolContext = this.buildToolContext(sessionId);
+				const toolContext = this.buildToolContext(sessionId, runId);
 
-				// 串行执行工具
-			for (const tc of pendingToolCalls) {
-				if (signal.aborted) {
-					break;
-				}
-
-				const coreCall = llmToolCallToCoreToolCall(tc);
-				const isReadTool = this.isReadTool(tc.name);
-
-				// P0: 重复调用检测（在缓存检查之前，确保重复计数不受缓存影响）
-				const repeatCount = callTracker.check(tc.name, coreCall.args);
-				if (repeatCount >= repeatThreshold) {
-					logger.log(`[AgentLoop] 工具 ${tc.name} 连续重复 ${repeatCount} 次，注入引导消息`);
-					callTracker.reset();
-					this.messageStore.append(sessionId, {
-						role: 'user',
-						content: `You are repeatedly calling ${tc.name} with the same arguments. This suggests you may be stuck. Please try a different approach or summarize what you have accomplished.`,
-					});
-					continue;
-				}
-
-				// P5: 缓存检查（只读工具 + cacheReadTools 启用）
-				if (cacheReadTools && isReadTool && resultCache.has(tc.name, coreCall.args)) {
-					const cached = resultCache.get(tc.name, coreCall.args)!;
-					const cachedResult: ToolResult = {
-						...cached,
-						call_id: tc.id,
-						result: `[cached] ${cached.result ?? ''}`,
-					};
-					logger.log(`[AgentLoop] 工具 ${tc.name} 缓存命中，跳过执行`);
-					this.eventBus.emit({
-						type: 'tool_state_change',
-						sessionId,
-						payload: { call_id: tc.id, tool: tc.name, state: 'success', args: coreCall.args },
-					});
-					this.eventBus.emit({
-						type: 'tool_result',
-						sessionId,
-						payload: cachedResult,
-					});
-					this.messageStore.append(sessionId, {
-						role: 'tool',
-						toolCallId: tc.id,
-						content: toolResultToContent(cachedResult),
-					});
-					continue;
-				}
-
-				this.eventBus.emit({
-				type: 'tool_state_change',
-				sessionId,
-				payload: { call_id: tc.id, tool: tc.name, state: 'running', args: coreCall.args },
-			});
-
-				let result: ToolResult;
-				try {
-					result = await this.toolRouter.route(coreCall, toolContext);
-					logger.log(`[AgentLoop] 工具 ${tc.name} 执行完成 status=${result.status}`);
-				} catch (error) {
-					logger.notifyError(`[AgentLoop] 工具 ${tc.name} 执行异常`, error instanceof Error ? error.message : String(error));
-					result = {
-						call_id: tc.id,
-						status: 'error',
-						error: error instanceof Error ? error.message : String(error),
-					};
-				}
-
-				// P5: 缓存只读工具的成功结果
-				if (cacheReadTools && isReadTool && result.status === 'success') {
-					resultCache.set(tc.name, coreCall.args, result);
-				}
-
-				this.eventBus.emit({
-					type: 'tool_state_change',
+				// ── 11. 执行工具：只读+canParallel 最多 3 并发，写/执行串行，结果按模型返回顺序入库 ──
+				const { blocked } = await this.executeToolCalls(
+					streamResult.pendingToolCalls,
+					toolContext,
+					doomDetector,
 					sessionId,
-					payload: {
-						call_id: tc.id,
-						tool: tc.name,
-						state: result.status,
-						error: result.error,
-						output: result.result,
-					},
-				});
-
-					this.eventBus.emit({
-						type: 'tool_result',
-						sessionId,
-						payload: result,
-					});
-
-					this.messageStore.append(sessionId, {
-						role: 'tool',
-						toolCallId: tc.id,
-						content: toolResultToContent(result),
-					});
-				}
+					userText,
+				);
 
 				// 工具执行后检查中断
-			if (signal.aborted) {
-				this.emitRunStateChange(sessionId, 'cancelled');
-				this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
-				return;
-			}
+				if (signal.aborted) {
+					this.emitRunStateChange(sessionId, 'cancelled');
+					this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
+					return;
+				}
 
-			// P1: 工具执行后额外检查 compaction
-			if (this.config.compaction?.enabled) {
-				const postToolMessages = this.messageStore.loadHistory(sessionId);
-				await compactIfNeeded(sessionId, postToolMessages, this.provider, this.config.model, this.config.compaction, this.messageStore, this.eventBus);
-			}
+				// 如果被 doom loop 阻断，跳过 compaction 检查直接进入下一轮
+				if (blocked) {
+					step++;
+					continue;
+				}
 
-			step++;
+				// ── 12. 工具执行后额外检查 compaction ──
+				if (this.config.compaction?.enabled) {
+					const postToolMessages = this.messageStore.loadHistory(sessionId);
+					await compactIfNeeded(
+						sessionId, postToolMessages, this.provider, this.config.model,
+						this.config.compaction, this.messageStore, this.eventBus,
+					);
+				}
+
+				step++;
 			}
 
 			// 正常完成
@@ -395,13 +272,13 @@ export class AgentLoop {
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 			logger.log(`[AgentLoop] 正常完成 sessionId=${sessionId} 共 ${step} 步`);
 		} catch (error) {
-		const msg = error instanceof Error ? error.message : String(error);
-		logger.notifyError('[AgentLoop] 未捕获异常', { sessionId, msg });
-		this.eventBus.emit({
-			type: 'error',
-			sessionId,
-			payload: msg,
-		});
+			const msg = error instanceof Error ? error.message : String(error);
+			logger.notifyError('[AgentLoop] 未捕获异常', { sessionId, msg });
+			this.eventBus.emit({
+				type: 'error',
+				sessionId,
+				payload: msg,
+			});
 			this.emitRunStateChange(sessionId, 'failed', msg);
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 		}
@@ -412,26 +289,238 @@ export class AgentLoop {
 		this.abortController?.abort();
 	}
 
-	/** 判断工具是否为只读（用于缓存决策）。 */
-	private isReadTool(name: string): boolean {
-		try {
-			return this.toolRegistry.lookup(name).permission === 'read';
-		} catch {
-			return false;
-		}
-	}
-
 	/** 构建 ToolContext，注入运行时信息。 */
-	private buildToolContext(sessionId: string): ToolContext {
+	private buildToolContext(sessionId: string, runId: string): ToolContext {
 		return {
 			workspaceRoots: this.config.workspaceRoots,
 			maxFileSize: this.config.maxFileSize,
 			toolTimeoutMs: this.config.toolTimeoutMs,
 			sessionId,
+			runId,
 			terminalOutputLimit: this.config.terminalOutputLimit,
 			abortSignal: this.abortController?.signal,
 			toolResultLimit: this.config.toolResultLimit,
 		};
+	}
+
+	/**
+	 * 执行本轮工具调用（参照 langchain maxConcurrency / Anthropic 并行 tool use 实践）。
+	 * - doom loop 检测提前到调度前：命中后注入引导，该调用及其后的调用不再执行
+	 * - 只读+canParallel 工具最多 MAX_PARALLEL_TOOLS 个并发，写/执行/destructive 串行
+	 * - 结果按模型返回顺序写入 messageStore，保证 OpenAI 兼容 API 的 tool 消息配对稳定
+	 */
+	private async executeToolCalls(
+		pendingToolCalls: Array<{ id: string; name: string; arguments: string }>,
+		toolContext: ToolContext,
+		doomDetector: DoomLoopDetector,
+		sessionId: string,
+		userText: string,
+	): Promise<{ blocked: boolean }> {
+		// 1. 调度前 doom 扫描：找到第一个触发 doom loop 的调用，其后的调用不再执行
+		let doomIndex = -1;
+		for (let i = 0; i < pendingToolCalls.length; i++) {
+			if (doomDetector.check(pendingToolCalls[i]).isDoom) {
+				doomIndex = i;
+				doomDetector.reset();
+				break;
+			}
+		}
+
+		let blocked = false;
+		const schedulable = pendingToolCalls.slice(0, doomIndex === -1 ? pendingToolCalls.length : doomIndex);
+		if (doomIndex !== -1) {
+			blocked = true;
+			const doomTool = pendingToolCalls[doomIndex].name;
+			logger.log(`[AgentLoop] doom loop 检测到: ${doomTool} 连续重复，注入引导消息`);
+			const guidance = `${DOOM_LOOP_GUIDANCE_PREFIX}. You have repeatedly called ${doomTool} ${3} times with identical arguments. Stop and review the conversation history - you already have this information. Proceed with the user's original task: ${userText}`;
+			this.messageStore.append(sessionId, {
+				role: 'user',
+				content: guidance,
+			});
+		}
+
+		// 2. 分组：只读+canParallel 进并行组，其余进串行组
+		const parallel: Array<{ coreCall: ToolCall; index: number }> = [];
+		const serial: Array<{ coreCall: ToolCall; index: number }> = [];
+		schedulable.forEach((tc, index) => {
+			const coreCall = llmToolCallToCoreToolCall(tc);
+			(this.toolRouter.canRunInParallel(coreCall) ? parallel : serial).push({ coreCall, index });
+		});
+
+		// 3. 执行：并行组有界并发，串行组逐个；结果按原索引写入
+		const results: Array<ToolResult | undefined> = new Array(schedulable.length);
+		await this.runBoundedParallel(parallel, results, toolContext, sessionId);
+		for (const item of serial) {
+			if (this.abortController?.signal.aborted) {
+				break;
+			}
+			results[item.index] = await this.executeSingleTool(item.coreCall, toolContext, sessionId);
+		}
+
+		// 4. 按模型返回顺序写入 tool 消息（被 doom 跳过的调用不写）
+		for (const result of results) {
+			if (result) {
+				this.messageStore.append(sessionId, {
+					role: 'tool',
+					toolCallId: result.call_id,
+					content: toolResultToContent(result),
+				});
+			}
+		}
+
+		return { blocked };
+	}
+
+	/**
+	 * 有界并发执行并行组：固定 MAX_PARALLEL_TOOLS 个 worker 消费任务队列，
+	 * 结果按原索引写入（顺序稳定）。abort 后不再启动新调用，已启动的调用跑完。
+	 */
+	private async runBoundedParallel(
+		items: Array<{ coreCall: ToolCall; index: number }>,
+		results: Array<ToolResult | undefined>,
+		toolContext: ToolContext,
+		sessionId: string,
+	): Promise<void> {
+		const signal = this.abortController?.signal;
+		let next = 0;
+		const workerCount = Math.min(MAX_PARALLEL_TOOLS, items.length);
+		await Promise.all(
+			Array.from({ length: workerCount }, async () => {
+				while (next < items.length) {
+					if (signal?.aborted) {
+						return;
+					}
+					const item = items[next++];
+					results[item.index] = await this.executeSingleTool(item.coreCall, toolContext, sessionId);
+				}
+			}),
+		);
+	}
+
+	/** 执行单个工具并发出状态/结果事件（并行与串行共用同一状态机）。 */
+	private async executeSingleTool(
+		coreCall: ToolCall,
+		toolContext: ToolContext,
+		sessionId: string,
+	): Promise<ToolResult> {
+		this.eventBus.emit({
+			type: 'tool_state_change',
+			sessionId,
+			payload: { call_id: coreCall.call_id, tool: coreCall.tool, state: 'running', args: coreCall.args },
+		});
+
+		let result: ToolResult;
+		try {
+			result = await this.toolRouter.route(coreCall, toolContext);
+			logger.log(`[AgentLoop] 工具 ${coreCall.tool} 执行完成 status=${result.status}`);
+		} catch (error) {
+			logger.notifyError(`[AgentLoop] 工具 ${coreCall.tool} 执行异常`, error instanceof Error ? error.message : String(error));
+			result = {
+				call_id: coreCall.call_id,
+				status: 'error',
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+
+		this.eventBus.emit({
+			type: 'tool_state_change',
+			sessionId,
+			payload: {
+				call_id: coreCall.call_id,
+				tool: coreCall.tool,
+				state: result.status,
+				error: result.error,
+				output: result.result,
+			},
+		});
+
+		this.eventBus.emit({
+			type: 'tool_result',
+			sessionId,
+			payload: result,
+		});
+
+		return result;
+	}
+
+	/** 消费 LLM 流式事件，返回累积结果。 */
+	private async consumeStream(
+		eventStream: AsyncGenerator<LLMEvent>,
+		sessionId: string,
+		signal: AbortSignal,
+	): Promise<{
+		textContent: string;
+		pendingToolCalls: Array<{ id: string; name: string; arguments: string }>;
+		hasError: boolean;
+		errorMessage: string;
+		finishReason: string | null;
+	}> {
+		let textContent = '';
+		const pendingToolCalls: Array<{ id: string; name: string; arguments: string }> = [];
+		let hasError = false;
+		let errorMessage = '';
+		let finishReason: string | null = null;
+
+		for await (const event of eventStream) {
+			if (signal.aborted) {
+				break;
+			}
+
+			if (event.type === 'textDelta') {
+				textContent += event.text;
+				this.eventBus.emit({
+					type: 'content',
+					sessionId,
+					payload: event.text,
+				});
+			} else if (event.type === 'toolCall') {
+				const callId = event.id || randomUUID();
+				pendingToolCalls.push({
+					id: callId,
+					name: event.name,
+					arguments: event.arguments,
+				});
+				let parsedArgs: unknown;
+				try {
+					parsedArgs = JSON.parse(event.arguments);
+				} catch {
+					parsedArgs = {};
+				}
+				this.eventBus.emit({
+					type: 'tool_call',
+					sessionId,
+					payload: { call_id: callId, tool: event.name, args: parsedArgs },
+				});
+			} else if (event.type === 'usage') {
+				logger.log(`[AgentLoop] token 用量: input=${event.inputTokens} output=${event.outputTokens}`);
+				this.eventBus.emit({
+					type: 'token_usage',
+					sessionId,
+					payload: {
+						token_usage: {
+							prompt_tokens: event.inputTokens,
+							completion_tokens: event.outputTokens,
+							total_tokens: event.inputTokens + event.outputTokens,
+						},
+						input_length: 0,
+					},
+				});
+			} else if (event.type === 'finish') {
+				finishReason = event.reason;
+				break;
+			} else if (event.type === 'error') {
+				hasError = true;
+				errorMessage = event.error;
+				this.eventBus.emit({
+					type: 'error',
+					sessionId,
+					payload: event.error,
+				});
+				break;
+			}
+		}
+
+		return { textContent, pendingToolCalls, hasError, errorMessage, finishReason };
 	}
 
 	/** 发出 run_state_change 事件。 */
