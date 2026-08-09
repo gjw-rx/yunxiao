@@ -177,4 +177,128 @@ describe('OpenAIProvider', () => {
 		restore();
 		assert.strictEqual(calls[0].url, 'https://api.deepseek.com/v1/chat/completions');
 	});
+
+	it('DeepSeek 请求带 thinking.enabled + reasoning_effort', async () => {
+		const sse = 'data: {"choices":[{"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+		const { calls, restore } = mockFetch(sse);
+		const provider = new OpenAIProvider({
+			...mockConfig,
+			provider: 'deepseek',
+			baseURL: 'https://api.deepseek.com/v1',
+		});
+
+		await collectEvents(provider.chatCompletion({
+			model: 'deepseek-v4-flash',
+			messages: [{ role: 'user', content: 'hi' }],
+			reasoningEffort: 'high',
+			stream: true,
+		}));
+
+		restore();
+		const body = JSON.parse(calls[0].init.body as string);
+		assert.deepStrictEqual(body.thinking, { type: 'enabled' });
+		assert.strictEqual(body.reasoning_effort, 'high');
+	});
+
+	it('DeepSeek 未设置 reasoningEffort 时默认开启思考且省略 temperature', async () => {
+		const sse = 'data: {"choices":[{"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+		const { calls, restore } = mockFetch(sse);
+		const provider = new OpenAIProvider({
+			...mockConfig,
+			provider: 'deepseek',
+			baseURL: 'https://api.deepseek.com/v1',
+		});
+
+		await collectEvents(provider.chatCompletion({
+			model: 'deepseek-v4-flash',
+			messages: [{ role: 'user', content: 'hi' }],
+			stream: true,
+		}));
+
+		restore();
+		const body = JSON.parse(calls[0].init.body as string);
+		assert.deepStrictEqual(body.thinking, { type: 'enabled' });
+		assert.strictEqual(body.reasoning_effort, undefined);
+		// DeepSeek 思考模式下 temperature 仅支持 1.0，应省略该字段
+		assert.strictEqual(body.temperature, undefined);
+	});
+
+	it('DeepSeek minimal 档映射为 low', async () => {
+		const sse = 'data: {"choices":[{"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+		const { calls, restore } = mockFetch(sse);
+		const provider = new OpenAIProvider({
+			...mockConfig,
+			provider: 'deepseek',
+			baseURL: 'https://api.deepseek.com/v1',
+		});
+
+		await collectEvents(provider.chatCompletion({
+			model: 'deepseek-v4-flash',
+			messages: [{ role: 'user', content: 'hi' }],
+			reasoningEffort: 'minimal',
+			stream: true,
+		}));
+
+		restore();
+		const body = JSON.parse(calls[0].init.body as string);
+		assert.deepStrictEqual(body.thinking, { type: 'enabled' });
+		assert.strictEqual(body.reasoning_effort, 'low');
+	});
+
+	it('DeepSeek reasoningEffort=disabled 时发 thinking.disabled', async () => {
+		const sse = 'data: {"choices":[{"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+		const { calls, restore } = mockFetch(sse);
+		const provider = new OpenAIProvider({
+			...mockConfig,
+			provider: 'deepseek',
+			baseURL: 'https://api.deepseek.com/v1',
+		});
+
+		await collectEvents(provider.chatCompletion({
+			model: 'deepseek-v4-flash',
+			messages: [{ role: 'user', content: 'hi' }],
+			reasoningEffort: 'disabled',
+			stream: true,
+		}));
+
+		restore();
+		const body = JSON.parse(calls[0].init.body as string);
+		assert.deepStrictEqual(body.thinking, { type: 'disabled' });
+		assert.strictEqual(body.reasoning_effort, undefined);
+	});
+
+	it('OpenAI 请求带 reasoning_effort 且不带 thinking', async () => {
+		const sse = 'data: {"choices":[{"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+		const { calls, restore } = mockFetch(sse);
+		const provider = new OpenAIProvider(mockConfig);
+
+		await collectEvents(provider.chatCompletion({
+			model: 'gpt-5-mini',
+			messages: [{ role: 'user', content: 'hi' }],
+			reasoningEffort: 'medium',
+			stream: true,
+		}));
+
+		restore();
+		const body = JSON.parse(calls[0].init.body as string);
+		assert.strictEqual(body.reasoning_effort, 'medium');
+		assert.strictEqual(body.thinking, undefined);
+	});
+
+	it('未设置 reasoningEffort 时不传 reasoning 参数', async () => {
+		const sse = 'data: {"choices":[{"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+		const { calls, restore } = mockFetch(sse);
+		const provider = new OpenAIProvider(mockConfig);
+
+		await collectEvents(provider.chatCompletion({
+			model: 'gpt-4o-mini',
+			messages: [{ role: 'user', content: 'hi' }],
+			stream: true,
+		}));
+
+		restore();
+		const body = JSON.parse(calls[0].init.body as string);
+		assert.strictEqual(body.reasoning_effort, undefined);
+		assert.strictEqual(body.thinking, undefined);
+	});
 });

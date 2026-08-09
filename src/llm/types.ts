@@ -61,6 +61,14 @@ export interface ToolDefinition {
 /** 工具选择策略 */
 export type ToolChoice = 'auto' | 'none' | 'required';
 
+/**
+ * 思维链强度（OpenAI reasoning 规范）。
+ * - OpenAI: minimal | low | medium | high
+ * - DeepSeek: low | medium | high（配合 thinking.type='enabled'）
+ * - disabled: 显式关闭思维链（DeepSeek 发送 thinking.type='disabled'）
+ */
+export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'disabled';
+
 /** LLM 请求 */
 export interface LLMRequest {
 	readonly model: string;
@@ -69,6 +77,8 @@ export interface LLMRequest {
 	readonly toolChoice?: ToolChoice;
 	readonly temperature?: number;
 	readonly maxTokens?: number;
+	/** 思维链强度（缺省由 Provider 决定：DeepSeek 默认开启思考） */
+	readonly reasoningEffort?: ReasoningEffort;
 	/** 强制流式 */
 	readonly stream: true;
 }
@@ -78,6 +88,12 @@ export interface LLMRequest {
 /** 文本增量 */
 export interface TextDeltaEvent {
 	readonly type: 'textDelta';
+	readonly text: string;
+}
+
+/** 思维链（推理过程）增量文本，与正文字段分离展示 */
+export interface ReasoningDeltaEvent {
+	readonly type: 'reasoningDelta';
 	readonly text: string;
 }
 
@@ -111,6 +127,7 @@ export interface ErrorEvent {
 /** LLM 流式事件（discriminated union） */
 export type LLMEvent =
 	| TextDeltaEvent
+	| ReasoningDeltaEvent
 	| ToolCallEvent
 	| UsageEvent
 	| FinishEvent

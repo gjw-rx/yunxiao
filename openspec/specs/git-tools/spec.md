@@ -21,6 +21,25 @@ The system SHALL provide a `git.status` tool (permission `read`, site `local`) t
 - **WHEN** `git.status` returns more than 200 changed files
 - **THEN** the result is truncated to 200 files with `{ truncated: true, total: N }`
 
+### Requirement: Git log query
+The system SHALL provide a `git.log` tool (permission `read`, site `local`) that returns recent commit history via `simple-git`. It SHALL support a `maxCount` parameter (default 20, maximum 200) limiting the number of commits returned, and an optional `path` parameter filtering commits that touch the given path. Each commit SHALL include `hash`, `author`, `date`, and `message`.
+
+#### Scenario: Default recent commits
+- **WHEN** `git.log` is called with no arguments
+- **THEN** the tool returns up to 20 commits ordered newest-first with `hash`, `author`, `date`, and `message`
+
+#### Scenario: Limit and path filter
+- **WHEN** `git.log` is called with `{ maxCount: 5, path: "src/a.ts" }`
+- **THEN** the tool returns at most 5 commits that touch `src/a.ts`
+
+#### Scenario: Invalid maxCount rejected
+- **WHEN** `git.log` is called with `maxCount` outside 1-200
+- **THEN** validation throws `ToolValidationError`
+
+#### Scenario: Not a git repository
+- **WHEN** `git.log` is called in a workspace that is not a git repository
+- **THEN** the tool returns `{ status: "error", error: "当前工作区不是 git 仓库" }`
+
 ### Requirement: Git diff query
 The system SHALL provide a `git.diff` tool (permission `read`, site `local`) that returns a structured diff of changes. It SHALL support a `mode` parameter: `unstaged` (default, working tree vs index), `staged` (index vs HEAD), or `ref` (compare against a git ref via `base` parameter). The diff SHALL be grouped by file with hunks.
 

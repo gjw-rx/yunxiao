@@ -3,7 +3,7 @@
  * 构建 OpenAI /v1/chat/completions 请求，通过原生 fetch 发送，
  * 将响应体交给 streamParser 解析为 LLMEvent 流。
  */
-import type { LLMProvider, LLMRequest, LLMEvent, LLMMessage, ToolDefinition } from './types';
+import type { LLMProvider, LLMRequest, LLMEvent, LLMMessage, ToolDefinition, ReasoningEffort } from './types';
 import type { ModelConfig } from '../config/modelConfig';
 import { parseSSEStream } from './streamParser';
 import * as logger from '../logger';
@@ -44,6 +44,10 @@ interface OpenAIRequestBody {
 	readonly tool_choice?: string;
 	readonly temperature?: number;
 	readonly max_tokens?: number;
+	/** OpenAI reasoning 规范：思维链强度 */
+	readonly reasoning_effort?: string;
+	/** DeepSeek 思考开关（V3.2+ / V4） */
+	readonly thinking?: { readonly type: 'enabled' | 'disabled' };
 	readonly stream: true;
 }
 
@@ -52,13 +56,17 @@ export class OpenAIProvider implements LLMProvider {
 
 	async *chatCompletion(request: LLMRequest): AsyncGenerator<LLMEvent> {
 		const url = `${this.config.baseURL.replace(/\/+$/, '')}/chat/completions`;
+		const reasoningParams = buildReasoningParams(request.reasoningEffort, this.config.provider, this.config.baseURL);
+		// DeepSeek 开启思考时 temperature 仅支持 1.0：省略该字段（JSON.stringify 丢弃 undefined）
+		const deepseekThinking = reasoningParams.thinking?.type === 'enabled';
 		const body: OpenAIRequestBody = {
 			model: request.model,
 			messages: toOpenAIMessages(request.messages),
 			tools: request.tools ? toOpenAITools(request.tools) : undefined,
 			tool_choice: request.toolChoice,
-			temperature: request.temperature,
+			temperature: deepseekThinking ? undefined : request.temperature,
 			max_tokens: request.maxTokens,
+			...reasoningParams,
 			stream: true,
 		};
 
@@ -138,4 +146,32 @@ function toOpenAITools(tools: readonly ToolDefinition[]): OpenAITool[] {
 			parameters: t.parameters,
 		},
 	}));
+}
+
+/**
+ * 按 OpenAI reasoning 规范构造思维链请求参数（优先 DeepSeek 协议）。
+ * - DeepSeek（provider 或 baseURL 命中 deepseek）: 默认开启思考（thinking.type='enabled'），
+ *   显式档位时附 reasoning_effort；'disabled' 时发 thinking.type='disabled'。
+ * - 其他 OpenAI-compatible 后端: 仅显式档位时传 reasoning_effort（非推理模型传参可能 400，
+ *   故默认不传）；OpenAI 无 disabled 档位，'disabled' 等同不传。
+ * - 未设置: DeepSeek 默认开启思考；其余交给后端默认。
+ */
+function buildReasoningParams(
+	effort: ReasoningEffort | undefined,
+	providerId: string,
+	baseURL: string,
+): Pick<OpenAIRequestBody, 'reasoning_effort' | 'thinking'> {
+	const isDeepSeek =
+		providerId.toLowerCase().includes('deepseek') || baseURL.toLowerCase().includes('deepseek.com');
+	if (isDeepSeek) {
+		if (effort === undefined) {
+			return { thinking: { type: 'enabled' } };
+		}
+		return effort === 'disabled'
+			? { thinking: { type: 'disabled' } }
+			// DeepSeek 无 minimal 档，映射为最弱档 low
+			: { thinking: { type: 'enabled' }, reasoning_effort: effort === 'minimal' ? 'low' : effort };
+	}
+
+	return effort && effort !== 'disabled' ? { reasoning_effort: effort } : {};
 }

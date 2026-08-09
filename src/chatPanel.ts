@@ -142,6 +142,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'thought':
         view.webview.postMessage({ command: 'thought', text: e.payload as string });
         break;
+      case 'progress': {
+        const p = e.payload as { phase?: string };
+        view.webview.postMessage({ command: 'progress', phase: p.phase });
+        break;
+      }
       case 'plan': {
         const p = e.payload as { steps: string[] };
         view.webview.postMessage({ command: 'plan', steps: p.steps });
@@ -313,22 +318,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * 将引用文件内容拼接为结构化上下文块，供模型直接获取文件内容而非裸路径。
    * 路径解析与 requestWorkspaceFiles 生成 displayPath 的逻辑对称（多工作区带 folderName/ 前缀）。
+   * 读取失败的文件以 error 属性标注注入上下文，并弹窗告知用户，避免模型盲目搜索不存在的文件。
    */
   private async _buildFileContext(files: { path: string }[]): Promise<string> {
     const parts: string[] = [];
+    const failed: string[] = [];
     for (const file of files) {
-      const content = await this._readReferencedFile(file.path);
-      const body = content ?? '[无法读取文件内容]';
-      parts.push(`<file path="${file.path}">\n${body}\n</file>`);
+      const result = await this._readReferencedFile(file.path);
+      if (result.ok) {
+        parts.push(`<file path="${file.path}">\n${result.content}\n</file>`);
+      } else {
+        parts.push(`<file path="${file.path}" error="${result.reason}"></file>`);
+        failed.push(`${file.path}(${result.reason})`);
+      }
+    }
+    if (failed.length > 0) {
+      void vscode.window.showWarningMessage(
+        `以下引用文件无法读取，已作为不可读引用告知模型，请确认路径是否正确：\n${failed.join('\n')}`
+      );
     }
     return `<referenced_files>\n${parts.join('\n')}\n</referenced_files>`;
   }
 
-  /** 读取单个引用文件内容，复用 read_file 的安全策略（大小限制/二进制检测/敏感脱敏）。失败返回 null。 */
-  private async _readReferencedFile(displayPath: string): Promise<string | null> {
+  /** 读取单个引用文件内容，复用 read_file 的安全策略（大小限制/二进制检测/敏感脱敏）。失败返回原因。 */
+  private async _readReferencedFile(
+    displayPath: string
+  ): Promise<{ ok: true; content: string } | { ok: false; reason: string }> {
     const folders = vscode.workspace.workspaceFolders ?? [];
     if (folders.length === 0) {
-      return null;
+      return { ok: false, reason: '未找到工作区' };
     }
     // 反解 displayPath 为绝对路径（与 requestWorkspaceFiles 生成逻辑对称）
     let absPath: string | undefined;
@@ -345,18 +363,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const stat = await fs.stat(absPath);
       if (stat.size > DEFAULT_MAX_FILE_SIZE) {
-        return null;
+        return { ok: false, reason: '文件超过大小上限' };
       }
       if (isBinaryExt(absPath)) {
-        return null;
+        return { ok: false, reason: '二进制文件' };
       }
       const content = await fs.readFile(absPath, 'utf8');
       if (content.includes('\0')) {
-        return null;
+        return { ok: false, reason: '二进制文件' };
       }
-      return redactSecrets(content);
-    } catch {
-      return null;
+      return { ok: true, content: redactSecrets(content) };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | null)?.code;
+      return { ok: false, reason: code === 'ENOENT' ? '文件不存在' : '无法读取' };
     }
   }
 
@@ -2515,9 +2534,23 @@ ${this._getJs()}
       return current + incoming;
     }
 
+    let compactionEl = null;
+    function showCompaction(active) {
+      if (active && !compactionEl) {
+        compactionEl = document.createElement('div');
+        compactionEl.className = 'step compaction';
+        compactionEl.innerHTML = '<span class="step-dot"></span><span class="step-name">正在压缩上下文…</span>';
+        addStep(compactionEl);
+        smartScrollToBottom();
+      } else if (!active && compactionEl) {
+        const nameEl = compactionEl.querySelector('.step-name');
+        if (nameEl) nameEl.textContent = '上下文压缩完成';
+        compactionEl = null;
+      }
+    }
+
     function showThought(text) {
       currentThoughtTxt = mergeStreamText(currentThoughtTxt, text);
-
       if (!currentThoughtEl) {
         const step = document.createElement('div');
         step.className = 'step thought';
@@ -2641,6 +2674,9 @@ ${this._getJs()}
           break;
         case 'thought':
           showThought(msg.text);
+          break;
+        case 'progress':
+          showCompaction(msg.phase === 'compacting');
           break;
         case 'plan':
           showPlan(msg.steps);

@@ -38,6 +38,37 @@ describe('parseSSEStream', () => {
 		assert.strictEqual((finishEvent as { reason: string }).reason, 'stop');
 	});
 
+	it('解析 DeepSeek 思维链增量 (reasoning_content)', async () => {
+		const sse =
+			'data: {"choices":[{"delta":{"reasoning_content":"先"}}]}\n\n' +
+			'data: {"choices":[{"delta":{"reasoning_content":"分析"}}]}\n\n' +
+			'data: {"choices":[{"delta":{"content":"最终回答"}}]}\n\n' +
+			'data: {"choices":[{"finish_reason":"stop"}]}\n\n' +
+			'data: [DONE]\n\n';
+		const events = await collectEvents(toStream(sse));
+		const reasoningEvents = events.filter((e) => e.type === 'reasoningDelta');
+		assert.strictEqual(reasoningEvents.length, 2);
+		assert.strictEqual((reasoningEvents[0] as { text: string }).text, '先');
+		assert.strictEqual((reasoningEvents[1] as { text: string }).text, '分析');
+		// 思维链与正文分离：textDelta 只含最终回答
+		const textEvents = events.filter((e) => e.type === 'textDelta');
+		assert.strictEqual(textEvents.length, 1);
+		assert.strictEqual((textEvents[0] as { text: string }).text, '最终回答');
+	});
+
+	it('解析 OpenAI reasoning 规范思维链增量 (reasoning)', async () => {
+		const sse =
+			'data: {"choices":[{"delta":{"reasoning":"Let me"}}]}\n\n' +
+			'data: {"choices":[{"delta":{"reasoning":" think"}}]}\n\n' +
+			'data: {"choices":[{"finish_reason":"stop"}]}\n\n' +
+			'data: [DONE]\n\n';
+		const events = await collectEvents(toStream(sse));
+		const reasoningEvents = events.filter((e) => e.type === 'reasoningDelta');
+		assert.strictEqual(reasoningEvents.length, 2);
+		assert.strictEqual((reasoningEvents[0] as { text: string }).text, 'Let me');
+		assert.strictEqual((reasoningEvents[1] as { text: string }).text, ' think');
+	});
+
 	it('合并 tool_calls 增量片段', async () => {
 		const sse =
 			'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_"}}]}}]}\n\n' +

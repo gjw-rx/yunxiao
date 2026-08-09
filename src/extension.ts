@@ -24,6 +24,7 @@ import { DiffViewer } from './tools/diff/diffViewer';
 import { TerminalExecTool } from './tools/terminal/terminalExec';
 import { ShellWhitelist } from './tools/terminal/shellWhitelist';
 import { GitStatusTool } from './tools/git/gitStatus';
+import { GitLogTool } from './tools/git/gitLog';
 import { GitDiffTool } from './tools/git/gitDiff';
 import { GitCommitTool } from './tools/git/gitCommit';
 import { GitBranchTool } from './tools/git/gitBranch';
@@ -128,6 +129,7 @@ async function _activate(context: vscode.ExtensionContext) {
 		})
 	);
 	registry.register(new GitStatusTool());
+	registry.register(new GitLogTool());
 	registry.register(new GitDiffTool());
 	registry.register(new GitCommitTool());
 	registry.register(new GitBranchTool());

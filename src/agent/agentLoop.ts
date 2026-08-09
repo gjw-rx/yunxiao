@@ -8,7 +8,7 @@
  * - 检查 assistant.finish 判断循环退出（而非仅检查 pendingToolCalls.length）
  * - 上下文溢出时自动压缩重试
  */
-import type { LLMProvider, LLMRequest, LLMMessage, LLMEvent } from '../llm/types';
+import type { LLMProvider, LLMRequest, LLMMessage, LLMEvent, ReasoningEffort } from '../llm/types';
 import type { MessageStore } from '../memory/messageStore';
 import { loadHistoryForLLM } from '../memory/historyLoader';
 import type { ToolRouter } from '../core/toolRouter';
@@ -49,6 +49,8 @@ export interface AgentLoopConfig {
 	readonly toolResultLimit?: number;
 	/** 自定义 Agent 系统提示词（覆盖默认） */
 	readonly agentPrompt?: string;
+	/** 思维链强度（缺省由 Provider 决定：DeepSeek 默认开启思考，其余不强制） */
+	readonly reasoningEffort?: ReasoningEffort;
 	/** Skill 注册表（为 null 时系统提示词不含 Skill guidance） */
 	readonly skillRegistry?: SkillRegistry | null;
 	/** 上下文压缩配置（可选，不配置则不启用压缩） */
@@ -64,6 +66,15 @@ const DOOM_LOOP_GUIDANCE_PREFIX =
 	'This suggests you may be stuck in a loop. ' +
 	'Stop re-collecting information you already have. ' +
 	'Review the conversation history and proceed with the actual task';
+
+/** 模型回复正文为空（无文本、无工具调用）时注入的提示，要求其直接给出最终答案。 */
+const EMPTY_REPLY_PROMPT =
+	'Your previous response was empty (no text, no tool calls). ' +
+	'Please provide your final answer now, based on the information already gathered. ' +
+	'If the task cannot be completed, clearly explain what is blocking you and what you need from the user.';
+
+/** 空回复兜底的最大重试次数（达到后即使仍为空也正常结束）。 */
+const MAX_EMPTY_REPLY_RETRIES = 2;
 
 /** 同一轮中只读可并行工具的最大并发数（参照 langchain maxConcurrency / Anthropic 并行 tool use 建议）。 */
 const MAX_PARALLEL_TOOLS = 3;
@@ -94,6 +105,7 @@ export class AgentLoop {
 		const runId = randomUUID();
 		let step = 0;
 		let stepWarned = false;
+		let emptyReplyRetries = 0;
 
 		try {
 			while (true) {
@@ -155,6 +167,7 @@ export class AgentLoop {
 					toolChoice,
 					temperature: this.config.temperature,
 					maxTokens: this.config.maxTokens,
+					reasoningEffort: this.config.reasoningEffort,
 					stream: true,
 				};
 
@@ -210,11 +223,27 @@ export class AgentLoop {
 				const finishReason = streamResult.finishReason;
 
 				if (!hasToolCalls || (finishReason && finishReason !== 'tool_use' && finishReason !== 'length')) {
+					// 空回复兜底：确实无工具调用、正文为空且非错误/长度截断时，注入提示要求模型直接给最终答案后重试
+					const text = streamResult.textContent;
+					if (
+						!hasToolCalls &&
+						!text.trim() &&
+						!streamResult.hasError &&
+						finishReason !== 'length' &&
+						emptyReplyRetries < MAX_EMPTY_REPLY_RETRIES
+					) {
+						emptyReplyRetries++;
+						logger.log(`[AgentLoop] step=${step} 空回复，注入提示后重试 ${emptyReplyRetries}/${MAX_EMPTY_REPLY_RETRIES} finish=${finishReason}`);
+						this.messageStore.append(sessionId, { role: 'assistant', content: text });
+						this.messageStore.append(sessionId, { role: 'user', content: EMPTY_REPLY_PROMPT });
+						step++;
+						continue;
+					}
 					// 无工具调用，或 LLM 明确表示完成 → 保存 assistant 消息，退出循环
-					logger.log(`[AgentLoop] step=${step} 循环结束 文本长度=${streamResult.textContent.length} finish=${finishReason} tools=${hasToolCalls}`);
+					logger.log(`[AgentLoop] step=${step} 循环结束 文本长度=${text.length} finish=${finishReason} tools=${hasToolCalls}`);
 					this.messageStore.append(sessionId, {
 						role: 'assistant',
-						content: streamResult.textContent,
+						content: text,
 					});
 					break;
 				}
@@ -470,6 +499,13 @@ export class AgentLoop {
 				textContent += event.text;
 				this.eventBus.emit({
 					type: 'content',
+					sessionId,
+					payload: event.text,
+				});
+			} else if (event.type === 'reasoningDelta') {
+				// 思维链增量：与正文分离，转发给 UI 的 thought 展示通道
+				this.eventBus.emit({
+					type: 'thought',
 					sessionId,
 					payload: event.text,
 				});

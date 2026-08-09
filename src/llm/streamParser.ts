@@ -21,6 +21,10 @@ interface SSEChunk {
 	readonly choices?: ReadonlyArray<{
 		readonly delta?: {
 			readonly content?: string;
+			/** DeepSeek 思维链增量 */
+			readonly reasoning_content?: string;
+			/** OpenAI reasoning 规范下的思维链增量 */
+			readonly reasoning?: string;
 			readonly tool_calls?: readonly ToolCallDelta[];
 		};
 		readonly finish_reason?: string | null;
@@ -46,9 +50,10 @@ interface ToolCallAccumulator {
  * 2. 跳过空行和 `[DONE]` 标记
  * 3. 解析 JSON chunk
  * 4. delta.content -> textDelta 事件
- * 5. delta.tool_calls 按 index 合并，完成时 yield toolCall 事件
- * 6. finish_reason -> finish 事件
- * 7. usage -> usage 事件
+ * 5. delta.reasoning_content / delta.reasoning -> reasoningDelta 事件（思维链）
+ * 6. delta.tool_calls 按 index 合并，完成时 yield toolCall 事件
+ * 7. finish_reason -> finish 事件
+ * 8. usage -> usage 事件
  */
 export async function* parseSSEStream(
 	body: ReadableStream<Uint8Array>,
@@ -106,6 +111,14 @@ export async function* parseSSEStream(
 				// 处理文本增量
 				if (choice.delta?.content) {
 					yield { type: 'textDelta', text: choice.delta.content };
+				}
+
+				// 处理思维链增量（DeepSeek: reasoning_content；OpenAI: reasoning）
+				if (choice.delta?.reasoning_content) {
+					yield { type: 'reasoningDelta', text: choice.delta.reasoning_content };
+				}
+				if (choice.delta?.reasoning) {
+					yield { type: 'reasoningDelta', text: choice.delta.reasoning };
 				}
 
 				// 处理 tool_calls 增量

@@ -13,6 +13,7 @@ import type { MessageStore } from '../memory/messageStore';
 import type { LLMProvider, LLMMessage } from '../llm/types';
 import type { EventBus } from '../core/eventBus';
 import { estimateMessages, estimateMessage } from './tokenEstimator';
+import * as logger from '../logger';
 
 // ── 类型定义 ──
 
@@ -213,6 +214,9 @@ export async function generateSummary(
 		model,
 		messages,
 		stream: true,
+		// 摘要不需要推理，禁用 thinking 并限制输出，避免一次摘要调用等几十秒
+		maxTokens: 1024,
+		reasoningEffort: 'disabled',
 	});
 
 	let summary = '';
@@ -253,8 +257,14 @@ export async function compactIfNeeded(
 	const threshold = config.contextWindow - (model.includes('maxTokens') ? 4096 : 4096) - config.buffer;
 	const msgThreshold = config.messageThreshold ?? 40;
 
-	// 双阈值：token 或 消息条数 任一达到即触发
-	if (totalTokens <= threshold && messageCount <= msgThreshold) {
+	// 防呆：buffer 过大导致阈值为负时（配置错误），降级为仅按消息条数触发，
+	// 避免每次调用都误触发昂贵的摘要 LLM 调用（用户无感知的几十秒空窗）。
+	if (threshold < 0) {
+		logger.log(`[Compaction] 阈值计算为负(${threshold}，contextWindow=${config.contextWindow}，buffer=${config.buffer})，降级为仅按消息条数(${msgThreshold})触发`);
+		if (messageCount <= msgThreshold) {
+			return false;
+		}
+	} else if (totalTokens <= threshold && messageCount <= msgThreshold) {
 		return false;
 	}
 
@@ -264,12 +274,18 @@ export async function compactIfNeeded(
 		return false;
 	}
 
+	logger.log(`[Compaction] 触发压缩：head=${head.length} 条，recent=${recent.length} 条，headTokens=${estimateMessages(head)}，recentTokens=${estimateMessages(recent)}`);
+	eventBus.emit({ type: 'progress', sessionId, payload: { phase: 'compacting' } });
+
 	// 获取已有摘要用于增量更新
 	const existingCompaction = messageStore.getCompactionPoint(sessionId);
 	const existingSummary = existingCompaction?.summary ?? null;
 
 	// 生成摘要
+	const startedAt = Date.now();
 	const summary = await generateSummary(head, existingSummary, provider, model);
+	logger.log(`[Compaction] 摘要生成完成：耗时=${Date.now() - startedAt}ms，摘要长度=${summary.length}`);
+	eventBus.emit({ type: 'progress', sessionId, payload: { phase: 'compacted' } });
 
 	// 存储 CompactionMessage
 	messageStore.append(sessionId, {
