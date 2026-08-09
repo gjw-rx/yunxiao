@@ -110,6 +110,10 @@ export interface UsageEvent {
 	readonly type: 'usage';
 	readonly inputTokens: number;
 	readonly outputTokens: number;
+	/** 思考 token 数(provider 提供时),缺失时为 0 */
+	readonly reasoningTokens?: number;
+	/** 总 token 数(provider 提供时),缺失时为 input+output */
+	readonly totalTokens?: number;
 }
 
 /** 流结束 */

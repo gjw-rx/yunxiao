@@ -21,6 +21,8 @@ import { toolSchemasToDefinitions, llmToolCallToCoreToolCall, toolResultToConten
 import { buildSystemPrompt } from './systemPrompt';
 import type { CompactionConfig } from './compaction';
 import { compactIfNeeded } from './compaction';
+import { estimateText, estimateRequest } from './tokenEstimator';
+import type { TokenUsageSnapshot } from '../memory/types';
 import { randomUUID } from 'crypto';
 import { DoomLoopDetector } from './doomLoopDetector';
 import { ToolValidationError } from '../core/errors';
@@ -97,7 +99,10 @@ export class AgentLoop {
 		this.abortController = new AbortController();
 		const { signal } = this.abortController;
 
-		this.messageStore.append(sessionId, { role: 'user', content: userText });
+		const userMessage = this.messageStore.append(sessionId, { role: 'user', content: userText });
+		const userMsgSeq = userMessage.seq;
+		// run 开始前会话累计（用于 delta 计算）
+		const baseTotal = this.aggregateSessionTokens(sessionId);
 		this.emitRunStateChange(sessionId, 'running');
 		logger.log(`[AgentLoop] run 开始 sessionId=${sessionId} 用户消息长度=${userText.length}`);
 
@@ -181,6 +186,36 @@ export class AgentLoop {
 					signal,
 				);
 
+				// ── 8.5 每步 token 记账：组装四类拆分，回写用户消息分摊值 ──
+				const tokenSnapshot = this.buildTokenSnapshot({
+					request,
+					systemPrompt,
+					streamResult,
+					userText,
+				});
+				if (tokenSnapshot) {
+					this.messageStore.updateMessage(sessionId, userMsgSeq, {
+						inputTokens: tokenSnapshot.user_input,
+					});
+				}
+				// usage 缺失时补发 token_usage 事件（估算 input_length），供前端显示
+				if (!streamResult.usage) {
+					const inputLength = estimateRequest(systemPrompt, messages, tools);
+					this.eventBus.emit({
+						type: 'token_usage',
+						sessionId,
+						payload: {
+							token_usage: {
+								prompt_tokens: inputLength,
+								completion_tokens: streamResult.textContent ? estimateText(streamResult.textContent) : 0,
+								total_tokens: inputLength + (streamResult.textContent ? estimateText(streamResult.textContent) : 0),
+							},
+							input_length: inputLength,
+							source: 'estimated',
+						},
+					});
+				}
+
 				// 每步 LLM 输出结束：前端对该步文本做 markdown 终渲染，恢复回合边界
 				if (streamResult.textContent) {
 					this.eventBus.emit({ type: 'step_end', sessionId, payload: {} });
@@ -192,6 +227,7 @@ export class AgentLoop {
 					this.messageStore.append(sessionId, {
 						role: 'assistant',
 						content: streamResult.textContent,
+						tokenUsage: tokenSnapshot ?? undefined,
 					});
 					this.emitRunStateChange(sessionId, 'cancelled');
 					this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
@@ -235,7 +271,7 @@ export class AgentLoop {
 					) {
 						emptyReplyRetries++;
 						logger.log(`[AgentLoop] step=${step} 空回复，注入提示后重试 ${emptyReplyRetries}/${MAX_EMPTY_REPLY_RETRIES} finish=${finishReason}`);
-						this.messageStore.append(sessionId, { role: 'assistant', content: text });
+						this.messageStore.append(sessionId, { role: 'assistant', content: text, tokenUsage: tokenSnapshot ?? undefined });
 						this.messageStore.append(sessionId, { role: 'user', content: EMPTY_REPLY_PROMPT });
 						step++;
 						continue;
@@ -245,6 +281,7 @@ export class AgentLoop {
 					this.messageStore.append(sessionId, {
 						role: 'assistant',
 						content: text,
+						tokenUsage: tokenSnapshot ?? undefined,
 					});
 					break;
 				}
@@ -259,6 +296,7 @@ export class AgentLoop {
 						name: tc.name,
 						arguments: tc.arguments,
 					})),
+					tokenUsage: tokenSnapshot ?? undefined,
 				});
 
 				const toolContext = this.buildToolContext(sessionId, runId);
@@ -298,6 +336,7 @@ export class AgentLoop {
 			}
 
 			// 正常完成
+			this.emitSessionTokenUsage(sessionId, baseTotal);
 			this.emitRunStateChange(sessionId, 'completed');
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 			logger.log(`[AgentLoop] 正常完成 sessionId=${sessionId} 共 ${step} 步`);
@@ -309,6 +348,7 @@ export class AgentLoop {
 				sessionId,
 				payload: msg,
 			});
+			this.emitSessionTokenUsage(sessionId, baseTotal);
 			this.emitRunStateChange(sessionId, 'failed', msg);
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 		}
@@ -490,12 +530,28 @@ export class AgentLoop {
 		hasError: boolean;
 		errorMessage: string;
 		finishReason: string | null;
+		/** 累积的思考（reasoning）增量文本，用于缺失 reasoning_tokens 时估算 */
+		reasoningText: string;
+		/** provider 报告的 usage（最后一次 usage 事件），缺失时为 undefined */
+		usage: {
+			inputTokens: number;
+			outputTokens: number;
+			reasoningTokens?: number;
+			totalTokens?: number;
+		} | null;
 	}> {
 		let textContent = '';
+		let reasoningText = '';
 		const pendingToolCalls: Array<{ id: string; name: string; arguments: string }> = [];
 		let hasError = false;
 		let errorMessage = '';
 		let finishReason: string | null = null;
+		let usage: {
+			inputTokens: number;
+			outputTokens: number;
+			reasoningTokens?: number;
+			totalTokens?: number;
+		} | null = null;
 
 		for await (const event of eventStream) {
 			if (signal.aborted) {
@@ -511,6 +567,7 @@ export class AgentLoop {
 				});
 			} else if (event.type === 'reasoningDelta') {
 				// 思维链增量：与正文分离，转发给 UI 的 thought 展示通道
+				reasoningText += event.text;
 				this.eventBus.emit({
 					type: 'thought',
 					sessionId,
@@ -535,7 +592,13 @@ export class AgentLoop {
 					payload: { call_id: callId, tool: event.name, args: parsedArgs },
 				});
 			} else if (event.type === 'usage') {
-				logger.log(`[AgentLoop] token 用量: input=${event.inputTokens} output=${event.outputTokens}`);
+				usage = {
+					inputTokens: event.inputTokens,
+					outputTokens: event.outputTokens,
+					...(event.reasoningTokens !== undefined ? { reasoningTokens: event.reasoningTokens } : {}),
+					...(event.totalTokens !== undefined ? { totalTokens: event.totalTokens } : {}),
+				};
+				logger.log(`[AgentLoop] token 用量: input=${event.inputTokens} output=${event.outputTokens} reasoning=${event.reasoningTokens ?? 'n/a'}`);
 				this.eventBus.emit({
 					type: 'token_usage',
 					sessionId,
@@ -543,14 +606,19 @@ export class AgentLoop {
 						token_usage: {
 							prompt_tokens: event.inputTokens,
 							completion_tokens: event.outputTokens,
-							total_tokens: event.inputTokens + event.outputTokens,
+							total_tokens: event.totalTokens ?? event.inputTokens + event.outputTokens,
+							...(event.reasoningTokens !== undefined ? { reasoning_tokens: event.reasoningTokens } : {}),
 						},
-						input_length: 0,
+						// 真实 prompt token 数（provider 报告），不再硬编码 0
+						input_length: event.inputTokens,
+						source: 'usage',
 					},
 				});
 			} else if (event.type === 'finish') {
+				// 记录结束原因但不中断：provider 常在 finish 之后的同一 chunk
+				// 附带 usage（streamParser 先 yield finish 再 yield usage），
+				// 若立即 break 会丢失 token 数据。
 				finishReason = event.reason;
-				break;
 			} else if (event.type === 'error') {
 				hasError = true;
 				errorMessage = event.error;
@@ -563,7 +631,7 @@ export class AgentLoop {
 			}
 		}
 
-		return { textContent, pendingToolCalls, hasError, errorMessage, finishReason };
+		return { textContent, pendingToolCalls, hasError, errorMessage, finishReason, reasoningText, usage };
 	}
 
 	/** 发出 run_state_change 事件。 */
@@ -579,6 +647,104 @@ export class AgentLoop {
 				generation: 0,
 				state,
 				...(error ? { error } : {}),
+			},
+		});
+	}
+
+	/**
+	 * 组装每步 token 账：真实 usage + 四类拆分（思考/工具调用/模型回复/用户输入）。
+	 * 分摊法：用户输入 = prompt × 估算(用户消息) / 估算(完整请求体)，保证四类与总量自洽。
+	 */
+	private buildTokenSnapshot(params: {
+		request: LLMRequest;
+		systemPrompt: string;
+		streamResult: Awaited<ReturnType<AgentLoop['consumeStream']>>;
+		userText: string;
+	}): TokenUsageSnapshot | null {
+		const { request, systemPrompt, streamResult, userText } = params;
+		const usage = streamResult.usage;
+		const hasUsage = usage !== null && usage.inputTokens + usage.outputTokens > 0;
+
+		const prompt = hasUsage ? usage.inputTokens : estimateRequest(systemPrompt, request.messages, request.tools);
+		const completion = hasUsage ? usage.outputTokens : estimateText(streamResult.textContent);
+		const total = usage?.totalTokens ?? prompt + completion;
+
+		// 思考：优先 usage.reasoning_tokens，缺失时对 reasoning 增量文本估算
+		const reasoning = hasUsage && (usage.reasoningTokens ?? 0) > 0
+			? usage.reasoningTokens!
+			: estimateText(streamResult.reasoningText);
+
+		// 工具调用：对每个 toolCall 的 name+arguments 估算
+		const toolCalls = streamResult.pendingToolCalls.reduce(
+			(sum, tc) => sum + estimateText(tc.name + tc.arguments),
+			0,
+		);
+
+		// 模型回复：completion − reasoning − 工具调用估算（clamp ≥ 0）
+		const modelOutput = hasUsage
+			? Math.max(0, completion - reasoning - toolCalls)
+			: estimateText(streamResult.textContent);
+
+		// 用户输入（分摊法）：按估算占比分摊权威 prompt_tokens；有内容时至少 1，避免 round 归零
+		const userEst = estimateText(userText);
+		const reqEst = estimateRequest(systemPrompt, request.messages, request.tools);
+		const userInput =
+			prompt > 0 && reqEst > 0 && userEst > 0
+				? Math.max(1, Math.round((prompt * userEst) / reqEst))
+				: userEst;
+
+		// 上下文 = prompt − user_input（非四类之一）
+		const context = Math.max(0, prompt - userInput);
+
+		return {
+			prompt_tokens: prompt,
+			completion_tokens: completion,
+			total_tokens: total,
+			...(usage?.reasoningTokens !== undefined ? { reasoning_tokens: usage.reasoningTokens } : {}),
+			reasoning,
+			tool_calls: toolCalls,
+			model_output: modelOutput,
+			user_input: userInput,
+			context,
+			source: hasUsage ? 'usage' : 'estimated',
+		};
+	}
+
+	/** 聚合会话累计 token（遍历消息，求和 assistant tokenUsage）。 */
+	private aggregateSessionTokens(sessionId: string): number {
+		const messages = this.messageStore.loadHistory(sessionId);
+		let total = 0;
+		for (const m of messages) {
+			if (m.role === 'assistant' && 'tokenUsage' in m && m.tokenUsage) {
+				total += m.tokenUsage.total_tokens;
+			}
+		}
+		return total;
+	}
+
+	/** 发射 session_token_usage 事件（会话级汇总）。 */
+	private emitSessionTokenUsage(sessionId: string, baseTotal: number): void {
+		const messages = this.messageStore.loadHistory(sessionId);
+		let total = 0;
+		const breakdown = { reasoning: 0, tool_calls: 0, model_output: 0, user_input: 0, context: 0 };
+		for (const m of messages) {
+			if (m.role === 'assistant' && 'tokenUsage' in m && m.tokenUsage) {
+				const t = m.tokenUsage;
+				total += t.total_tokens;
+				breakdown.reasoning += t.reasoning;
+				breakdown.tool_calls += t.tool_calls;
+				breakdown.model_output += t.model_output;
+				breakdown.user_input += t.user_input;
+				breakdown.context += t.context;
+			}
+		}
+		this.eventBus.emit({
+			type: 'session_token_usage',
+			sessionId,
+			payload: {
+				total_tokens: total,
+				breakdown,
+				delta_tokens: Math.max(0, total - baseTotal),
 			},
 		});
 	}

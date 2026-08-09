@@ -80,6 +80,20 @@ export class MessageStore {
 		this.persist();
 	}
 
+	/** 按 seq 更新已有消息的字段（如回写 token 记账），并持久化。 */
+	updateMessage(sessionId: string, seq: number, patch: Partial<InputMessage>): void {
+		const messages = this.store.get(sessionId);
+		if (!messages) {
+			return;
+		}
+		const target = messages.find((m) => m.seq === seq);
+		if (!target) {
+			return;
+		}
+		Object.assign(target, patch);
+		this.persist();
+	}
+
 	/** 持久化到 workspaceState，失败时降级为纯内存。 */
 	private persist(): void {
 		const data: Record<string, Message[]> = {};

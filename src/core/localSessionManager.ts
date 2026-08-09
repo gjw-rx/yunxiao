@@ -16,6 +16,10 @@ export interface HistoryEntry {
 	content: string;
 	toolCalls?: Array<{ id: string; name: string; arguments: string }>;
 	toolCallId?: string;
+	/** assistant 消息的 token 账（真实 usage + 四类拆分），供历史重载后恢复展示 */
+	tokenUsage?: import('../memory/types').TokenUsageSnapshot;
+	/** user 消息的输入 token 分摊值（估算），供历史重载后聚合展示 */
+	inputTokens?: number;
 }
 
 export class LocalSessionManager {
@@ -56,10 +60,21 @@ export class LocalSessionManager {
 			.filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
 			.map((m) => {
 				if (m.role === 'assistant' && 'toolCalls' in m && m.toolCalls) {
-					return { role: m.role, content: m.content, toolCalls: m.toolCalls };
+					return {
+						role: m.role,
+						content: m.content,
+						toolCalls: m.toolCalls,
+						tokenUsage: m.tokenUsage,
+					};
+				}
+				if (m.role === 'assistant' && 'tokenUsage' in m && m.tokenUsage) {
+					return { role: m.role, content: m.content, tokenUsage: m.tokenUsage };
 				}
 				if (m.role === 'tool' && 'toolCallId' in m) {
 					return { role: m.role, content: m.content, toolCallId: (m as { toolCallId: string }).toolCallId };
+				}
+				if (m.role === 'user' && 'inputTokens' in m && m.inputTokens) {
+					return { role: m.role, content: m.content, inputTokens: m.inputTokens };
 				}
 				return { role: m.role, content: m.content };
 			});

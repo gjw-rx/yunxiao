@@ -32,6 +32,8 @@ interface SSEChunk {
 	readonly usage?: {
 		readonly prompt_tokens?: number;
 		readonly completion_tokens?: number;
+		readonly total_tokens?: number;
+		readonly reasoning_tokens?: number;
 	};
 }
 
@@ -103,6 +105,8 @@ export async function* parseSSEStream(
 							type: 'usage',
 							inputTokens: chunk.usage.prompt_tokens ?? 0,
 							outputTokens: chunk.usage.completion_tokens ?? 0,
+							reasoningTokens: chunk.usage.reasoning_tokens,
+							totalTokens: chunk.usage.total_tokens,
 						};
 					}
 					continue;
@@ -160,6 +164,8 @@ export async function* parseSSEStream(
 						type: 'usage',
 						inputTokens: chunk.usage.prompt_tokens ?? 0,
 						outputTokens: chunk.usage.completion_tokens ?? 0,
+						reasoningTokens: chunk.usage.reasoning_tokens,
+						totalTokens: chunk.usage.total_tokens,
 					};
 				}
 			}

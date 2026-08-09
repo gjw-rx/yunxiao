@@ -97,6 +97,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'token_usage':
         view.webview.postMessage({ command: 'tokenUsage', payload: e.payload });
         break;
+      case 'session_token_usage':
+        view.webview.postMessage({ command: 'sessionTokenUsage', payload: e.payload });
+        break;
       case 'stream_end':
         view.webview.postMessage({ command: 'replyEnd' });
         break;
@@ -1469,6 +1472,41 @@ ${this._getJs()}
       height: 100%;
       border-radius: inherit;
       background: var(--accent);
+    }
+
+    /* ── Session-level token usage bar ── */
+    #sessionTokenBar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 12px;
+      padding: 6px 14px;
+      font-size: 11px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border, rgba(128,128,128,0.15));
+      background: color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 97%, var(--accent) 3%);
+      user-select: none;
+    }
+    #sessionTokenBar .stb-total {
+      font-family: var(--mono);
+      font-weight: 600;
+      color: var(--accent);
+    }
+    #sessionTokenBar .stb-items {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+    #sessionTokenBar .stb-item .stb-label {
+      opacity: 0.75;
+    }
+    #sessionTokenBar .stb-item .stb-val {
+      color: var(--fg, inherit);
+    }
+    #sessionTokenBar .stb-item .stb-approx {
+      opacity: 0.55;
     }`;
   }
 
@@ -1481,6 +1519,12 @@ ${this._getJs()}
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M7.25 1a.75.75 0 0 1 .75.75V7h5.25a.75.75 0 0 1 0 1.5H8v5.25a.75.75 0 0 1-1.5 0V8.5H1.25a.75.75 0 0 1 0-1.5H6.5V1.75A.75.75 0 0 1 7.25 1z"/></svg>
       </button>
     </div>
+  </div>
+
+  <div id="sessionTokenBar" hidden>
+    <span>会话 Token</span>
+    <span class="stb-total">0</span>
+    <span class="stb-items"></span>
   </div>
 
   <div id="messages">
@@ -2527,6 +2571,63 @@ ${this._getJs()}
       }
     }
 
+    /** 渲染会话级累计条：总量 + 四类拆分 + 上下文占比。估算项带"约"。 */
+    function showSessionTokenUsage(payload) {
+      if (!payload) return;
+      const bar = document.getElementById('sessionTokenBar');
+      if (!bar) return;
+      const total = payload.total_tokens || 0;
+      const b = payload.breakdown || { reasoning: 0, tool_calls: 0, model_output: 0, user_input: 0, context: 0 };
+      bar.hidden = false;
+      bar.querySelector('.stb-total').textContent = formatNumber(total);
+      const itemsEl = bar.querySelector('.stb-items');
+      const items = [
+        { label: '思考', val: b.reasoning || 0, approx: true },
+        { label: '工具', val: b.tool_calls || 0, approx: true },
+        { label: '回复', val: b.model_output || 0, approx: true },
+        { label: '输入', val: b.user_input || 0, approx: true },
+        { label: '上下文', val: b.context || 0, approx: true },
+      ];
+      itemsEl.innerHTML = items.map((it) =>
+        '<span class="stb-item">' +
+          '<span class="stb-label">' + it.label + '</span> ' +
+          '<span class="stb-val">' + (it.approx ? '约' : '') + formatNumber(it.val) + '</span>' +
+        '</span>'
+      ).join('');
+      bar.title = '会话累计 Token：' + formatNumber(total) + '；四类不含上下文';
+    }
+
+    /** 历史重载时按消息聚合会话累计；旧消息无 token 字段时按内容估算补齐（仅展示）。 */
+    function aggregateSessionTokens(messages) {
+      if (!messages || messages.length === 0) return null;
+      let total = 0;
+      const breakdown = { reasoning: 0, tool_calls: 0, model_output: 0, user_input: 0, context: 0 };
+      for (const m of messages) {
+        if (m.role === 'user') {
+          const est = m.inputTokens || Math.ceil((m.content || '').length / 4);
+          breakdown.user_input += est;
+        } else if (m.role === 'assistant') {
+          if (m.tokenUsage) {
+            total += m.tokenUsage.total_tokens || 0;
+            breakdown.reasoning += m.tokenUsage.reasoning || 0;
+            breakdown.tool_calls += m.tokenUsage.tool_calls || 0;
+            breakdown.model_output += m.tokenUsage.model_output || 0;
+            breakdown.user_input += m.tokenUsage.user_input || 0;
+            breakdown.context += m.tokenUsage.context || 0;
+          } else {
+            // 旧消息无 token 账：按内容估算（不回写）
+            const text = (m.content || '') + (m.toolCalls || []).map((tc) => tc.name + tc.arguments).join('');
+            const est = Math.ceil(text.length / 4);
+            breakdown.model_output += est;
+            total += est;
+          }
+        }
+      }
+      if (total <= 0 && breakdown.user_input <= 0 && breakdown.model_output <= 0) return null;
+      total = total || (breakdown.user_input + breakdown.model_output);
+      return { total_tokens: total, breakdown };
+    }
+
     function showError(msg) {
       errorEl.textContent = msg;
       setTimeout(() => { if (errorEl.textContent === msg) errorEl.textContent = ''; }, 5000);
@@ -2591,6 +2692,9 @@ ${this._getJs()}
         case 'tokenUsage':
           showTokenUsage(msg.payload);
           break;
+        case 'sessionTokenUsage':
+          showSessionTokenUsage(msg.payload);
+          break;
         case 'historyLoaded':
           resetConversation();
           if (msg.messages.length === 0) {
@@ -2621,7 +2725,7 @@ ${this._getJs()}
             } else if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
               // 含工具调用的 assistant 消息：先渲染回复文本，再渲染工具步骤（与实时交错顺序一致）
               if (m.content) {
-                appendMsgFromHistory('assistant', m.content);
+                appendMsgFromHistory('assistant', m.content, m.tokenUsage);
               }
               for (const tc of m.toolCalls) {
                 let parsedArgs;
@@ -2629,10 +2733,15 @@ ${this._getJs()}
                 showToolState(tc.name, 'success', undefined, tc.id, parsedArgs);
               }
             } else {
-              appendMsgFromHistory(m.role, m.content);
+              appendMsgFromHistory(m.role, m.content, m.tokenUsage);
             }
           }
           scrollToBottom();
+          // 历史重载后按消息聚合恢复会话累计（旧消息无 token 账时估算补齐展示）
+          const sessionAgg = aggregateSessionTokens(msg.messages);
+          if (sessionAgg) {
+            showSessionTokenUsage(sessionAgg);
+          }
           break;
         case 'error':
           showError(msg.message);

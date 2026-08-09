@@ -104,6 +104,30 @@ describe('parseSSEStream', () => {
 		assert.strictEqual((usageEvent as { outputTokens: number }).outputTokens, 50);
 	});
 
+	it('解析 usage 的 total_tokens 与 reasoning_tokens', async () => {
+		const sse =
+			'data: {"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"reasoning_tokens":20}}\n\n' +
+			'data: [DONE]\n\n';
+		const events = await collectEvents(toStream(sse));
+		const usageEvent = events.find((e) => e.type === 'usage');
+		assert.ok(usageEvent);
+		assert.strictEqual((usageEvent as { inputTokens: number }).inputTokens, 100);
+		assert.strictEqual((usageEvent as { outputTokens: number }).outputTokens, 50);
+		assert.strictEqual((usageEvent as { totalTokens: number }).totalTokens, 150);
+		assert.strictEqual((usageEvent as { reasoningTokens: number }).reasoningTokens, 20);
+	});
+
+	it('usage 缺失 reasoning_tokens/total_tokens 时不报错且字段为 undefined', async () => {
+		const sse =
+			'data: {"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":50}}\n\n' +
+			'data: [DONE]\n\n';
+		const events = await collectEvents(toStream(sse));
+		const usageEvent = events.find((e) => e.type === 'usage');
+		assert.ok(usageEvent);
+		assert.strictEqual((usageEvent as { reasoningTokens?: number }).reasoningTokens, undefined);
+		assert.strictEqual((usageEvent as { totalTokens?: number }).totalTokens, undefined);
+	});
+
 	it('跳过无法解析的行', async () => {
 		const sse =
 			'data: {invalid json}\n\n' +

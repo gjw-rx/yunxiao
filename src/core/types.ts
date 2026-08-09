@@ -119,10 +119,46 @@ export interface TokenUsage {
 	readonly prompt_tokens: number;
 	readonly completion_tokens: number;
 	readonly total_tokens: number;
+	/** 思考 token 数（provider 提供时存在） */
+	readonly reasoning_tokens?: number;
+}
+
+/** token 数字来源标记：真实 usage 或估算 */
+export type TokenSource = 'usage' | 'estimated';
+
+/**
+ * 每步/每轮的 token 账：真实 usage + 四类拆分（思考/工具调用/模型回复/用户输入）。
+ * 四类之和与总量自洽：总量 = prompt+completion（权威），上下文 = prompt − 用户输入。
+ */
+export interface TokenBreakdown {
+	/** 思考（优先 usage.reasoning_tokens，缺失时估算） */
+	readonly reasoning: number;
+	/** 工具调用（对 toolCall.name+arguments 估算） */
+	readonly tool_calls: number;
+	/** 模型回复（completion − reasoning − 工具调用估算，clamp ≥ 0） */
+	readonly model_output: number;
+	/** 用户输入（分摊法：按估算占比分摊 prompt_tokens） */
+	readonly user_input: number;
+	/** 上下文（system prompt + 历史 + 工具定义）= prompt_tokens − user_input，非四类之一 */
+	readonly context: number;
 }
 
 /** token 用量事件 payload */
 export interface TokenUsageEventPayload {
 	readonly token_usage: TokenUsage;
 	readonly input_length: number;
+	/** 四类拆分（本步） */
+	readonly breakdown?: TokenBreakdown;
+	/** 拆分数字的来源标记（usage 或 estimated，缺省按字段分别判断） */
+	readonly source?: TokenSource;
+}
+
+/** 会话级 token 汇总 payload（run 结束时通过 session_token_usage 事件推送） */
+export interface SessionTokenUsagePayload {
+	/** 会话累计总量 = Σ(各步 prompt + completion) */
+	readonly total_tokens: number;
+	/** 四类拆分（会话累计） */
+	readonly breakdown: TokenBreakdown;
+	/** 本 run 新增 token 数（便于前端增量展示） */
+	readonly delta_tokens: number;
 }
