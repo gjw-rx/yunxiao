@@ -95,7 +95,7 @@
 ### 安装 .vsix 文件
 
 ```bash
-code --install-extension yunxiao-agent-0.1.0.vsix
+code --install-extension yunxiao-agent-0.1.1.vsix
 ```
 
 或在 VSCode 内：扩展面板 → 右上角 `···` → 从 VSIX 安装。

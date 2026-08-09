@@ -4,10 +4,10 @@
   "publisher": "yunxiao",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yunxiao/yunxiao-agent"
+    "url": "https://github.com/gjw-rx/yunxiao.git"
   },
   "description": "码力云效-对接自有ai服务",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "icon": "media/icon.png",
   "engines": {
