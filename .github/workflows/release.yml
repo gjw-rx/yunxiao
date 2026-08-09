@@ -1,0 +1,45 @@
+# 自动发布工作流:打 v* tag 时打包 .vsix → 上传 GitHub Release → 发布到 VS Marketplace
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # vscode:prepublish 会自动执行 npm run package(类型检查 + lint + esbuild)
+      - name: 打包 .vsix
+        run: npx --yes @vscode/vsce@3 package -o yunxiao-agent.vsix
+
+      - name: 创建 GitHub Release 并附带 .vsix
+        uses: softprops/action-gh-release@v2
+        with:
+          files: yunxiao-agent.vsix
+          generate_release_notes: true
+
+      # 发布到 VS Marketplace:需在仓库 Settings → Secrets and variables → Actions
+      # 添加 secret VSCE_PAT(值为 Azure DevOps PAT,权限 Marketplace → Manage)
+      - name: 发布到 VS Marketplace
+        if: env.VSCE_PAT != ''
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx --yes @vscode/vsce@3 publish -p "$VSCE_PAT" --packagePath yunxiao-agent.vsix
