@@ -336,6 +336,41 @@ describe('CodeEditTool', () => {
 		assert.ok(calls.some((c) => c.startsWith('vscode.diff:')));
 	});
 
+	it('应用成功后在工作区外保留 before/after 快照（diff 视图保持打开）', async () => {
+		// Arrange
+		await writeFile('ext.ts', 'export function getServiceBaseUrl() {}\n');
+		const tool = new CodeEditTool({
+			approval: mockApproval('allow'),
+			diffViewer: mockDiffViewer().viewer,
+		});
+		// Act
+		const result = await tool.execute(
+			{ path: 'ext.ts', oldString: 'getServiceBaseUrl', newString: 'getServiceUrl' },
+			await makeContext()
+		);
+		// Assert
+		assert.strictEqual(result.status, 'success');
+		// 工作区无残留临时文件
+		const dirEntries = await fs.readdir(workspace);
+		assert.ok(!dirEntries.some((e) => e.includes('code-edit-preview')));
+		// 系统临时目录下保留该任务目录，before=旧内容、after=新内容
+		const root = path.join(os.tmpdir(), 'yunxiao-agent-code-edit');
+		const matches: string[] = [];
+		for (const name of await fs.readdir(root).catch(() => [])) {
+			try {
+				const beforePath = path.join(root, name, 'before', 'ext.ts');
+				if ((await fs.readFile(beforePath, 'utf8')).includes('getServiceBaseUrl')) {
+					matches.push(name);
+				}
+			} catch {
+				// 非本任务的目录，跳过
+			}
+		}
+		assert.ok(matches.length >= 1, '应在临时目录找到保留的 before 快照');
+		const afterPath = path.join(root, matches[matches.length - 1], 'after', 'ext.ts');
+		assert.ok((await fs.readFile(afterPath, 'utf8')).includes('getServiceUrl'));
+	});
+
 	it('拒绝越界路径', async () => {
 		const tool = new CodeEditTool({
 			approval: mockApproval('allow'),

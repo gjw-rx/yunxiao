@@ -709,81 +709,18 @@ ${this._getJs()}
     @keyframes blink { 50% { opacity: 0; } }
 
     /* ══ 回合（turn）容器 ══
-       一个 turn = 过程时间线（思考/工具）+ 最终回复。
-       时间线永远排在回复之前。 */
+       一个 turn = 思考/工具步骤与回复气泡按发生顺序交错的消息流。 */
     .turn {
       display: flex;
       flex-direction: column;
       margin-bottom: 18px;
     }
 
-    /* ── 过程时间线 ── */
-    .trace {
-      position: relative;
-      margin-bottom: 10px;
-      animation: rise 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
-    }
-    .trace:empty { display: none; }
-
-    /* 竖向轨道 */
-    .trace::before {
-      content: '';
-      position: absolute;
-      left: 7px;
-      top: 20px;
-      bottom: 6px;
-      width: 1px;
-      background: var(--rail);
-    }
-
-    .trace-header {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: var(--label-tracking);
-      text-transform: uppercase;
-      color: var(--muted);
-      cursor: pointer;
-      user-select: none;
-      padding: 2px 0 8px;
-      transition: color 0.15s;
-    }
-    .trace-header:hover { color: var(--fg); }
-    .trace-header .chevron {
-      width: 10px;
-      height: 10px;
-      transition: transform 0.2s;
-    }
-    .trace.collapsed .trace-header .chevron { transform: rotate(-90deg); }
-
-    .trace-count {
-      font-family: var(--mono);
-      font-weight: 500;
-      letter-spacing: 0;
-      opacity: 0.7;
-    }
-    .trace-live {
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-      background: var(--accent);
-      animation: pulse 1.4s ease-in-out infinite;
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50%      { opacity: 0.35; transform: scale(0.7); }
-    }
-
-    .trace-body { display: flex; flex-direction: column; gap: 1px; }
-    .trace.collapsed .trace-body { display: none; }
-    .trace.collapsed::before { display: none; }
-
-    /* ── 时间线步骤（思考 / 工具 / 计划共用） ── */
+    /* ── 时间线步骤（思考 / 工具 / 计划共用，内联于消息流） ── */
     .step {
       position: relative;
       padding-left: 22px;
+      margin-bottom: 10px;
       animation: rise 0.2s ease both;
     }
 
@@ -1633,7 +1570,7 @@ ${this._getJs()}
 
     /* 「回合」模型：一轮对话 = 过程时间线（思考/工具/审批）+ 最终回复。
        时间线容器先于回复气泡插入 DOM，因此过程天然呈现在回复之上。 */
-    let currentTurn = null;        // { rootEl, traceEl, traceBodyEl, countEl, liveEl, stepCount }
+    let currentTurn = null;        // { rootEl }
     let currentAssistantEl = null; // 当前流式回复气泡
     let currentAssistantRow = null; // 当前流式回复消息行（包含操作栏）
     let currentAssistantTxt = '';
@@ -1698,63 +1635,30 @@ ${this._getJs()}
 
     // ══ 回合与过程时间线 ══
 
-    /** 取得（或懒创建）当前回合。回合内 trace 在前、回复在后。 */
+    /** 取得（或懒创建）当前回合。回合内思考/工具步骤与回复气泡按发生顺序交错排列。 */
     function ensureTurn() {
       if (currentTurn) return currentTurn;
       clearPlaceholder();
 
       const root = document.createElement('div');
       root.className = 'turn';
-
-      const trace = document.createElement('div');
-      trace.className = 'trace';
-
-      const header = document.createElement('div');
-      header.className = 'trace-header';
-      header.innerHTML = \`
-        <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M4 6l4 4 4-4H4z"/>
-        </svg>
-        <span>过程</span>
-        <span class="trace-count">0</span>
-        <span class="trace-live"></span>
-      \`;
-      header.addEventListener('click', () => trace.classList.toggle('collapsed'));
-
-      const body = document.createElement('div');
-      body.className = 'trace-body';
-
-      trace.appendChild(header);
-      trace.appendChild(body);
-      root.appendChild(trace);
       messagesEl.appendChild(root);
 
-      currentTurn = {
-        rootEl: root,
-        traceEl: trace,
-        traceBodyEl: body,
-        countEl: header.querySelector('.trace-count'),
-        liveEl: header.querySelector('.trace-live'),
-        stepCount: 0,
-      };
+      currentTurn = { rootEl: root };
       return currentTurn;
     }
 
-    /** 把一个步骤挂到当前回合的时间线上。 */
+    /** 把一个步骤（思考/工具/计划）挂到当前回合消息流末尾，与回复按时间顺序交错。 */
     function addStep(el) {
       const turn = ensureTurn();
-      turn.traceBodyEl.appendChild(el);
-      turn.stepCount += 1;
-      turn.countEl.textContent = turn.stepCount;
+      turn.rootEl.appendChild(el);
       smartScrollToBottom();
       return turn;
     }
 
-    /** 回合收尾：停掉 live 指示灯，过程默认折叠，让最终回复成为焦点。 */
+    /** 回合收尾：清空回合引用与思考块状态，准备下一回合。 */
     function finishTurn() {
       if (!currentTurn) return;
-      if (currentTurn.liveEl) currentTurn.liveEl.style.display = 'none';
-      if (currentTurn.stepCount > 0) currentTurn.traceEl.classList.add('collapsed');
       currentTurn = null;
       currentThoughtEl = null;
       currentThoughtTxt = '';
@@ -2454,7 +2358,7 @@ ${this._getJs()}
       }
     }
 
-    /** 回复气泡挂在当前回合尾部——因此永远排在过程时间线之后。 */
+    /** 回复气泡挂在当前回合消息流末尾——与思考/工具步骤按发生顺序交错。 */
     function appendAssistantBubble(streaming) {
       const turn = ensureTurn();
       const row = document.createElement('div');
@@ -2498,6 +2402,9 @@ ${this._getJs()}
       }
       currentAssistantEl = null;
       currentAssistantTxt = '';
+      // 步末收尾思考块：结束当前步骤的思考，下一步思考另起一块（避免多步思考聚合在一起）
+      currentThoughtEl = null;
+      currentThoughtTxt = '';
     }
 
     function appendMsgFromHistory(role, text, tokenUsage) {
@@ -2712,14 +2619,14 @@ ${this._getJs()}
                 showToolState('tool', 'success', undefined, m.toolCallId, undefined, m.content);
               }
             } else if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
-              // 含工具调用的 assistant 消息：先渲染工具 pending 步骤，再渲染回复文本
+              // 含工具调用的 assistant 消息：先渲染回复文本，再渲染工具步骤（与实时交错顺序一致）
+              if (m.content) {
+                appendMsgFromHistory('assistant', m.content);
+              }
               for (const tc of m.toolCalls) {
                 let parsedArgs;
                 try { parsedArgs = JSON.parse(tc.arguments); } catch { parsedArgs = {}; }
                 showToolState(tc.name, 'success', undefined, tc.id, parsedArgs);
-              }
-              if (m.content) {
-                appendMsgFromHistory('assistant', m.content);
               }
             } else {
               appendMsgFromHistory(m.role, m.content);

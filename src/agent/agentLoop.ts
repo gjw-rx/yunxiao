@@ -23,6 +23,7 @@ import type { CompactionConfig } from './compaction';
 import { compactIfNeeded } from './compaction';
 import { randomUUID } from 'crypto';
 import { DoomLoopDetector } from './doomLoopDetector';
+import { ToolValidationError } from '../core/errors';
 import * as logger from '../logger';
 
 /** AgentLoop 配置 */
@@ -443,11 +444,17 @@ export class AgentLoop {
 			result = await this.toolRouter.route(coreCall, toolContext);
 			logger.log(`[AgentLoop] 工具 ${coreCall.tool} 执行完成 status=${result.status}`);
 		} catch (error) {
-			logger.notifyError(`[AgentLoop] 工具 ${coreCall.tool} 执行异常`, error instanceof Error ? error.message : String(error));
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			if (error instanceof ToolValidationError) {
+				// 模型传参错误：属可预期的业务错误，不记 ERROR 弹窗，作为普通工具错误返回由模型自行修正
+				logger.log(`[AgentLoop] 工具 ${coreCall.tool} 参数校验失败: ${errorMsg}`);
+			} else {
+				logger.notifyError(`[AgentLoop] 工具 ${coreCall.tool} 执行异常`, errorMsg);
+			}
 			result = {
 				call_id: coreCall.call_id,
 				status: 'error',
-				error: error instanceof Error ? error.message : String(error),
+				error: errorMsg,
 			};
 		}
 

@@ -6,11 +6,13 @@
  * - { path, patch }：应用 unified diff（经 diffEngine，含上下文匹配与冲突检测）。
  *
  * 流程：pathGuard 解析 -> 重读文件（防并发覆盖）-> 计算 proposed -> 生成 diff ->
- *   写 proposed 到临时预览文件 -> vscode.diff 预览 -> 审批 -> 通过则原子 rename 应用，拒绝则 cancelled。
+ *   写旧/新快照到系统临时目录 -> vscode.diff 预览（旧 vs 新）-> 审批 ->
+ *   通过则写入目标文件且保留快照（diff 视图保持打开），拒绝则 cancelled。
  * handlesOwnApproval=true：路由层跳过统一审批，由本工具在 execute 内弹一次（预览后）。
  */
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as crypto from 'crypto';
 import {
 	BaseTool,
@@ -149,22 +151,30 @@ export class CodeEditTool extends BaseTool {
 		// 4. 生成 diff
 		const diff = createDiff(content, proposed, resolved.relativePath);
 
-		// 5. 写 proposed 到临时预览文件
-		const dir = path.dirname(resolved.fsPath);
-		const previewPath = path.join(
-			dir,
-			`.${path.basename(resolved.fsPath)}.${crypto.randomUUID()}.code-edit-preview`
-		);
+		// 5. 写旧/新快照到系统临时目录并打开 diff 预览。
+		//    临时文件放系统临时目录而非工作区内：不污染工作区，也不会让第三方扩展
+		//    （如 gitblame）对工作区内的临时文件建立 watch 后因文件被删而报 ENOENT。
+		//    before/after 保留原文件名，diff 视图可正确高亮；应用成功后保留该任务目录，
+		//    diff 视图保持打开（左=修改前，右=修改后），陈旧目录在下一次编辑时自动清理。
+		const taskDir = path.join(PREVIEW_TMP_ROOT, crypto.randomUUID());
+		const snapshotPath = path.join(taskDir, 'before', path.basename(resolved.fsPath));
+		const previewPath = path.join(taskDir, 'after', path.basename(resolved.fsPath));
+		const cleanupTemp = (): Promise<void> =>
+			fs.rm(taskDir, { recursive: true, force: true }).catch(() => { });
 		try {
+			await sweepStalePreviews();
+			await fs.mkdir(path.dirname(snapshotPath), { recursive: true });
+			await fs.mkdir(path.dirname(previewPath), { recursive: true });
+			await fs.writeFile(snapshotPath, content, 'utf8');
 			await fs.writeFile(previewPath, proposed, 'utf8');
-			// 6. diff 预览
+			// 6. diff 预览：左=修改前快照，右=修改后内容
 			await this.diffViewer.showDiff(
-				resolved.fsPath,
+				snapshotPath,
 				previewPath,
 				`code.edit: ${inputPath}`
 			);
 		} catch {
-			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => { });
+			await cleanupTemp();
 			// 预览失败不阻断应用（降级为无预览）
 		}
 
@@ -180,7 +190,7 @@ export class CodeEditTool extends BaseTool {
 
 		// 8. 应用或取消
 		if (decision === 'deny' || context.abortSignal?.aborted) {
-			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => { });
+			await cleanupTemp();
 			return {
 				status: 'cancelled',
 				error: context.abortSignal?.aborted ? '执行已取消' : '用户拒绝执行',
@@ -191,7 +201,7 @@ export class CodeEditTool extends BaseTool {
 		try {
 			const currentContent = await fs.readFile(resolved.fsPath, 'utf8');
 			if (currentContent !== content) {
-				await fs.rm(previewPath, { force: true, recursive: true }).catch(() => { });
+				await cleanupTemp();
 				return {
 					status: 'error',
 					error: `文件已被并发修改，未应用审批前生成的编辑: ${inputPath}`,
@@ -199,7 +209,7 @@ export class CodeEditTool extends BaseTool {
 				};
 			}
 		} catch {
-			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => { });
+			await cleanupTemp();
 			return {
 				status: 'error',
 				error: `文件已被并发修改或删除，未应用审批前生成的编辑: ${inputPath}`,
@@ -208,7 +218,7 @@ export class CodeEditTool extends BaseTool {
 		}
 
 		if (context.abortSignal?.aborted) {
-			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => { });
+			await cleanupTemp();
 			return {
 				status: 'cancelled',
 				error: '执行已取消',
@@ -216,11 +226,18 @@ export class CodeEditTool extends BaseTool {
 			};
 		}
 
+		const applyTmp = path.join(
+			path.dirname(resolved.fsPath),
+			`.${path.basename(resolved.fsPath)}.${crypto.randomUUID()}.tmp`
+		);
 		try {
-			// 原子应用：rename 预览文件到目标
-			await fs.rename(previewPath, resolved.fsPath);
+			// 原子应用：同目录临时文件 + rename（与 fs.write_file 一致，避免半写）；
+			// tmpdir 中的 before/after 快照保留，diff 视图保持打开（旧 vs 新）
+			await fs.writeFile(applyTmp, proposed, 'utf8');
+			await fs.rename(applyTmp, resolved.fsPath);
 		} catch (err) {
-			await fs.rm(previewPath, { force: true, recursive: true }).catch(() => { });
+			await fs.rm(applyTmp, { force: true }).catch(() => { });
+			await cleanupTemp();
 			return {
 				status: 'error',
 				error: `应用编辑失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -245,6 +262,34 @@ export class CodeEditTool extends BaseTool {
 		const snippet = diff.length > 600 ? diff.slice(0, 600) + '\n...(diff 已截断)' : diff;
 		return `code.edit 将修改 ${inputPath}（${mode} 模式）：\n${snippet}`;
 	}
+}
+
+/** code.edit 预览快照的任务根目录（系统临时目录下，不在工作区内）。 */
+const PREVIEW_TMP_ROOT = path.join(os.tmpdir(), 'yunxiao-agent-code-edit');
+
+/** 快照任务目录的最大保留时长：超过后在下一次 code.edit 时清理（短期保留供 diff 视图，避免永久累积）。 */
+const PREVIEW_MAX_AGE_MS = 60 * 60 * 1000;
+
+/** 清理超过最大保留时长的旧预览任务目录（best-effort，根目录不存在时静默返回）。 */
+async function sweepStalePreviews(): Promise<void> {
+	let entries;
+	try {
+		entries = await fs.readdir(PREVIEW_TMP_ROOT, { withFileTypes: true });
+	} catch {
+		return; // 根目录尚未创建
+	}
+	const now = Date.now();
+	await Promise.all(
+		entries
+			.filter((e) => e.isDirectory())
+			.map(async (e) => {
+				const dir = path.join(PREVIEW_TMP_ROOT, e.name);
+				const st = await fs.stat(dir).catch(() => null);
+				if (st && now - st.mtimeMs > PREVIEW_MAX_AGE_MS) {
+					await fs.rm(dir, { recursive: true, force: true }).catch(() => { });
+				}
+			}),
+	);
 }
 
 /** 统计子串出现次数（空串返回 0）。 */
