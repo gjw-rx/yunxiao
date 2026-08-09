@@ -2589,7 +2589,7 @@ ${this._getJs()}
       if (p) p.remove();
     }
 
-    /** 清空消息流与所有回合级 DOM 引用。 */
+    /** 清空消息流、所有回合级 DOM 引用与会话级 token 累计条（新建/切换会话后清零）。 */
     function resetConversation() {
       messagesEl.innerHTML = '';
       selectedFiles = [];
@@ -2606,6 +2606,17 @@ ${this._getJs()}
       currentThoughtEl = null;
       userTurnCount = 0;
       currentThoughtTxt = '';
+      // 会话级 token 累计条一并清零：新会话历史为空时不会重新触发 showSessionTokenUsage，
+      // 若不重置会残留上一会话的累计数字
+      const tokenBar = document.getElementById('sessionTokenBar');
+      if (tokenBar) {
+        tokenBar.hidden = true;
+        const totalEl = tokenBar.querySelector('.stb-total');
+        if (totalEl) totalEl.textContent = '0';
+        const itemsEl = tokenBar.querySelector('.stb-items');
+        if (itemsEl) itemsEl.innerHTML = '';
+        tokenBar.title = '';
+      }
     }
 
     /** 判断用户是否在底部附近（用于流式输出时决定是否自动跟随） */
