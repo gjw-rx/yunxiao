@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as logger from '../logger';
 import type { Skill } from '../skill/types';
+import type { ProjectRules } from './projectRules';
 
 /** 默认 Agent 系统提示词。借鉴 opencode default.txt + anthropic.txt 设计。 */
 export const DEFAULT_AGENT_PROMPT = `You are an AI coding assistant integrated into VSCode. You help users with software engineering tasks by understanding their codebase, making changes, and running commands.
@@ -102,6 +103,8 @@ export interface SystemPromptContext {
 	readonly modelId?: string;
 	/** Provider ID（如 "openai"） */
 	readonly providerId?: string;
+	/** 项目级规范（CLAUDE.md / AGENTS.md 内容） */
+	readonly projectRules?: ProjectRules | null;
 }
 
 /** 检测目录是否为 git 仓库 */
@@ -159,7 +162,21 @@ function buildSkillGuidance(skills: readonly Skill[]): string {
 	].join('\n');
 }
 
-/** 构建完整系统提示词：Agent 提示词 + 环境信息 + Skill guidance。 */
+/** 构建项目规范段。无项目规范时返回空字符串。 */
+function buildProjectRulesSection(rules: ProjectRules | null | undefined): string {
+	if (!rules) {
+		return '';
+	}
+	return [
+		'# 项目级规范',
+		`以下内容为项目级规范（来源：${rules.source}），做任何开发工作都必须遵循：`,
+		'<project_rules>',
+		rules.content,
+		'</project_rules>',
+	].join('\n');
+}
+
+/** 构建完整系统提示词：Agent 提示词 + 环境信息 + 项目规范 + Skill guidance。 */
 export function buildSystemPrompt(context: SystemPromptContext): string {
 	const sections: string[] = [];
 
@@ -169,13 +186,22 @@ export function buildSystemPrompt(context: SystemPromptContext): string {
 	// 环境信息
 	sections.push(buildEnvironmentSection(context));
 
+	// 项目级规范（存在则注入）
+	const rulesSection = buildProjectRulesSection(context.projectRules);
+	if (rulesSection) {
+		sections.push(rulesSection);
+	}
+
 	// Skill guidance（为空则跳过）
 	const guidance = buildSkillGuidance(context.skills);
 	if (guidance) {
 		sections.push(guidance);
 	}
 
-	logger.log(`[SystemPrompt] 构建完成 length=${sections.join('\n\n').length} 自定义=${context.agentPrompt?.trim() ? 'yes' : 'no'} skills=${context.skills.length}`);
+	const systemPrompt = sections.join('\n\n');
 
-	return sections.join('\n\n');
+	logger.log(`[SystemPrompt] 构建完成 length=${systemPrompt.length} 自定义=${context.agentPrompt?.trim() ? 'yes' : 'no'} skills=${context.skills.length} projectRules=${context.projectRules?.source ?? 'none'}`);
+	logger.log(`[SystemPrompt] 完整内容如下：\n${systemPrompt}`);
+
+	return systemPrompt;
 }

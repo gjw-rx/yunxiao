@@ -10,6 +10,8 @@ export interface SkillFrontmatter {
 	readonly description: string;
 	/** 是否支持 / 命令触发 */
 	readonly slash?: boolean;
+	/** Skill 类型：agent=子智能体，skill=普通 Skill（缺省为 skill） */
+	readonly type?: 'agent' | 'skill';
 }
 
 /** Skill 定义。 */
@@ -20,6 +22,8 @@ export interface Skill {
 	readonly description: string;
 	/** 是否支持 / 命令触发 */
 	readonly slash?: boolean;
+	/** Skill 类型：agent=子智能体，skill=普通 Skill（缺省为 skill） */
+	readonly type?: 'agent' | 'skill';
 	/** Markdown 正文（Skill 指令内容） */
 	readonly content: string;
 	/** 来源文件路径（目录加载时填充） */

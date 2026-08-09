@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as os from 'os';
 import { ChatViewProvider } from './chatPanel';
 import { ToolRegistry } from './core/toolRegistry';
 import { ToolRouter } from './core/toolRouter';
@@ -34,6 +35,7 @@ import { SkillRegistry } from './skill/skillRegistry';
 import { loadSkillsFromDirectory } from './skill/skillLoader';
 import { SkillTool } from './skill/skillTool';
 import { getModelConfig } from './config/modelConfig';
+import { getSyncEnabled, onClaudeConfigChange } from './config/claudeConfig';
 import { createProvider } from './llm/provider';
 import { MessageStore } from './memory/messageStore';
 import { AgentLoop } from './agent/agentLoop';
@@ -150,6 +152,52 @@ async function _activate(context: vscode.ExtensionContext) {
 		}
 	}
 	registry.register(new SkillTool(skillRegistry));
+
+	// 将 skillRegistry 注入 provider，供斜杠命令数据组装
+	provider.setSkillRegistry(skillRegistry);
+
+	// Claude 目录 SKILL 同步（「同步CLAUDE配置」开启时加载 ~/.claude/skills 与项目 .claude/skills）
+	// 记录本次同步注册的 skill 名，配置关闭时据此卸载
+	let claudeSkillNames: string[] = [];
+	const syncClaudeSkills = async (): Promise<void> => {
+		for (const name of claudeSkillNames) {
+			skillRegistry.unregister(name);
+			logger.log(`[Extension] 卸载 Claude 目录 Skill name=${name}`);
+		}
+		claudeSkillNames = [];
+		if (!getSyncEnabled()) {
+			provider.refreshSlashCommands();
+			return;
+		}
+		const workspaceRoot = workspaceRoots[0] ?? process.cwd();
+		const claudeDirs = [
+			path.join(os.homedir(), 'claude', 'skills'),
+			path.join(workspaceRoot, '.claude', 'skills'),
+		];
+		for (const dir of claudeDirs) {
+			const loaded = await loadSkillsFromDirectory(dir);
+			for (const skill of loaded) {
+				// 去重：显式配置目录优先，Claude 目录同名不覆盖（仅补缺）
+				if (skillRegistry.get(skill.name)) {
+					logger.log(`[Extension] 跳过同名 Skill（显式目录优先） name=${skill.name} 目录=${dir}`);
+					continue;
+				}
+				skillRegistry.register(skill);
+				claudeSkillNames.push(skill.name);
+			}
+			if (loaded.length > 0) {
+				logger.log(`[Extension] 从 Claude 目录加载了 ${loaded.length} 个 Skill: ${dir}`);
+			}
+		}
+		provider.refreshSlashCommands();
+	};
+	await syncClaudeSkills();
+	// 配置变更热生效：重新同步并刷新斜杠命令数据
+	context.subscriptions.push(
+		onClaudeConfigChange(() => {
+			void syncClaudeSkills();
+		})
+	);
 
 	// 工具路由
 	const metrics = new ReliabilityMetrics();

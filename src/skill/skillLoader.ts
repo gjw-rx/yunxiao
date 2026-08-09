@@ -72,6 +72,7 @@ export function parseFrontmatter(raw: string): {
 		name: fields.name,
 		description: fields.description,
 		slash: fields.slash === 'true',
+		type: fields.type === 'agent' ? 'agent' : fields.type === 'skill' ? 'skill' : undefined,
 	};
 
 	return { frontmatter, body };
@@ -120,6 +121,7 @@ export async function loadSkillsFromDirectory(dirPath: string): Promise<Skill[]>
 			name: frontmatter.name,
 			description: frontmatter.description,
 			slash: frontmatter.slash,
+			type: frontmatter.type,
 			content: body,
 			sourcePath: filePath,
 		});

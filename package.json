@@ -201,6 +201,12 @@
           "description": "Skill 搜索目录列表（相对工作区根的路径），插件将从这些目录加载 Markdown 格式的 Skill",
           "scope": "window"
         },
+        "yunxiaoAgent.claude.syncEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "同步CLAUDE配置：开启后读取 Claude 目录中的 SKILL（~/.claude/skills 与项目 .claude/skills）注册进 Skill 系统，供斜杠菜单与 Skill 工具使用；本期仅同步 SKILL 与项目 CLAUDE.md",
+          "scope": "window"
+        },
         "yunxiaoAgent.agent.maxSteps": {
           "type": "number",
           "default": 50,

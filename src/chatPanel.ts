@@ -4,6 +4,8 @@ import { promises as fs } from 'fs';
 import type { ToolRegistry } from './core/toolRegistry';
 import type { EventBus, AgentEvent } from './core/eventBus';
 import type { LocalSessionManager } from './core/localSessionManager';
+import type { SkillRegistry } from './skill/skillRegistry';
+import { buildSlashCommandGroups } from './chat/slashCommands';
 import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
 import * as logger from './logger';
 
@@ -34,6 +36,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _createSessionRequest = 0;
   private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
   private readonly _sessionNames = new Map<string, string>();
+  private _skillRegistry?: SkillRegistry;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -42,6 +45,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._registry = deps.registry;
     this._sessionManager = deps.sessionManager;
     this._eventBus = deps.eventBus;
+  }
+
+  /**
+   * 注入 Skill 注册表（装配完成后调用，用于组装斜杠命令数据）。
+   *
+   * @param skillRegistry Skill 注册表
+   */
+  setSkillRegistry(skillRegistry: SkillRegistry): void {
+    this._skillRegistry = skillRegistry;
+  }
+
+  /**
+   * 向 webview 推送最新的斜杠命令分组数据（webview 未就绪时忽略）。
+   */
+  private _pushSlashCommands(view: vscode.WebviewView): void {
+    view.webview.postMessage({
+      command: 'slashCommands',
+      groups: buildSlashCommandGroups(this._skillRegistry),
+    });
+  }
+
+  /**
+   * 刷新斜杠命令数据：skill 注册/配置变更后由扩展侧调用，重新推送分组。
+   */
+  refreshSlashCommands(): void {
+    if (this._view) {
+      this._pushSlashCommands(this._view);
+    }
   }
 
   resolveWebviewView(
@@ -79,6 +110,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (modelName) {
       webviewView.webview.postMessage({ command: 'modelInfo', model: modelName });
     }
+
+    // 推送斜杠命令分组（webview 侧亦可主动 requestSlashCommands 拉取）
+    this._pushSlashCommands(webviewView);
   }
 
   /** 将当前会话的事件总线事件转发给 webview。 */
@@ -281,8 +315,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
-      case 'requestWorkspaceFiles': {
-        const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+      case 'requestSlashCommands': {
+        // webview 主动拉取斜杠命令分组（应对 webview 重建后的数据丢失）
+        this._pushSlashCommands(view);
+        break;
+      }
+      case 'requestWorkspaceFiles': {        const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
         if (workspaceFolders.length === 0) {
           view.webview.postMessage({ command: 'workspaceFiles', files: [] });
           break;
@@ -1167,6 +1205,7 @@ ${this._getJs()}
     .file-option-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
     .file-picker-empty { padding: 12px 10px; color: var(--muted); font-size: 12px; }
     #slashCommandList { padding: 0 4px 4px; }
+    .slash-command-group-label { padding: 6px 8px 4px; color: var(--muted); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
     .slash-command-option {
       display: grid;
       grid-template-columns: 24px minmax(0, 1fr) auto;
@@ -1610,7 +1649,7 @@ ${this._getJs()}
     let selectedFiles = [];
     let slashCommandIndex = 0;
     let filteredSlashCommands = [];
-    const slashCommands = [];
+    let slashCommandGroups = [];
 
     /* 「回合」模型：一轮对话 = 过程时间线（思考/工具/审批）+ 最终回复。
        时间线容器先于回复气泡插入 DOM，因此过程天然呈现在回复之上。 */
@@ -2003,16 +2042,23 @@ ${this._getJs()}
       if (
         cursorPos !== text.length
         || !commandText.startsWith('/')
-        || /\\s/.test(commandText)
+        || /\s/.test(commandText)
       ) {
         closeSlashCommandPicker();
         return;
       }
 
       const query = commandText.slice(1).toLowerCase();
-      filteredSlashCommands = slashCommands.filter((command) =>
-        command.command.startsWith(query)
-      );
+      // 展平分组并按命令词前缀过滤（附带所属分组标签供分组渲染）
+      const flat = [];
+      for (const group of slashCommandGroups) {
+        for (const cmd of (group.commands || [])) {
+          if (cmd.command.toLowerCase().startsWith(query)) {
+            flat.push(Object.assign({}, cmd, { groupLabel: group.label }));
+          }
+        }
+      }
+      filteredSlashCommands = flat;
       if (filteredSlashCommands.length === 0) {
         closeSlashCommandPicker();
         return;
@@ -2028,15 +2074,27 @@ ${this._getJs()}
     }
 
     function renderSlashCommands() {
-      slashCommandList.innerHTML = filteredSlashCommands.map((command, index) =>
-        '<button class="slash-command-option' + (index === slashCommandIndex ? ' active' : '') +
-        '" role="option" data-index="' + index + '">' +
-        '<span class="slash-command-icon">/</span>' +
-        '<span class="slash-command-copy"><span class="slash-command-name">' +
-        escapeHtml(command.label) + '</span><span class="slash-command-description">' +
-        escapeHtml(command.description) + '</span></span>' +
-        '<span class="slash-command-key">Enter</span></button>'
-      ).join('');
+      // 按分组标签聚合渲染：分组标题 + 组内命令
+      const byGroup = {};
+      for (const cmd of filteredSlashCommands) {
+        (byGroup[cmd.groupLabel] = byGroup[cmd.groupLabel] || []).push(cmd);
+      }
+      let idx = 0;
+      let html = '';
+      for (const label of Object.keys(byGroup)) {
+        html += '<div class="slash-command-group-label">' + escapeHtml(label) + '</div>';
+        for (const command of byGroup[label]) {
+          html += '<button class="slash-command-option' + (idx === slashCommandIndex ? ' active' : '') +
+            '" role="option" data-index="' + idx + '">' +
+            '<span class="slash-command-icon">/</span>' +
+            '<span class="slash-command-copy"><span class="slash-command-name">' +
+            escapeHtml(command.label) + '</span><span class="slash-command-description">' +
+            escapeHtml(command.description || '') + '</span></span>' +
+            '<span class="slash-command-key">Enter</span></button>';
+          idx++;
+        }
+      }
+      slashCommandList.innerHTML = html;
       slashCommandList.querySelectorAll('.slash-command-option').forEach((option) => {
         option.addEventListener('mousedown', (e) => e.preventDefault());
         option.addEventListener('click', () => {
@@ -2047,9 +2105,27 @@ ${this._getJs()}
 
     function selectSlashCommand(command) {
       if (!command) return;
-      inputEl.value = '';
-      autoResize();
       closeSlashCommandPicker();
+      // 特殊动作：直接触发扩展侧命令
+      if (command.action === 'newSession') {
+        vscode.postMessage({ command: 'createSession' });
+        return;
+      }
+      if (command.action === 'stopStream') {
+        if (currentSessionId) {
+          vscode.postMessage({ command: 'stopStream', sessionId: currentSessionId });
+        }
+        return;
+      }
+      // 回填命令文本
+      inputEl.value = '/' + command.command;
+      autoResize();
+      if (command.send) {
+        // send=true：直接发送；send=false：回填后由用户编辑
+        handleSend();
+      } else {
+        inputEl.focus();
+      }
     }
 
     function closeSlashCommandPicker() {
@@ -2772,10 +2848,18 @@ ${this._getJs()}
         case 'modelInfo':
           document.getElementById('modelName').textContent = msg.model || '--';
           break;
+        case 'slashCommands':
+          slashCommandGroups = msg.groups || [];
+          // 若菜单正打开，立即按当前输入重算过滤
+          if (slashCommandPicker.classList.contains('show')) {
+            handleSlashTrigger();
+          }
+          break;
       }
     });
 
     // init - auto-create first session
+    vscode.postMessage({ command: 'requestSlashCommands' });
     vscode.postMessage({ command: 'createSession' });
 `;
   }

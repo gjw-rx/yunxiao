@@ -19,6 +19,7 @@ import type { ToolResult, ToolCall } from '../core/types';
 import type { SkillRegistry } from '../skill/skillRegistry';
 import { toolSchemasToDefinitions, llmToolCallToCoreToolCall, toolResultToContent } from './toolAdapter';
 import { buildSystemPrompt } from './systemPrompt';
+import { loadProjectRules } from './projectRules';
 import type { CompactionConfig } from './compaction';
 import { compactIfNeeded } from './compaction';
 import { estimateText, estimateRequest } from './tokenEstimator';
@@ -142,7 +143,7 @@ export class AgentLoop {
 				// ── 2. 加载完整历史（每轮重新加载，确保模型看到完整上下文）──
 				const history = loadHistoryForLLM(sessionId, this.messageStore);
 
-				// ── 3. 构建系统提示词 ──
+				// ── 3. 构建系统提示词（每轮重读项目规范，保证使用最新内容）──
 				const systemPrompt = buildSystemPrompt({
 					agentPrompt: this.config.agentPrompt,
 					skills: this.config.skillRegistry?.list() ?? [],
@@ -151,6 +152,7 @@ export class AgentLoop {
 					date: new Date().toISOString().slice(0, 10),
 					modelId: this.config.model,
 					providerId: this.config.providerId,
+					projectRules: await loadProjectRules(this.config.workspaceRoots[0] ?? ''),
 				});
 
 				// ── 4. 组装消息 ──
