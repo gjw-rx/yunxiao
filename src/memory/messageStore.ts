@@ -54,6 +54,12 @@ export class MessageStore {
 			truncated = true;
 		}
 		if (this.fileStore) {
+			// 延迟创建：会话索引无条目（空会话，从未落盘）时先建立记录，再追加首条消息。
+			// 保证「新建会话」不产生记录，只有真正有内容的会话才会写入索引与 JSONL 文件。
+			if (!this.fileStore.getSession(sessionId)) {
+				this.fileStore.createSession(sessionId);
+				logger.log(`[MessageStore] 首条消息延迟建立会话记录 sessionId=${sessionId}`);
+			}
 			if (truncated) {
 				// 触发上限截断时整体重写文件（否则 JSONL 无限增长、重启后读回超限）
 				this.fileStore.rewriteSession(sessionId, messages);

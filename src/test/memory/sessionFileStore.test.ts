@@ -190,6 +190,23 @@ describe('MessageStore 文件模式', () => {
 		fs.rmSync(baseDir, { recursive: true, force: true });
 	});
 
+	it('延迟创建：空会话不落盘，首条消息自动建立记录', async () => {
+		// 模拟「新建会话」后未发消息：不调用 createSession，索引与文件均无记录
+		assert.deepStrictEqual(store.listSessions(), []);
+		const jsonl = path.join(fileStore.sessionDirPath, 's-new.jsonl');
+		assert.ok(!fs.existsSync(jsonl));
+
+		// 首条消息自动建立索引条目并落盘（标题由首条用户消息生成）
+		store.append('s-new', { role: 'user', content: 'hello' });
+		await fileStore.flush();
+		const meta = fileStore.getSession('s-new');
+		assert.ok(meta);
+		assert.strictEqual(meta!.messageCount, 1);
+		assert.strictEqual(meta!.title, 'hello');
+		assert.ok(fs.existsSync(jsonl));
+		assert.strictEqual(store.listSessions().length, 1);
+	});
+
 	it('append 追加到文件，新实例可恢复', async () => {
 		store.createSession('s1');
 		store.append('s1', { role: 'user', content: 'hello' });

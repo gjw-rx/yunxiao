@@ -31,13 +31,15 @@ export class LocalSessionManager {
 		private readonly messageStore: MessageStore,
 	) {}
 
-	/** 创建新会话，返回会话 ID。旧会话数据保留（不清空），仅切换当前指针。 */
+	/**
+	 * 创建新会话，返回会话 ID。旧会话数据保留（不清空），仅切换当前指针。
+	 * 采用延迟创建：空会话不落盘（不建立索引条目/JSONL 文件），首条消息时才由
+	 * MessageStore.append 自动建立记录，保证反复「新建会话」但未发消息时不残留空会话记录。
+	 */
 	createSession(): string {
 		const sessionId = randomUUID();
 		this.currentSessionId = sessionId;
-		// 文件存储：建立索引条目并记录为当前会话；workspaceState 模式为空操作
-		this.messageStore.createSession(sessionId);
-		logger.log(`[SessionManager] 创建会话 sessionId=${sessionId}`);
+		logger.log(`[SessionManager] 创建会话 sessionId=${sessionId}（空会话延迟落盘，发消息后建立记录）`);
 		return sessionId;
 	}
 
