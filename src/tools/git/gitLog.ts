@@ -13,6 +13,7 @@ import { ToolValidationError } from '../../core/errors';
 import { createGitClient, type GitToolOptions } from './gitClient';
 import type { ToolSchema } from '../../core/types';
 import type { DefaultLogFields, SimpleGit } from 'simple-git';
+import * as logger from '../../logger';
 
 /** 默认返回条数。 */
 const DEFAULT_MAX_COUNT = 20;
@@ -79,16 +80,19 @@ export class GitLogTool extends BaseTool {
 		const startedAt = Date.now();
 		const root = context.workspaceRoots[0];
 		if (!root) {
+			logger.error('[git.log] 执行失败 - 错误=未打开工作区');
 			return { status: 'error', error: '未打开工作区' };
 		}
 		const git = this.createClient(root);
 
 		if (!(await git.checkIsRepo())) {
+			logger.error(`[git.log] 执行失败 - 错误=当前工作区不是 git 仓库, cwd=${root}`);
 			return { status: 'error', error: '当前工作区不是 git 仓库' };
 		}
 
 		const maxCount = (args.maxCount as number | undefined) ?? DEFAULT_MAX_COUNT;
 		const file = args.path as string | undefined;
+		logger.log(`[git.log] 开始执行 - cwd=${root}, maxCount=${maxCount}, path=${file ?? '未指定'}`);
 		const summary = await git.log({
 			maxCount,
 			...(file ? { file } : {}),
@@ -100,6 +104,7 @@ export class GitLogTool extends BaseTool {
 			date: c.date,
 			message: c.message,
 		}));
+		logger.log(`[git.log] 执行完成 - count=${commits.length}, duration_ms=${Date.now() - startedAt}`);
 
 		return {
 			status: 'success',

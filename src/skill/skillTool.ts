@@ -12,6 +12,7 @@ import {
 } from '../tools/baseTool';
 import type { ToolSchema } from '../core/types';
 import type { SkillRegistry } from './skillRegistry';
+import * as logger from '../logger';
 
 export class SkillTool extends BaseTool {
 	readonly schema: ToolSchema = {
@@ -48,12 +49,14 @@ export class SkillTool extends BaseTool {
 
 		if (!skill) {
 			const available = this.registry.list().map((s) => s.name).join(', ');
+			logger.log(`[SkillTool] 执行 Skill name=${name} 结果=未找到`);
 			return {
 				status: 'error',
 				error: `Skill not found: ${name}. Available skills: ${available || '(none)'}`,
 			};
 		}
 
+		logger.log(`[SkillTool] 执行 Skill name=${name} 结果=成功`);
 		return {
 			status: 'success',
 			result: skill.content,

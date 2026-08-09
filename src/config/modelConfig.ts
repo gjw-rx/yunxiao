@@ -2,6 +2,7 @@
  * 模型配置管理 - 从 VSCode 配置读取模型连接参数。
  */
 import * as vscode from 'vscode';
+import * as logger from '../logger';
 
 /** 模型配置 */
 export interface ModelConfig {
@@ -33,7 +34,7 @@ const DEFAULTS: ModelConfig = {
 /** 从 VSCode 配置读取模型设置 */
 export function getModelConfig(): ModelConfig {
 	const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
-	return {
+	const modelConfig: ModelConfig = {
 		provider: config.get<string>('provider', DEFAULTS.provider),
 		model: config.get<string>('model', DEFAULTS.model),
 		apiKey: config.get<string>('apiKey', DEFAULTS.apiKey),
@@ -41,6 +42,8 @@ export function getModelConfig(): ModelConfig {
 		temperature: config.get<number>('temperature', DEFAULTS.temperature),
 		maxTokens: config.get<number>('maxTokens', DEFAULTS.maxTokens),
 	};
+	logger.log(`[ModelConfig] 读取配置完成 provider=${modelConfig.provider} model=${modelConfig.model || '(未配置)'} apiKey=${modelConfig.apiKey ? '已配置' : '未配置'}`);
+	return modelConfig;
 }
 
 /**

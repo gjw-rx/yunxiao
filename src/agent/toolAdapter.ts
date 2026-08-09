@@ -7,6 +7,7 @@
  */
 import type { ToolDefinition, LLMToolCall } from '../llm/types';
 import type { ToolSchema, ToolCall, ToolResult } from '../core/types';
+import * as logger from '../logger';
 
 /** 将 core 层 ToolSchema 转换为 LLM 层 ToolDefinition，丢弃 permissions/site/canParallel。 */
 export function toolSchemaToDefinition(schema: ToolSchema): ToolDefinition {
@@ -19,6 +20,9 @@ export function toolSchemaToDefinition(schema: ToolSchema): ToolDefinition {
 
 /** 批量转换。 */
 export function toolSchemasToDefinitions(schemas: readonly ToolSchema[]): ToolDefinition[] {
+	if (schemas.length === 0) {
+		logger.log('[ToolAdapter] 转换工具定义数量为 0，LLM 将无工具可用');
+	}
 	return schemas.map(toolSchemaToDefinition);
 }
 

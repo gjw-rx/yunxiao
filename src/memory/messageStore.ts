@@ -3,6 +3,7 @@
  * 管理会话历史消息的增删查改，支持 compaction 检查点和 1000 条上限。
  */
 import type { Message, InputMessage, CompactionMessage } from './types';
+import * as logger from '../logger';
 
 /** workspaceState 接口（与 vscode.Memento 兼容，便于测试注入） */
 export interface WorkspaceState {
@@ -38,12 +39,15 @@ export class MessageStore {
 			messages.shift();
 		}
 		this.persist();
+		logger.log(`[MessageStore] 追加消息 sessionId=${sessionId} seq=${seq} 消息数=${messages.length}`);
 		return stored;
 	}
 
 	/** 返回全部消息（seq 升序）。无 session 返回空数组。 */
 	loadHistory(sessionId: string): Message[] {
-		return this.store.get(sessionId) ?? [];
+		const messages = this.store.get(sessionId) ?? [];
+		logger.log(`[MessageStore] 加载历史 sessionId=${sessionId} 消息数=${messages.length}`);
+		return messages;
 	}
 
 	/** 返回最新 CompactionMessage 或 null。 */

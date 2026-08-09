@@ -4,6 +4,7 @@
  */
 import type { Message } from '../memory/types';
 import type { LLMMessage, ToolDefinition } from '../llm/types';
+import * as logger from '../logger';
 
 /** 估算任意字符串的 token 数（字符数/4）。 */
 export function estimateText(text: string): number {
@@ -42,6 +43,9 @@ export function estimateRequest(
 		for (const tool of tools) {
 			total += estimateText(tool.name + tool.description + JSON.stringify(tool.parameters));
 		}
+	}
+	if (total > 200000) {
+		logger.log(`[TokenEstimator] 请求体 token 估算偏大 total=${total} systemPromptTokens=${estimateText(systemPrompt)} messages=${messages.length} tools=${tools?.length ?? 0}`);
 	}
 	return total;
 }

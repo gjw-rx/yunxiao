@@ -1,5 +1,6 @@
 /** 非幂等本地工具的持久化执行回执。 */
 import type { ToolResult } from './types';
+import * as logger from '../logger';
 
 /** workspaceState 接口（与 vscode.Memento 兼容）。 */
 export interface WorkspaceState {
@@ -48,12 +49,14 @@ export class ToolExecutionJournal {
 		const key = this.key(identity);
 		const existing = receipts[key];
 		if (existing?.state === 'completed') {
+			logger.log('[ToolExecutionJournal] 读取到已完成回执 tool=' + tool + ' callId=' + identity.callId);
 			return { kind: 'completed', result: existing.result };
 		}
 		if (existing?.state === 'started') {
 			return { kind: 'unknown' };
 		}
 		receipts[key] = { state: 'started', scopeId: identity.scopeId, callId: identity.callId, tool };
+		logger.log('[ToolExecutionJournal] 记录开始回执 tool=' + tool + ' callId=' + identity.callId);
 		await this.writeAll(receipts);
 		return { kind: 'started' };
 	}
@@ -63,9 +66,11 @@ export class ToolExecutionJournal {
 		const key = this.key(identity);
 		const started = receipts[key];
 		if (!started || started.state !== 'started') {
+			logger.log('[ToolExecutionJournal] 完成时未找到开始回执 callId=' + identity.callId);
 			return;
 		}
 		receipts[key] = { ...started, state: 'completed', result };
+		logger.log('[ToolExecutionJournal] 记录完成回执 tool=' + started.tool + ' callId=' + identity.callId);
 		await this.writeAll(receipts);
 	}
 

@@ -17,6 +17,7 @@ import { ToolValidationError } from '../../core/errors';
 import { createGitClient, type GitToolOptions } from './gitClient';
 import type { ToolSchema } from '../../core/types';
 import type { SimpleGit } from 'simple-git';
+import * as logger from '../../logger';
 
 type StashAction = 'push' | 'pop' | 'list';
 
@@ -76,9 +77,11 @@ export class GitStashTool extends BaseTool {
 		}
 
 		const action = (args.action as StashAction | undefined) ?? 'push';
+		logger.log(`[git.stash] 开始执行 - cwd=${root}, action=${action}, messageLen=${typeof args.message === 'string' ? args.message.length : 0}`);
 
 		if (action === 'list') {
 			const list = await git.stash(['list']);
+			logger.log(`[git.stash] 执行完成 - action=list, stashCount=${list.length}, duration_ms=${Date.now() - startedAt}`);
 			return {
 				status: 'success',
 				result: JSON.stringify({ stash: list }, null, 2),
@@ -89,6 +92,7 @@ export class GitStashTool extends BaseTool {
 		if (action === 'pop') {
 			try {
 				await git.stash(['pop']);
+				logger.log(`[git.stash] 执行完成 - action=pop, duration_ms=${Date.now() - startedAt}`);
 				return {
 					status: 'success',
 					result: '已恢复最近的 stash 条目',
@@ -96,6 +100,7 @@ export class GitStashTool extends BaseTool {
 				};
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
+				logger.error(`[git.stash] 执行失败 - action=pop, 错误=${msg}`);
 				if (NO_STASH_PATTERN.test(msg)) {
 					return {
 						status: 'error',
@@ -113,6 +118,7 @@ export class GitStashTool extends BaseTool {
 				? ['push', '-m', message]
 				: ['push'];
 		await git.stash(stashArgs);
+		logger.log(`[git.stash] 执行完成 - action=push, messageLen=${typeof message === 'string' ? message.length : 0}, duration_ms=${Date.now() - startedAt}`);
 		return {
 			status: 'success',
 			result:

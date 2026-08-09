@@ -12,6 +12,7 @@ import {
 import { createGitClient, type GitToolOptions } from './gitClient';
 import type { ToolSchema } from '../../core/types';
 import type { SimpleGit, StatusResult } from 'simple-git';
+import * as logger from '../../logger';
 
 /** 各文件列表的截断阈值。 */
 const MAX_FILES = 200;
@@ -104,16 +105,20 @@ export class GitStatusTool extends BaseTool {
 		const startedAt = Date.now();
 		const root = context.workspaceRoots[0];
 		if (!root) {
+			logger.error('[git.status] 执行失败 - 错误=未打开工作区');
 			return { status: 'error', error: '未打开工作区' };
 		}
 		const git = this.createClient(root);
+		logger.log(`[git.status] 开始执行 - cwd=${root}`);
 
 		if (!(await git.checkIsRepo())) {
+			logger.error(`[git.status] 执行失败 - 错误=当前工作区不是 git 仓库, cwd=${root}`);
 			return { status: 'error', error: '当前工作区不是 git 仓库' };
 		}
 
 		const status = await git.status();
 		const mapped = mapStatus(status);
+		logger.log(`[git.status] 执行完成 - staged=${mapped.staged.length}, unstaged=${mapped.unstaged.length}, untracked=${mapped.untracked.length}, truncated=${mapped.truncated ? '是' : '否'}, duration_ms=${Date.now() - startedAt}`);
 
 		return {
 			status: 'success',

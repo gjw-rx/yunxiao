@@ -9,6 +9,8 @@
  * 匹配优先级：dangerous > whitelisted > unknown。
  * 危险模式硬编码不可配置，防止用户误放行。
  */
+import * as logger from '../../logger';
+
 export type CommandCategory = 'dangerous' | 'whitelisted' | 'unknown';
 
 export interface ClassifyResult {
@@ -74,6 +76,7 @@ export class ShellWhitelist {
 		// 1. 危险模式（任一命中即拦截）
 		for (const { pattern, name } of DANGEROUS_PATTERNS) {
 			if (pattern.test(command)) {
+				logger.log(`[ShellWhitelist] 危险命令已拦截 - commandLength=${command.length}, reason=${name}`);
 				return { category: 'dangerous', reason: name };
 			}
 		}

@@ -2,6 +2,7 @@
  * Skill 注册表 - Skill 的注册、注销与查询。
  */
 import type { Skill } from './types';
+import * as logger from '../logger';
 
 export class SkillRegistry {
 	private readonly skills = new Map<string, Skill>();
@@ -9,6 +10,7 @@ export class SkillRegistry {
 	/** 注册 Skill，同名覆盖。 */
 	register(skill: Skill): void {
 		this.skills.set(skill.name, skill);
+		logger.log(`[SkillRegistry] 注册 Skill name=${skill.name} 当前总数=${this.skills.size}`);
 	}
 
 	/** 按名注销 Skill。 */

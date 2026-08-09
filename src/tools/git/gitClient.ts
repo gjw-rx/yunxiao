@@ -5,16 +5,20 @@
  * 默认实现包装 simpleGit(baseDir)。
  */
 import simpleGit, { type SimpleGit } from 'simple-git';
+import * as logger from '../../logger';
 
 /** 创建绑定到指定工作区根的 SimpleGit 客户端。 */
 export function createGitClient(workspaceRoot: string): SimpleGit {
+	logger.log(`[git.client] 创建 git 客户端 - cwd=${workspaceRoot}`);
 	return simpleGit(workspaceRoot);
 }
 
 /** 检测指定目录是否为 git 仓库（非仓库或异常均返回 false）。 */
 export async function isGitRepo(workspaceRoot: string): Promise<boolean> {
 	try {
-		return await simpleGit(workspaceRoot).checkIsRepo();
+		const isRepo = await simpleGit(workspaceRoot).checkIsRepo();
+		logger.log(`[git.client] 仓库检测完成 - cwd=${workspaceRoot}, isRepo=${isRepo}`);
+		return isRepo;
 	} catch {
 		return false;
 	}

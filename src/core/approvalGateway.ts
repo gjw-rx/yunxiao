@@ -10,6 +10,7 @@
  * 本地以工具自身 permission 为准强制审批，不信任云端 require_approval 标志（防御纵深）。
  */
 import type { Permission } from './types';
+import * as logger from '../logger';
 
 /** 审批决策。 */
 export type ApprovalDecision = 'allow' | 'always' | 'deny';
@@ -144,6 +145,7 @@ export class ApprovalGateway {
 		scope: ApprovalScope = defaultScope()
 	): Promise<ApprovalDecision> {
 		const normalizedScope = normalizeScope(scope);
+		logger.log('[ApprovalGateway] 发起审批请求 toolName=' + toolName + ' sessionId=' + (sessionId ?? 'none') + ' callId=' + (callId ?? 'none'));
 		// 1. 持久允许（配置）
 		if (this.matchesScopedApproval(toolName, normalizedScope)) {
 			return 'allow';
@@ -158,6 +160,7 @@ export class ApprovalGateway {
 		}
 		// 3. 弹窗
 		const decision = await this.prompter.prompt({ toolName, summary, sessionId, callId });
+		logger.log('[ApprovalGateway] 审批结果 decision=' + (decision ?? 'closed') + ' toolName=' + toolName + ' sessionId=' + (sessionId ?? 'none'));
 		if (decision === 'allow') {
 			if (sessionId) {
 				let set = this.sessionAllow.get(sessionId);

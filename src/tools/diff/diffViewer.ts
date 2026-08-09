@@ -3,6 +3,7 @@
  * Phase 2 用 VSCode 内置 diff 编辑器；inline webview diff 预览留 Phase 5。
  * vscode 访问可注入，便于无 vscode 单测。
  */
+import * as logger from '../../logger';
 
 /** vscode 能力的最小 shim（便于注入测试）。 */
 export interface VsCodeShim {
@@ -37,11 +38,13 @@ export class DiffViewer {
 		rightFsPath: string,
 		title: string
 	): Promise<void> {
+		logger.log(`[DiffViewer] 打开 diff 预览 - left=${leftFsPath}, right=${rightFsPath}, title=${title}`);
 		await this.shim.executeCommand(
 			'vscode.diff',
 			this.shim.fileUri(leftFsPath),
 			this.shim.fileUri(rightFsPath),
 			title
 		);
+		logger.log(`[DiffViewer] 打开 diff 预览完成 - title=${title}`);
 	}
 }

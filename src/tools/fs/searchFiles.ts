@@ -16,6 +16,7 @@ import {
 import { resolveWithinRoots } from './pathGuard';
 import { PathGuardError } from '../../core/errors';
 import type { ToolSchema } from '../../core/types';
+import * as logger from '../../logger';
 
 /** 单条匹配。 */
 interface SearchMatch {
@@ -72,6 +73,7 @@ export class SearchFilesTool extends BaseTool {
 		const contextLines =
 			typeof args.contextLines === 'number' ? args.contextLines : DEFAULT_CONTEXT_LINES;
 		const startedAt = Date.now();
+		logger.log(`[fs.search_files] 开始 - pattern=${pattern.slice(0, 100)}, mode=${mode}, path=${inputPath}`);
 
 		// 1. 路径安全解析（搜索根）
 		let resolved;
@@ -81,6 +83,7 @@ export class SearchFilesTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
+				logger.error(`[fs.search_files] 路径解析失败 - path=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -96,6 +99,7 @@ export class SearchFilesTool extends BaseTool {
 		} catch (err) {
 			if (isENOENT(err)) {
 				// rg 不存在，回退 Node
+				logger.log(`[fs.search_files] rg 不可用，回退 Node 搜索 - path=${resolved.fsPath}`);
 				usedFallback = true;
 				matches = await this.nodeSearch(
 					pattern,
@@ -105,6 +109,7 @@ export class SearchFilesTool extends BaseTool {
 					context.maxFileSize
 				);
 			} else {
+				logger.error(`[fs.search_files] ripgrep 执行失败 - error=${err instanceof Error ? err.message : String(err)}`);
 				return {
 					status: 'error',
 					error: `ripgrep 执行失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -124,6 +129,7 @@ export class SearchFilesTool extends BaseTool {
 			file: path.relative(root, path.resolve(resolved.fsPath, m.file)).split(path.sep).join('/'),
 		}));
 
+		logger.log(`[fs.search_files] 完成 - path=${inputPath}, matches=${matches.length}, truncated=${truncated}, fallback=${usedFallback}, duration_ms=${Date.now() - startedAt}`);
 		return {
 			status: 'success',
 			result: JSON.stringify(

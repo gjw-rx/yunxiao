@@ -16,6 +16,7 @@ import {
 import { resolveWithinRoots } from '../fs/pathGuard';
 import { PathGuardError, ToolValidationError } from '../../core/errors';
 import type { ToolSchema } from '../../core/types';
+import * as logger from '../../logger';
 
 /** vscode 能力的最小 shim（便于注入测试）。 */
 export interface VsCodeRefShim {
@@ -97,6 +98,7 @@ export class FindReferencesTool extends BaseTool {
 		const line = args.line as number;
 		const column = args.column as number;
 		const startedAt = Date.now();
+		logger.log(`[code.find_references] 开始执行 - file=${inputPath}, line=${line}, column=${column}`);
 
 		// 1. 路径安全解析
 		let resolved;
@@ -106,6 +108,7 @@ export class FindReferencesTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
+				logger.error(`[code.find_references] 路径解析失败 - file=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -115,6 +118,7 @@ export class FindReferencesTool extends BaseTool {
 		try {
 			await fs.stat(resolved.fsPath);
 		} catch {
+			logger.error(`[code.find_references] 文件不存在 - file=${inputPath}`);
 			return { status: 'error', error: `文件不存在: ${inputPath}` };
 		}
 
@@ -131,6 +135,7 @@ export class FindReferencesTool extends BaseTool {
 				position
 			);
 		} catch (err) {
+			logger.error(`[code.find_references] 查找引用失败 - file=${inputPath}, line=${line}, column=${column}, error=${err instanceof Error ? err.message : String(err)}`);
 			return {
 				status: 'error',
 				error: `查找引用失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -174,6 +179,7 @@ export class FindReferencesTool extends BaseTool {
 			output.total = totalOut;
 		}
 
+		logger.log(`[code.find_references] 执行完成 - file=${inputPath}, 命中数=${references.length}, truncated=${truncated ?? false}, 耗时=${Date.now() - startedAt}ms`);
 		return {
 			status: 'success',
 			result: JSON.stringify(output),

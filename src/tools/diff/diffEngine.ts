@@ -4,6 +4,7 @@
  * code.edit 的底层依赖；纯函数，无需 vscode/文件系统即可单测。
  */
 import { parsePatch, applyPatch, createPatch } from 'diff';
+import * as logger from '../../logger';
 
 /** 解析后的单个 hunk。 */
 export interface ParsedHunk {
@@ -80,7 +81,12 @@ export function createDiff(
 	modified: string,
 	filename = 'file'
 ): string {
-	return createPatch(filename, original, modified, '', '', {
+	logger.log(`[DiffEngine] 开始生成 diff - filename=${filename}, originalLength=${original.length}, modifiedLength=${modified.length}`);
+	const diffStr = createPatch(filename, original, modified, '', '', {
 		context: DEFAULT_CONTEXT,
 	});
+	const addedLines = (diffStr.match(/^\+[^+]/gm) ?? []).length;
+	const removedLines = (diffStr.match(/^-[^-]/gm) ?? []).length;
+	logger.log(`[DiffEngine] 生成完成 - filename=${filename}, fileCount=1, addedLines=${addedLines}, removedLines=${removedLines}`);
+	return diffStr;
 }

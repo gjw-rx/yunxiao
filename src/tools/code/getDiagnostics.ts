@@ -20,6 +20,7 @@ import {
 import { resolveWithinRoots } from '../fs/pathGuard';
 import { PathGuardError } from '../../core/errors';
 import type { ToolSchema } from '../../core/types';
+import * as logger from '../../logger';
 
 /** vscode 语言服务诊断条目（shim 用）。 */
 export interface VsCodeDiagnostic {
@@ -187,6 +188,7 @@ export class GetDiagnosticsTool extends BaseTool {
 		context: ToolContext
 	): Promise<ToolExecutionResult> {
 		const startedAt = Date.now();
+		logger.log(`[code.get_diagnostics] 开始执行 - file=${(args.file as string | undefined) ?? '<全工作区>'}`);
 
 		// 1. 指定文件模式
 		if (args.file !== undefined) {
@@ -200,6 +202,7 @@ export class GetDiagnosticsTool extends BaseTool {
 				});
 			} catch (err) {
 				if (err instanceof PathGuardError) {
+					logger.error(`[code.get_diagnostics] 路径解析失败 - file=${inputPath}, error=${err.message}`);
 					return { status: 'error', error: err.message };
 				}
 				throw err;
@@ -209,6 +212,7 @@ export class GetDiagnosticsTool extends BaseTool {
 			try {
 				await fs.stat(resolved.fsPath);
 			} catch {
+				logger.error(`[code.get_diagnostics] 文件不存在 - file=${inputPath}`);
 				return { status: 'error', error: `文件不存在: ${inputPath}` };
 			}
 
@@ -226,6 +230,7 @@ export class GetDiagnosticsTool extends BaseTool {
 				output.total = total;
 			}
 
+			logger.log(`[code.get_diagnostics] 执行完成 - file=${inputPath}, 命中数=${diagnostics.length}, truncated=${truncated}, total=${total}, 耗时=${Date.now() - startedAt}ms`);
 			return {
 				status: 'success',
 				result: JSON.stringify(output),
@@ -245,6 +250,7 @@ export class GetDiagnosticsTool extends BaseTool {
 			output.truncated = true;
 			output.total = total;
 		}
+		logger.log(`[code.get_diagnostics] 执行完成 - file=<全工作区>, 命中数=${diagnostics.length}, truncated=${truncated}, total=${total}, 耗时=${Date.now() - startedAt}ms`);
 
 		return {
 			status: 'success',

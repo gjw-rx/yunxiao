@@ -27,6 +27,7 @@ import { createDiff, applyDiff } from '../diff/diffEngine';
 import { getFileVersion, getFileVersionFromContent } from '../fs/fileVersion';
 import { DiffViewer } from '../diff/diffViewer';
 import type { ApprovalGateway } from '../../core/approvalGateway';
+import * as logger from '../../logger';
 
 /** code.edit 构造依赖。 */
 export interface CodeEditToolOptions {
@@ -83,6 +84,7 @@ export class CodeEditTool extends BaseTool {
 	): Promise<ToolExecutionResult> {
 		const inputPath = args.path as string;
 		const startedAt = Date.now();
+		logger.log(`[code.edit] 开始执行 - path=${inputPath}, mode=${typeof args.patch === 'string' ? 'patch' : 'replace'}, hasExpectedVersion=${args.expectedVersion !== undefined && args.expectedVersion !== null}`);
 
 		// 1. 路径安全解析
 		let resolved;
@@ -92,6 +94,7 @@ export class CodeEditTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
+				logger.error(`[code.edit] 路径解析失败 - path=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -102,6 +105,7 @@ export class CodeEditTool extends BaseTool {
 		try {
 			content = await fs.readFile(resolved.fsPath, 'utf8');
 		} catch {
+			logger.error(`[code.edit] 文件不存在或不可读 - path=${inputPath}`);
 			return { status: 'error', error: `文件不存在或不可读: ${inputPath}` };
 		}
 		const baseVersion = getFileVersionFromContent(content);
@@ -238,12 +242,14 @@ export class CodeEditTool extends BaseTool {
 		} catch (err) {
 			await fs.rm(applyTmp, { force: true }).catch(() => { });
 			await cleanupTemp();
+			logger.error(`[code.edit] 应用编辑失败 - path=${inputPath}, error=${err instanceof Error ? err.message : String(err)}`);
 			return {
 				status: 'error',
 				error: `应用编辑失败: ${err instanceof Error ? err.message : String(err)}`,
 			};
 		}
 
+		logger.log(`[code.edit] 执行完成 - path=${inputPath}, 状态=成功, 耗时=${Date.now() - startedAt}ms`);
 		return {
 			status: 'success',
 			result: `已应用 1 处编辑: ${inputPath}`,

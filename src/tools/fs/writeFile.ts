@@ -15,6 +15,7 @@ import {
 import { resolveWithinRoots } from './pathGuard';
 import { PathGuardError, ToolValidationError } from '../../core/errors';
 import type { ToolSchema } from '../../core/types';
+import * as logger from '../../logger';
 
 export class WriteFileTool extends BaseTool {
 	readonly schema: ToolSchema = {
@@ -45,6 +46,7 @@ export class WriteFileTool extends BaseTool {
 		const inputPath = args.path as string;
 		const content = args.content as string;
 		const startedAt = Date.now();
+		logger.log(`[fs.write_file] 开始 - path=${inputPath}, contentLength=${content.length}`);
 
 		// 1. 路径安全解析
 		let resolved;
@@ -54,6 +56,7 @@ export class WriteFileTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
+				logger.error(`[fs.write_file] 路径解析失败 - path=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -80,12 +83,14 @@ export class WriteFileTool extends BaseTool {
 		} catch (err) {
 			// 清理残留临时文件（best-effort，忽略清理错误）
 			await fs.rm(tmpPath, { force: true, recursive: true }).catch(() => {});
+			logger.error(`[fs.write_file] 写入失败 - path=${inputPath}, error=${err instanceof Error ? err.message : String(err)}`);
 			return {
 				status: 'error',
 				error: `写入文件失败: ${inputPath}（${err instanceof Error ? err.message : String(err)}）`,
 			};
 		}
 
+		logger.log(`[fs.write_file] 完成 - path=${inputPath}, overwritten=${overwritten}, duration_ms=${Date.now() - startedAt}`);
 		return {
 			status: 'success',
 			result: overwritten ? `已覆盖: ${inputPath}` : `已创建: ${inputPath}`,

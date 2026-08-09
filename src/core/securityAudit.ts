@@ -3,6 +3,7 @@ import type { ToolCall, ToolResult } from './types';
 import type { BaseTool, ToolContext } from '../tools/baseTool';
 import { isSensitivePath } from '../tools/fs/pathGuard';
 import { ReliabilityMetrics } from './reliabilityMetrics';
+import * as logger from '../logger';
 
 export interface SecurityAuditResult {
 	readonly allowed: boolean;
@@ -24,6 +25,7 @@ export class SecurityAudit {
 		}
 
 		if (call.tool === 'terminal.exec' && typeof call.args.command === 'string' && DANGEROUS_COMMAND.test(call.args.command)) {
+			logger.log('[SecurityAudit] 检测到危险命令 tool=' + call.tool + ' 已交由用户确认');
 			this.metrics.record('audit_allowed');
 			return {
 				allowed: true,
@@ -34,6 +36,7 @@ export class SecurityAudit {
 		for (const key of ['path', 'from', 'to']) {
 			const value = call.args[key];
 			if (typeof value === 'string' && isSensitivePath(value)) {
+				logger.log('[SecurityAudit] 访问敏感路径 tool=' + call.tool);
 				this.metrics.record('audit_sensitive_warning');
 				return { allowed: true, warning: `正在访问敏感路径: ${value}` };
 			}
@@ -44,6 +47,7 @@ export class SecurityAudit {
 	}
 
 	private reject(callId: string, error: string): SecurityAuditResult {
+		logger.log('[SecurityAudit] 拦截越界请求 callId=' + callId + ' error=' + error);
 		this.metrics.record('audit_rejected');
 		return { allowed: false, rejection: { call_id: callId, status: 'error', error } };
 	}

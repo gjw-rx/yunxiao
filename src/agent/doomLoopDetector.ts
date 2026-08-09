@@ -6,6 +6,7 @@
  * 如果是，说明模型陷入了死循环，需要注入引导消息。
  */
 import type { ToolCall } from '../memory/types';
+import * as logger from '../logger';
 
 const DOOM_LOOP_THRESHOLD = 3;
 
@@ -48,6 +49,7 @@ export class DoomLoopDetector {
 		);
 
 		if (allSame) {
+			logger.log(`[DoomLoopDetector] 检测到陷入循环 tool=${recent[0].tool} 连续相同次数=${recent.length}`);
 			return {
 				isDoom: true,
 				tool: recent[0].tool,

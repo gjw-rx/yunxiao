@@ -18,6 +18,7 @@ import { ToolValidationError } from '../../core/errors';
 import { createGitClient, type GitToolOptions } from './gitClient';
 import type { ToolSchema } from '../../core/types';
 import type { SimpleGit } from 'simple-git';
+import * as logger from '../../logger';
 
 type BranchAction = 'list' | 'create' | 'checkout';
 
@@ -80,6 +81,7 @@ export class GitBranchTool extends BaseTool {
 		}
 
 		const action = (args.action as BranchAction | undefined) ?? 'list';
+		logger.log(`[git.branch] 开始执行 - cwd=${root}, action=${action}, name=${args.name ?? '未指定'}`);
 
 		if (action === 'list') {
 			const summary = await git.branch();
@@ -89,6 +91,7 @@ export class GitBranchTool extends BaseTool {
 				commit: b.commit,
 				label: b.label,
 			}));
+			logger.log(`[git.branch] 执行完成 - action=list, branches=${branches.length}, current=${summary.current}, duration_ms=${Date.now() - startedAt}`);
 			return {
 				status: 'success',
 				result: JSON.stringify(
@@ -116,6 +119,7 @@ export class GitBranchTool extends BaseTool {
 				};
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
+				logger.error(`[git.branch] 执行失败 - action=create, name=${name}, 错误=${msg}`);
 				return { status: 'error', error: `创建分支失败: ${msg}` };
 			}
 		}
@@ -123,6 +127,7 @@ export class GitBranchTool extends BaseTool {
 		// action === 'checkout'
 		try {
 			await git.checkout(name);
+			logger.log(`[git.branch] 执行完成 - action=checkout, name=${name}, duration_ms=${Date.now() - startedAt}`);
 			return {
 				status: 'success',
 				result: `已切换到分支: ${name}`,
@@ -130,6 +135,7 @@ export class GitBranchTool extends BaseTool {
 			};
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
+			logger.error(`[git.branch] 执行失败 - action=checkout, name=${name}, 错误=${msg}`);
 			if (UNCOMMITTED_PATTERN.test(msg)) {
 				return {
 					status: 'error',

@@ -5,6 +5,7 @@
 import type { LLMMessage } from '../llm/types';
 import type { Message, CompactionMessage, UserMessage, Attachment } from './types';
 import type { MessageStore } from './messageStore';
+import * as logger from '../logger';
 
 /**
  * 从 MessageStore 加载历史并转换为 LLMMessage[]。
@@ -13,20 +14,24 @@ import type { MessageStore } from './messageStore';
 export function loadHistoryForLLM(sessionId: string, store: MessageStore): LLMMessage[] {
 	const all = store.loadHistory(sessionId);
 	if (all.length === 0) {
+		logger.log(`[HistoryLoader] 加载历史完成 sessionId=${sessionId} 消息数=0`);
 		return [];
 	}
 
 	const compaction = store.getCompactionPoint(sessionId);
 	if (!compaction) {
+		logger.log(`[HistoryLoader] 加载历史完成 sessionId=${sessionId} 消息数=${all.length} 压缩点=无`);
 		return convertToLLMMessages(all);
 	}
 
 	// 从 compaction 之后开始加载
 	const afterCompaction = all.filter((m) => m.seq > compaction.seq);
-	return [
+	const result = [
 		...convertCompaction(compaction),
 		...convertToLLMMessages(afterCompaction),
 	];
+	logger.log(`[HistoryLoader] 加载历史完成 sessionId=${sessionId} 消息数=${result.length} 压缩点=有`);
+	return result;
 }
 
 /** 将 CompactionMessage 转换为 LLMMessage[]：summary -> system，recentContext 展开。 */

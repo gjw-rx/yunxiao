@@ -3,6 +3,8 @@
  * 所有模块通过 EventBus 通信，UI 订阅事件更新界面。
  */
 
+import * as logger from '../logger';
+
 /** 事件类型。 */
 export type EventType =
 	| 'content'
@@ -92,6 +94,7 @@ export class EventBus {
 
 	/** 清空所有订阅（会话重置/销毁时调用）。 */
 	clear(): void {
+		logger.log('[EventBus] 清空所有订阅 count=' + this.listeners.size);
 		this.listeners.clear();
 	}
 }

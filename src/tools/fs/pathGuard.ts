@@ -14,6 +14,7 @@
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import { PathGuardError } from '../../core/errors';
+import * as logger from '../../logger';
 
 // VSCode 延迟加载：纯函数（resolveWithinRoots / isSensitivePath）不依赖 vscode，
 // 可在无 VSCode 环境下直接用 mocha 单测。仅工作区适配函数在运行时 require vscode。
@@ -82,6 +83,7 @@ function lexicalResolve(
 			return { resolved: candidate, root };
 		}
 	}
+	logger.error(`[PathGuard] 路径越界拒绝 - input=${inputPath}`);
 	throw new PathGuardError(`路径越界: ${inputPath}`, 'traversal');
 }
 
@@ -98,6 +100,7 @@ export async function resolveWithinRoots(
 	options?: PathGuardOptions
 ): Promise<ResolvedPath> {
 	if (roots.length === 0) {
+		logger.error(`[PathGuard] 未打开工作区 - input=${inputPath}`);
 		throw new PathGuardError('未打开工作区', 'no_workspace');
 	}
 
@@ -121,6 +124,7 @@ export async function resolveWithinRoots(
 				})
 			);
 			if (!isContainedBy(real, realRoots)) {
+				logger.error(`[PathGuard] 符号链接越界拒绝 - resolved=${resolved}`);
 				throw new PathGuardError(`符号链接指向工作区外: ${resolved}`, 'symlink_escape');
 			}
 			finalPath = real;

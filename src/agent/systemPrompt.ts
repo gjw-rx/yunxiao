@@ -5,6 +5,7 @@
  */
 import * as path from 'path';
 import * as fs from 'fs';
+import * as logger from '../logger';
 import type { Skill } from '../skill/types';
 
 /** 默认 Agent 系统提示词。借鉴 opencode default.txt + anthropic.txt 设计。 */
@@ -173,6 +174,8 @@ export function buildSystemPrompt(context: SystemPromptContext): string {
 	if (guidance) {
 		sections.push(guidance);
 	}
+
+	logger.log(`[SystemPrompt] 构建完成 length=${sections.join('\n\n').length} 自定义=${context.agentPrompt?.trim() ? 'yes' : 'no'} skills=${context.skills.length}`);
 
 	return sections.join('\n\n');
 }

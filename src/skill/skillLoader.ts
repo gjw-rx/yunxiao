@@ -115,6 +115,7 @@ export async function loadSkillsFromDirectory(dirPath: string): Promise<Skill[]>
 			continue;
 		}
 
+		logger.log(`[SkillLoader] 加载 Skill 文件 path=${filePath} name=${frontmatter.name}`);
 		skills.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
@@ -124,5 +125,6 @@ export async function loadSkillsFromDirectory(dirPath: string): Promise<Skill[]>
 		});
 	}
 
+	logger.log(`[SkillLoader] 加载完成 数量=${skills.length} 目录=${dirPath}`);
 	return skills;
 }

@@ -14,6 +14,7 @@ import { ToolValidationError } from '../../core/errors';
 import { createGitClient, type GitToolOptions } from './gitClient';
 import type { ToolSchema } from '../../core/types';
 import type { SimpleGit } from 'simple-git';
+import * as logger from '../../logger';
 
 /** 禁止出现在提交信息中的危险选项。 */
 const UNSAFE_MESSAGE_PATTERN = /--no-verify|--amend/;
@@ -55,17 +56,21 @@ export class GitCommitTool extends BaseTool {
 		const startedAt = Date.now();
 		const root = context.workspaceRoots[0];
 		if (!root) {
+			logger.error('[git.commit] 执行失败 - 错误=未打开工作区');
 			return { status: 'error', error: '未打开工作区' };
 		}
 		const git = this.createClient(root);
 
 		if (!(await git.checkIsRepo())) {
+			logger.error(`[git.commit] 执行失败 - 错误=当前工作区不是 git 仓库, cwd=${root}`);
 			return { status: 'error', error: '当前工作区不是 git 仓库' };
 		}
 
 		const message = args.message as string;
+		logger.log(`[git.commit] 开始执行 - cwd=${root}, messageLen=${message.length}`);
 		try {
 			const result = await git.commit(message);
+			logger.log(`[git.commit] 执行完成 - commit=${result.commit}, duration_ms=${Date.now() - startedAt}`);
 			return {
 				status: 'success',
 				result: `已提交: ${result.commit}`,
@@ -73,6 +78,7 @@ export class GitCommitTool extends BaseTool {
 			};
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
+			logger.error(`[git.commit] 执行失败 - 错误=${msg}, messageLen=${message.length}`);
 			if (/nothing to commit|no changes added/i.test(msg)) {
 				return {
 					status: 'error',

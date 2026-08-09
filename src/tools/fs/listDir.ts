@@ -15,9 +15,13 @@ import {
 import { resolveWithinRoots } from './pathGuard';
 import { PathGuardError } from '../../core/errors';
 import type { ToolSchema } from '../../core/types';
+import * as logger from '../../logger';
 
 /** 递归深度上限。 */
 const MAX_DEPTH = 3;
+
+/** 单页默认最大条目数。 */
+export const DEFAULT_LIST_LIMIT = 2000;
 
 /** 内置常见忽略目录（即使无 .gitignore 也排除，避免噪声）。 */
 const BUILTIN_IGNORE = new Set([
@@ -37,7 +41,9 @@ interface DirEntry {
 export class ListDirTool extends BaseTool {
 	readonly schema: ToolSchema = {
 		name: 'fs.list_dir',
-		description: '列出工作区内目录条目（含类型/大小/修改时间），尊重 .gitignore，默认单层。',
+		description:
+			'列出工作区内目录条目（含类型/大小/修改时间），尊重 .gitignore，默认单层。' +
+			'条目较多时默认返回前 2000 条，可用 offset/limit 分页续读。',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -48,6 +54,8 @@ export class ListDirTool extends BaseTool {
 					description: '过滤类型，默认 all',
 				},
 				recursive: { type: 'boolean', description: '是否递归列出（默认 false，深度上限 3）' },
+				offset: { type: 'integer', minimum: 1, description: '起始条目序号（1 起始，默认 1）' },
+				limit: { type: 'integer', minimum: 1, description: '最大返回条目数（默认 2000）' },
 			},
 			required: ['path'],
 		},
@@ -69,7 +77,10 @@ export class ListDirTool extends BaseTool {
 		const inputPath = args.path as string;
 		const typeFilter = (args.type as 'file' | 'dir' | 'all') ?? 'all';
 		const recursive = args.recursive === true;
+		const offset = typeof args.offset === 'number' ? args.offset : 1;
+		const limit = typeof args.limit === 'number' ? args.limit : DEFAULT_LIST_LIMIT;
 		const startedAt = Date.now();
+		logger.log(`[fs.list_dir] 开始 - path=${inputPath}, type=${typeFilter}, recursive=${recursive}, offset=${offset}, limit=${limit}`);
 
 		// 1. 路径安全解析
 		let resolved;
@@ -79,6 +90,7 @@ export class ListDirTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
+				logger.error(`[fs.list_dir] 路径解析失败 - path=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -110,10 +122,28 @@ export class ListDirTool extends BaseTool {
 			0
 		);
 
+		logger.log(`[fs.list_dir] 完成 - path=${inputPath}, entries=${entries.length}, duration_ms=${Date.now() - startedAt}`);
+		// offset 越界：与 fs.read_file 一致返回 error（含总条数）
+		if (entries.length > 0 && offset > entries.length) {
+			return {
+				status: 'error',
+				error: `Offset ${offset} is out of range for this directory (${entries.length} entries)`,
+			};
+		}
+		// 分页切片：offset 1 起始，超限提示续读
+		const start = offset - 1;
+		const sliced = entries.slice(start, start + limit);
+		const truncated = start + sliced.length < entries.length;
+		let result = JSON.stringify(sliced, null, 2);
+		if (truncated) {
+			result += `\n\n(Showing ${sliced.length} of ${entries.length} entries. Use offset=${offset + sliced.length} to continue.)`;
+		} else {
+			result += `\n\n(${entries.length} entries)`;
+		}
 		return {
 			status: 'success',
-			result: JSON.stringify(entries, null, 2),
-			metadata: { duration_ms: Date.now() - startedAt },
+			result,
+			metadata: { duration_ms: Date.now() - startedAt, truncated },
 		};
 	}
 

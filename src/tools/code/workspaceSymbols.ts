@@ -12,6 +12,7 @@ import {
 } from '../baseTool';
 import type { ToolSchema } from '../../core/types';
 import { ToolValidationError } from '../../core/errors';
+import * as logger from '../../logger';
 
 /** vscode 命令执行的最小 shim（便于注入测试）。 */
 export interface VsCodeCommandsShim {
@@ -110,6 +111,7 @@ export class WorkspaceSymbolsTool extends BaseTool {
 		_context: ToolContext
 	): Promise<ToolExecutionResult> {
 		const query = args.query as string;
+		logger.log(`[code.workspace_symbols] 开始执行 - query=${query}`);
 
 		let raw: unknown;
 		try {
@@ -118,6 +120,7 @@ export class WorkspaceSymbolsTool extends BaseTool {
 				query
 			);
 		} catch (err) {
+			logger.error(`[code.workspace_symbols] 搜索失败 - query=${query}, error=${err instanceof Error ? err.message : String(err)}`);
 			return {
 				status: 'error',
 				error: `工作区符号搜索失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -145,6 +148,7 @@ export class WorkspaceSymbolsTool extends BaseTool {
 			payload.total = total;
 		}
 
+		logger.log(`[code.workspace_symbols] 执行完成 - query=${query}, 命中数=${total}, truncated=${truncated}`);
 		return {
 			status: 'success',
 			result: JSON.stringify(payload),

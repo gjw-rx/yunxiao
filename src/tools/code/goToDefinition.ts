@@ -16,6 +16,7 @@ import {
 import { resolveWithinRoots } from '../fs/pathGuard';
 import { PathGuardError, ToolValidationError } from '../../core/errors';
 import type { ToolSchema } from '../../core/types';
+import * as logger from '../../logger';
 
 /** vscode 定义查询所需的最小 shim（便于注入测试）。 */
 export interface VsCodeDefShim {
@@ -103,6 +104,7 @@ export class GoToDefinitionTool extends BaseTool {
 		const line = args.line as number;
 		const column = args.column as number;
 		const startedAt = Date.now();
+		logger.log(`[code.go_to_definition] 开始执行 - file=${inputPath}, line=${line}, column=${column}`);
 
 		// 1. 路径安全解析
 		let resolved;
@@ -112,6 +114,7 @@ export class GoToDefinitionTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
+				logger.error(`[code.go_to_definition] 路径解析失败 - file=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -121,6 +124,7 @@ export class GoToDefinitionTool extends BaseTool {
 		try {
 			await fs.stat(resolved.fsPath);
 		} catch {
+			logger.error(`[code.go_to_definition] 文件不存在 - file=${inputPath}`);
 			return { status: 'error', error: `文件不存在: ${inputPath}` };
 		}
 
@@ -137,6 +141,7 @@ export class GoToDefinitionTool extends BaseTool {
 				position
 			);
 		} catch (err) {
+			logger.error(`[code.go_to_definition] 查询定义失败 - file=${inputPath}, line=${line}, column=${column}, error=${err instanceof Error ? err.message : String(err)}`);
 			return {
 				status: 'error',
 				error: `查询定义失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -145,6 +150,7 @@ export class GoToDefinitionTool extends BaseTool {
 
 		// 5. 映射结果（0-based -> 1-based）
 		const definitions = this.mapDefinitions(raw, context.workspaceRoots[0]);
+		logger.log(`[code.go_to_definition] 执行完成 - file=${inputPath}, line=${line}, column=${column}, 命中数=${definitions.length}, 耗时=${Date.now() - startedAt}ms`);
 
 		return {
 			status: 'success',

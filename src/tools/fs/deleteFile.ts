@@ -14,6 +14,7 @@ import { resolveWithinRoots } from './pathGuard';
 import { PathGuardError } from '../../core/errors';
 import type { ToolSchema } from '../../core/types';
 import { hasVersionConflict } from './fileVersion';
+import * as logger from '../../logger';
 
 type VsCodeApi = typeof import('vscode');
 function vscodeApi(): VsCodeApi {
@@ -78,6 +79,7 @@ export class DeleteFileTool extends BaseTool {
 		const inputPath = args.path as string;
 		const recursive = args.recursive === true;
 		const startedAt = Date.now();
+		logger.log(`[fs.delete_file] 开始 - path=${inputPath}, recursive=${recursive}`);
 
 		// 1. 路径安全解析
 		let resolved;
@@ -87,6 +89,7 @@ export class DeleteFileTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
+				logger.error(`[fs.delete_file] 路径解析失败 - path=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -99,12 +102,14 @@ export class DeleteFileTool extends BaseTool {
 			return { status: 'error', error: `文件不存在: ${inputPath}` };
 		}
 		if (await hasVersionConflict(resolved.fsPath, args.expectedVersion)) {
+			logger.error(`[fs.delete_file] 版本冲突未删除 - path=${inputPath}`);
 			return { status: 'error', error: `文件已被并发修改，未删除: ${inputPath}`, metadata: { retryable: false } };
 		}
 
 		// 3. 删除
 		try {
 			const result = await this.deleteFn(resolved.fsPath, recursive);
+			logger.log(`[fs.delete_file] 完成 - path=${inputPath}, permanent=${result.permanent}, duration_ms=${Date.now() - startedAt}`);
 			return {
 				status: 'success',
 				result: result.permanent
@@ -116,6 +121,7 @@ export class DeleteFileTool extends BaseTool {
 				},
 			};
 		} catch (err) {
+			logger.error(`[fs.delete_file] 删除失败 - path=${inputPath}, error=${err instanceof Error ? err.message : String(err)}`);
 			return {
 				status: 'error',
 				error: `删除失败: ${inputPath}（${err instanceof Error ? err.message : String(err)}）`,
