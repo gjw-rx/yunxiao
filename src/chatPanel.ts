@@ -469,6 +469,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this._sessionManager.deleteSession(sessionId);
           if (this._currentSessionId === sessionId) {
             this._currentSessionId = undefined;
+            // 显式通知前端当前会话已被删除（空会话可能不在会话列表中，
+            // 前端不能再靠「列表缺当前会话」推断删除，否则会误禁用输入框）
+            panel.webview.postMessage({ command: 'currentSessionDeleted' });
           }
         }
         // 无论是否删除都回推最新列表，前端据此判断当前会话是否已被删除
@@ -2563,25 +2566,9 @@ ${this._getJs()}
       historyDropdown.hidden = true;
     }
 
-    /** 渲染历史会话下拉列表；若当前会话已被删除则重置会话状态。 */
+    /** 渲染历史会话下拉列表（当前会话删除状态由 host 显式通知，见 currentSessionDeleted 分支）。 */
     function renderHistoryDropdown(sessions) {
       historyList.innerHTML = '';
-      if (currentSessionId && !sessions.some((s) => s.sessionId === currentSessionId)) {
-        // 当前会话已被删除：重置指针并回到空对话状态（含流式状态复位，避免 stopBtn 常驻）
-        currentSessionId = null;
-        setStreaming(false);
-        sessionNameInput.value = 'Untitled';
-        resetConversation();
-        updateInteractionState();
-        messagesEl.innerHTML = \`
-          <div class="placeholder">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor" style="display:block;margin:0 auto 10px;">
-              <path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
-            </svg>
-            <div class="placeholder-title">会话已删除</div>
-            点击新建会话开始新的对话
-          </div>\`;
-      }
       if (sessions.length === 0) {
         historyList.innerHTML = '<div class="history-empty">暂无历史会话</div>';
         return;
@@ -3288,6 +3275,22 @@ ${this._getJs()}
           break;
         case 'sessionList':
           renderHistoryDropdown(msg.sessions || []);
+          break;
+        case 'currentSessionDeleted':
+          // host 显式通知当前会话已被删除：重置指针并回到空对话状态（含流式状态复位，避免 stopBtn 常驻）
+          currentSessionId = null;
+          setStreaming(false);
+          sessionNameInput.value = 'Untitled';
+          resetConversation();
+          updateInteractionState();
+          messagesEl.innerHTML = \`
+            <div class="placeholder">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor" style="display:block;margin:0 auto 10px;">
+                <path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
+              </svg>
+              <div class="placeholder-title">会话已删除</div>
+              点击新建会话开始新的对话
+            </div>\`;
           break;
       }
     });

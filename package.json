@@ -42,7 +42,8 @@
     "commands": [
       {
         "command": "yunxiaoAgent.openPanel",
-        "title": "云效 Agent: 打开对话面板"
+        "title": "云效 Agent: 打开对话面板",
+        "icon": "media/icon-view.svg"
       },
       {
         "command": "yunxiaoAgent.newSession",
@@ -50,6 +51,15 @@
         "icon": "$(add)"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "yunxiaoAgent.openPanel",
+          "when": "editorIsOpen",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "云效 Agent",
       "properties": {

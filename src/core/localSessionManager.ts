@@ -105,10 +105,16 @@ export class LocalSessionManager {
 
 	/**
 	 * 持久化用户自定义会话标题（优先于默认标题展示）。
+	 * 空会话采用延迟创建（索引无条目），改名时先建立索引条目，
+	 * 否则 setCustomTitle 因索引无该会话而静默丢弃，且会话不会出现在历史列表。
 	 * @param sessionId 会话 ID
 	 * @param title 自定义标题
 	 */
 	renameSession(sessionId: string, title: string): void {
+		if (!this.messageStore.listSessions().some((s) => s.sessionId === sessionId)) {
+			this.messageStore.createSession(sessionId);
+			logger.log(`[SessionManager] 空会话改名前先建立索引条目 sessionId=${sessionId}`);
+		}
 		this.messageStore.renameSession(sessionId, title);
 		logger.log(`[SessionManager] 重命名会话 sessionId=${sessionId} 标题=${title.slice(0, 40)}`);
 	}

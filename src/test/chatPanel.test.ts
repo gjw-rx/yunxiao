@@ -180,6 +180,19 @@ describe('ChatViewProvider HTML rendering', () => {
 		assert.match(html, /function renderSlashCommands\(\)/);
 	});
 
+	it('会话删除改由 host 显式通知，不再按列表缺当前会话推断删除', () => {
+		const { internals } = setup();
+		const html = internals._getHtml({
+			asWebviewUri: (uri: vscode.Uri) => uri,
+			cspSource: 'vscode-webview:',
+		} as unknown as vscode.Webview);
+
+		// 新分支存在：host 显式通知当前会话被删除
+		assert.match(html, /case 'currentSessionDeleted':/);
+		// 旧误判逻辑已移除：renderHistoryDropdown 不再根据列表缺当前会话重置状态
+		assert.doesNotMatch(html, /if \(currentSessionId && !sessions\.some/);
+	});
+
 	it('renders file references as removable chips while preserving paths on send', () => {
 		const { internals } = setup();
 		const html = internals._getHtml({
@@ -255,6 +268,45 @@ describe('ChatViewProvider HTML rendering', () => {
 			} finally {
 				vscode.window.createWebviewPanel = orig;
 			}
+		});
+		it('deleteSession 删除当前会话时回推 currentSessionDeleted（前端不再靠列表推断删除）', async () => {
+			const messages: Record<string, unknown>[] = [];
+			const provider = new ChatViewProvider(
+				{ extensionPath: '', subscriptions: [] } as unknown as vscode.ExtensionContext,
+				{
+					sessionManager: {
+						listSessions: () => [
+							{
+								sessionId: 'old-session',
+								title: '旧会话',
+								updatedAt: '',
+								messageCount: 1,
+								customTitle: false,
+							},
+						],
+						deleteSession: () => {},
+					} as unknown as LocalSessionManager,
+					registry: {} as ToolRegistry,
+					eventBus: { onAll: () => () => {} } as unknown as EventBus,
+				}
+			);
+			const internals = provider as unknown as PanelInternals;
+			internals._panel = {
+				webview: { postMessage: (message: Record<string, unknown>) => messages.push(message) },
+			} as unknown as vscode.WebviewPanel;
+			internals._currentSessionId = 'old-session';
+
+			const origShow = vscode.window.showWarningMessage;
+			vscode.window.showWarningMessage = (async () => '删除') as unknown as typeof vscode.window.showWarningMessage;
+			try {
+				await internals._handleMessage({ command: 'deleteSession', sessionId: 'old-session' });
+			} finally {
+				vscode.window.showWarningMessage = origShow;
+			}
+
+			const deleted = messages.find((m) => m.command === 'currentSessionDeleted');
+			assert.ok(deleted, '删除当前会话应回推 currentSessionDeleted');
+			assert.strictEqual(internals._currentSessionId, undefined, 'host 当前会话指针应清空');
 		});
 	});
 });
