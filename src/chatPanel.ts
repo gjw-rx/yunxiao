@@ -199,13 +199,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * 从历史视图打开会话（回放/继续对话共用）：切换当前会话并通知前端加载历史。
+   * 从历史下拉打开会话（回放/继续对话共用）：切换当前会话并通知前端加载历史。
    * @param sessionId 会话 ID
+   * @param title 会话标题（为空时前端保持当前输入框文案）
    */
-  openSession(sessionId: string): void {
+  openSession(sessionId: string, title?: string): void {
     this._sessionManager.setCurrentSessionId(sessionId);
     this._currentSessionId = sessionId;
-    this._view?.webview.postMessage({ command: 'openSession', sessionId });
+    this._view?.webview.postMessage({ command: 'openSession', sessionId, title });
   }
 
   /** 获取当前会话 ID */
@@ -366,6 +367,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // 持久化到会话索引（customTitle=true，优先于默认标题）
           this._sessionManager.renameSession(sessionId, name);
         }
+        break;
+      }
+      case 'requestSessions': {
+        // 前端打开历史下拉时请求最新会话列表
+        const sessions = this._sessionManager.listSessions();
+        logger.log(`[ChatPanel] 返回会话列表 count=${sessions.length}`);
+        view.webview.postMessage({ command: 'sessionList', sessions });
+        break;
+      }
+      case 'openSession': {
+        // 前端历史下拉点击：切换当前会话指针并回推 openSession 供前端加载历史（附标题供输入框展示）
+        const sessionId = msg.sessionId as string;
+        if (sessionId) {
+          const meta = this._sessionManager.listSessions().find((s) => s.sessionId === sessionId);
+          this.openSession(sessionId, meta?.title || '');
+        }
+        break;
+      }
+      case 'deleteSession': {
+        const sessionId = msg.sessionId as string;
+        if (!sessionId) {
+          break;
+        }
+        const meta = this._sessionManager.listSessions().find((s) => s.sessionId === sessionId);
+        const title = meta?.title || '新会话';
+        const confirm = await vscode.window.showWarningMessage(
+          `确定删除会话「${title}」？该操作不可恢复。`,
+          { modal: true },
+          '删除'
+        );
+        if (confirm === '删除') {
+          this._sessionManager.deleteSession(sessionId);
+          if (this._currentSessionId === sessionId) {
+            this._currentSessionId = undefined;
+          }
+        }
+        // 无论是否删除都回推最新列表，前端据此判断当前会话是否已被删除
+        view.webview.postMessage({ command: 'sessionList', sessions: this._sessionManager.listSessions() });
         break;
       }
     }
@@ -539,6 +578,7 @@ ${this._getJs()}
       padding: 8px 10px;
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
+      position: relative;
     }
 
     /* ── Session name input ── */
@@ -1483,6 +1523,66 @@ ${this._getJs()}
     .session-actions .btn-icon { width: 26px; height: 26px; padding: 0; color: var(--muted); }
     .session-actions .btn-icon:hover:not(:disabled) { color: var(--fg); }
 
+    /* ── History dropdown ── */
+    .history-dropdown {
+      position: absolute;
+      top: calc(100% - 4px);
+      right: 8px;
+      width: 320px;
+      max-width: calc(100vw - 20px);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+      z-index: 50;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .history-dropdown[hidden] { display: none; }
+    .history-dropdown-header {
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .history-list { overflow-y: auto; max-height: 55vh; }
+    .history-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    .history-item:hover { background: var(--hover-bg); }
+    .history-item.active .history-item-title { color: var(--accent); }
+    .history-item-main { flex: 1; min-width: 0; }
+    .history-item-title {
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .history-item-meta { font-size: 11px; color: var(--muted); }
+    .history-item-del {
+      flex-shrink: 0;
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 0;
+    }
+    .history-item-del:hover { color: var(--error); background: var(--hover-bg); }
+    .history-empty { padding: 16px 12px; text-align: center; color: var(--muted); font-size: 12px; }
+
     #hint {
       text-align: center;
       font-size: 10px;
@@ -1637,6 +1737,14 @@ ${this._getJs()}
       <button id="newSessionIconBtn" class="btn btn-icon" title="新建会话">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M7.25 1a.75.75 0 0 1 .75.75V7h5.25a.75.75 0 0 1 0 1.5H8v5.25a.75.75 0 0 1-1.5 0V8.5H1.25a.75.75 0 0 1 0-1.5H6.5V1.75A.75.75 0 0 1 7.25 1z"/></svg>
       </button>
+      <button id="historyIconBtn" class="btn btn-icon" title="历史会话">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5A5.5 5.5 0 1 1 2.5 8 5.5 5.5 0 0 1 8 2.5z"/><path d="M7.25 4.5v3.42L10.3 9.5l.4-1.16-2.45-1.2V4.5h-1z"/></svg>
+      </button>
+    </div>
+    <!-- 历史下拉：必须是 #header 的子元素，绝对定位才相对 header 底部展开 -->
+    <div id="historyDropdown" class="history-dropdown" hidden>
+      <div class="history-dropdown-header">历史会话</div>
+      <div id="historyList" class="history-list"></div>
     </div>
   </div>
 
@@ -1712,6 +1820,9 @@ ${this._getJs()}
     const stopBtn      = document.getElementById('stopBtn');
     const openFileBtn  = document.getElementById('openFileBtn');
     const newSessBtn   = document.getElementById('newSessionIconBtn');
+    const historyBtn   = document.getElementById('historyIconBtn');
+    const historyDropdown = document.getElementById('historyDropdown');
+    const historyList  = document.getElementById('historyList');
     const sessionNameInput = document.getElementById('sessionNameInput');
     const errorEl      = document.getElementById('error');
     const filePicker   = document.getElementById('filePicker');
@@ -1796,6 +1907,9 @@ ${this._getJs()}
       }
       if (!slashCommandPicker.contains(e.target) && e.target !== inputEl) {
         closeSlashCommandPicker();
+      }
+      if (!historyDropdown.hidden && !historyDropdown.contains(e.target) && !historyBtn.contains(e.target)) {
+        closeHistoryDropdown();
       }
     });
 
@@ -2059,6 +2173,9 @@ ${this._getJs()}
     });
 
     newSessBtn.addEventListener('click', startNewSession);
+
+    // ── History dropdown ──
+    historyBtn.addEventListener('click', toggleHistoryDropdown);
 
     openFileBtn.addEventListener('click', () => {
       vscode.postMessage({ command: 'openFile' });
@@ -2342,6 +2459,88 @@ ${this._getJs()}
     function startNewSession() {
       sessionNameInput.value = 'Untitled';
       vscode.postMessage({ command: 'createSession' });
+    }
+
+    // ── History dropdown ──
+    function toggleHistoryDropdown() {
+      if (historyDropdown.hidden) {
+        openHistoryDropdown();
+      } else {
+        closeHistoryDropdown();
+      }
+    }
+
+    function openHistoryDropdown() {
+      historyDropdown.hidden = false;
+      // 每次打开都向 host 请求最新会话列表（host 回 sessionList）
+      vscode.postMessage({ command: 'requestSessions' });
+    }
+
+    function closeHistoryDropdown() {
+      historyDropdown.hidden = true;
+    }
+
+    /** 渲染历史会话下拉列表；若当前会话已被删除则重置会话状态。 */
+    function renderHistoryDropdown(sessions) {
+      historyList.innerHTML = '';
+      if (currentSessionId && !sessions.some((s) => s.sessionId === currentSessionId)) {
+        // 当前会话已被删除：重置指针并回到空对话状态（含流式状态复位，避免 stopBtn 常驻）
+        currentSessionId = null;
+        setStreaming(false);
+        sessionNameInput.value = 'Untitled';
+        resetConversation();
+        updateInteractionState();
+        messagesEl.innerHTML = \`
+          <div class="placeholder">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor" style="display:block;margin:0 auto 10px;">
+              <path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
+            </svg>
+            <div class="placeholder-title">会话已删除</div>
+            点击新建会话开始新的对话
+          </div>\`;
+      }
+      if (sessions.length === 0) {
+        historyList.innerHTML = '<div class="history-empty">暂无历史会话</div>';
+        return;
+      }
+      for (const s of sessions) {
+        const item = document.createElement('div');
+        item.className = 'history-item' + (s.sessionId === currentSessionId ? ' active' : '');
+        const title = s.title || '新会话';
+        item.innerHTML = \`
+          <div class="history-item-main">
+            <div class="history-item-title">\${escapeHtml(title)}</div>
+            <div class="history-item-meta">\${formatRelativeTime(s.updatedAt)} · \${s.messageCount} 条消息</div>
+          </div>
+          <button class="history-item-del" title="删除会话" aria-label="删除会话">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M6 1h4v1h3v1H3V2h3V1zM4 4h8v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4zm2 2v7h1V6H6zm3 0v7h1V6H9z"/></svg>
+          </button>\`;
+        // 打开历史会话：交由 host 切换当前会话指针并回推 openSession
+        item.addEventListener('click', () => {
+          closeHistoryDropdown();
+          vscode.postMessage({ command: 'openSession', sessionId: s.sessionId });
+        });
+        // 删除会话：host 弹确认框，确认后删除并回推最新 sessionList
+        const delBtn = item.querySelector('.history-item-del');
+        delBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          vscode.postMessage({ command: 'deleteSession', sessionId: s.sessionId });
+        });
+        historyList.appendChild(item);
+      }
+    }
+
+    /** 将 ISO 时间格式化为相对时间（刚刚/x 分钟前/x 小时前/x 天前/日期）。 */
+    function formatRelativeTime(iso) {
+      const diff = Date.now() - new Date(iso).getTime();
+      const minute = 60000;
+      const hour = 60 * minute;
+      const day = 24 * hour;
+      if (diff < minute) return '刚刚';
+      if (diff < hour) return Math.floor(diff / minute) + ' 分钟前';
+      if (diff < day) return Math.floor(diff / hour) + ' 小时前';
+      if (diff < 30 * day) return Math.floor(diff / day) + ' 天前';
+      return new Date(iso).toLocaleDateString();
     }
 
     function handleSend() {
@@ -2864,6 +3063,10 @@ ${this._getJs()}
         case 'openSession':
         case 'sessionCreated': {
           currentSessionId = msg.sessionId;
+          // 打开历史会话时同步展示标题（新建会话的 sessionCreated 不带 title，不覆盖）
+          if (msg.title) {
+            sessionNameInput.value = msg.title;
+          }
           resetConversation();
           setStreaming(false);
           vscode.postMessage({ command: 'loadHistory', sessionId: currentSessionId });
@@ -2988,6 +3191,9 @@ ${this._getJs()}
           if (slashCommandPicker.classList.contains('show')) {
             handleSlashTrigger();
           }
+          break;
+        case 'sessionList':
+          renderHistoryDropdown(msg.sessions || []);
           break;
       }
     });

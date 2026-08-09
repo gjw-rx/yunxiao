@@ -35,12 +35,6 @@
           "name": "对话",
           "icon": "media/icon-view.svg",
           "retainContextWhenHidden": true
-        },
-        {
-          "type": "tree",
-          "id": "yunxiaoAgent.historyView",
-          "name": "历史",
-          "icon": "media/icon-history.svg"
         }
       ]
     },
@@ -53,37 +47,8 @@
         "command": "yunxiaoAgent.newSession",
         "title": "云效 Agent: 新建会话",
         "icon": "$(add)"
-      },
-      {
-        "command": "yunxiaoAgent.history.open",
-        "title": "打开历史会话"
-      },
-      {
-        "command": "yunxiaoAgent.history.delete",
-        "title": "删除会话"
-      },
-      {
-        "command": "yunxiaoAgent.history.refresh",
-        "title": "刷新历史会话",
-        "icon": "$(refresh)"
       }
     ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "yunxiaoAgent.history.refresh",
-          "when": "view == yunxiaoAgent.historyView",
-          "group": "navigation"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "yunxiaoAgent.history.delete",
-          "when": "view == yunxiaoAgent.historyView && viewItem == session",
-          "group": "inline"
-        }
-      ]
-    },
     "configuration": {
       "title": "云效 Agent",
       "properties": {
@@ -236,16 +201,20 @@
           "description": "Skill 搜索目录列表（相对工作区根的路径），插件将从这些目录加载 Markdown 格式的 Skill",
           "scope": "window"
         },
-        "yunxiaoAgent.claude.syncEnabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "同步CLAUDE配置：开启后读取 Claude 目录中的 SKILL（~/.claude/skills 与项目 .claude/skills）注册进 Skill 系统，供斜杠菜单与 Skill 工具使用；本期仅同步 SKILL 与项目 CLAUDE.md",
-          "scope": "window"
-        },
-        "yunxiaoAgent.trae.syncEnabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "同步TRAE配置：开启后读取 Trae 目录中的 SKILL（~/.trae/skills、~/.trae-cn/skills 与项目 .trae/skills、.trae-cn/skills）注册进 Skill 系统，供斜杠菜单与 Skill 工具使用；本期仅同步 SKILL（项目 .trae/rules 规则注入始终生效）",
+        "yunxiaoAgent.sync.source": {
+          "type": "string",
+          "enum": [
+            "none",
+            "claude",
+            "trae"
+          ],
+          "enumDescriptions": [
+            "不加载任何生态配置（默认）",
+            "加载 Claude 目录 SKILL（~/.claude/skills、项目 .claude/skills）并注入项目 CLAUDE.md/AGENTS.md 规范",
+            "加载 Trae 目录 SKILL（~/.trae/skills、~/.trae-cn/skills 与项目对应目录）并注入项目 .trae/rules 规则"
+          ],
+          "default": "none",
+          "description": "配置来源（二选一）：Claude 与 Trae 的 SKILL 同步与项目规则注入共用此单选，避免重复加载两套约束",
           "scope": "window"
         },
         "yunxiaoAgent.agent.maxSteps": {

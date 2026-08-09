@@ -21,6 +21,7 @@ import { toolSchemasToDefinitions, llmToolCallToCoreToolCall, toolResultToConten
 import { buildSystemPrompt } from './systemPrompt';
 import { loadProjectRules } from './projectRules';
 import { loadTraeRules } from './traeRules';
+import type { SyncSource } from '../config/syncConfig';
 import type { CompactionConfig } from './compaction';
 import { compactIfNeeded } from './compaction';
 import { estimateText, estimateRequest } from './tokenEstimator';
@@ -70,6 +71,8 @@ export interface AgentLoopConfig {
 	readonly skillRegistry?: SkillRegistry | null;
 	/** 上下文压缩配置（可选，不配置则不启用压缩） */
 	readonly compaction?: CompactionConfig;
+	/** 配置来源读取函数（none/claude/trae 三选一）：决定项目规则注入哪一套（CLAUDE.md 或 .trae/rules），由扩展装配时注入 */
+	readonly syncSource?: () => SyncSource;
 }
 
 const MAX_STEPS_PROMPT =
@@ -145,16 +148,19 @@ export class AgentLoop {
 				const history = loadHistoryForLLM(sessionId, this.messageStore);
 
 				// ── 3. 构建系统提示词（每轮重读项目规范，保证使用最新内容）──
+				// 配置来源二选一：claude 注入 CLAUDE.md/AGENTS.md 项目规范，trae 注入 .trae/rules 规则，none 均不注入，避免两套约束重复
+				const syncSource = this.config.syncSource?.() ?? 'none';
+				const workspaceRoot = this.config.workspaceRoots[0] ?? '';
 				const systemPrompt = buildSystemPrompt({
 					agentPrompt: this.config.agentPrompt,
 					skills: this.config.skillRegistry?.list() ?? [],
-					workspaceRoot: this.config.workspaceRoots[0] ?? '',
+					workspaceRoot,
 					platform: process.platform,
 					date: new Date().toISOString().slice(0, 10),
 					modelId: this.config.model,
 					providerId: this.config.providerId,
-					projectRules: await loadProjectRules(this.config.workspaceRoots[0] ?? ''),
-					traeRules: await loadTraeRules(this.config.workspaceRoots[0] ?? ''),
+					projectRules: syncSource === 'claude' ? await loadProjectRules(workspaceRoot) : null,
+					traeRules: syncSource === 'trae' ? await loadTraeRules(workspaceRoot) : null,
 				});
 
 				// ── 4. 组装消息 ──

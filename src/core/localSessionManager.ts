@@ -94,7 +94,10 @@ export class LocalSessionManager {
 	 */
 	deleteSession(sessionId: string): void {
 		logger.log(`[SessionManager] 删除会话 sessionId=${sessionId}`);
-		this.agentLoop.cancel();
+		// 仅当删除的是当前会话时才取消 Agent Loop，避免删除历史会话打断当前会话正在进行的流式回复
+		if (this.currentSessionId === sessionId) {
+			this.agentLoop.cancel();
+		}
 		this.messageStore.clear(sessionId);
 	}
 

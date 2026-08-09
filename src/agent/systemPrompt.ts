@@ -104,9 +104,9 @@ export interface SystemPromptContext {
 	readonly modelId?: string;
 	/** Provider ID（如 "openai"） */
 	readonly providerId?: string;
-	/** 项目级规范（CLAUDE.md / AGENTS.md 内容） */
+	/** 项目级规范（CLAUDE.md / AGENTS.md 内容）；与 traeRules 二选一注入（由调用方按配置来源保证只传其一） */
 	readonly projectRules?: ProjectRules | null;
-	/** Trae 项目规则（.trae/rules 与 .trae-cn/rules 内容，始终生效） */
+	/** Trae 项目规则（.trae/rules 与 .trae-cn/rules 内容）；与 projectRules 二选一注入（由调用方按配置来源保证只传其一） */
 	readonly traeRules?: TraeRules | null;
 }
 

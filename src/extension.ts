@@ -35,14 +35,12 @@ import { SkillRegistry } from './skill/skillRegistry';
 import { loadSkillsFromDirectory } from './skill/skillLoader';
 import { SkillTool } from './skill/skillTool';
 import { getModelConfig } from './config/modelConfig';
-import { getSyncEnabled, onClaudeConfigChange } from './config/claudeConfig';
-import { getSyncEnabled as getTraeSyncEnabled, onTraeConfigChange } from './config/traeConfig';
+import { getSyncSource, onSyncConfigChange } from './config/syncConfig';
 import { createProvider } from './llm/provider';
 import { MessageStore } from './memory/messageStore';
 import { SessionFileStore } from './memory/sessionFileStore';
 import type { Message } from './memory/types';
 import { AgentLoop } from './agent/agentLoop';
-import { HistoryTreeProvider, registerHistoryCommands } from './historyTree';
 import type { CompactionConfig } from './agent/compaction';
 import * as logger from './logger';
 
@@ -165,95 +163,60 @@ async function _activate(context: vscode.ExtensionContext) {
 	// 将 skillRegistry 注入 provider，供斜杠命令数据组装
 	provider.setSkillRegistry(skillRegistry);
 
-	// Claude 目录 SKILL 同步（「同步CLAUDE配置」开启时加载 ~/.claude/skills 与项目 .claude/skills）
-	// 记录本次同步注册的 skill 名，配置关闭时据此卸载
-	let claudeSkillNames: string[] = [];
-	const syncClaudeSkills = async (): Promise<void> => {
-		for (const name of claudeSkillNames) {
-			skillRegistry.unregister(name);
-			logger.log(`[Extension] 卸载 Claude 目录 Skill name=${name}`);
-		}
-		claudeSkillNames = [];
-		if (!getSyncEnabled()) {
-			provider.refreshSlashCommands();
-			return;
-		}
-		const workspaceRoot = workspaceRoots[0] ?? process.cwd();
-		const claudeDirs = [
-			path.join(os.homedir(), 'claude', 'skills'),
-			path.join(workspaceRoot, '.claude', 'skills'),
-		];
-		for (const dir of claudeDirs) {
-			const loaded = await loadSkillsFromDirectory(dir);
-			for (const skill of loaded) {
-				// 去重：显式配置目录优先，Claude 目录同名不覆盖（仅补缺）
-				if (skillRegistry.get(skill.name)) {
-					logger.log(`[Extension] 跳过同名 Skill（显式目录优先） name=${skill.name} 目录=${dir}`);
-					continue;
+	// 生态配置同步（Claude / Trae 二选一）：按「配置来源」读取对应目录的 SKILL 并注册进 Skill 系统
+	// （claude → ~/.claude/skills 与项目 .claude/skills；trae → ~/.trae(s) 与项目 .trae(s)/skills）。
+	// 记录本次同步注册的 skill 名，切换来源或关闭时据此卸载，避免两套生态配置叠加。
+	// 同步走串行链：配置快速切换时按顺序执行，避免并发卸载/注册导致 skill 注册状态错乱。
+	let syncedSkillNames: string[] = [];
+	let syncChain: Promise<void> = Promise.resolve();
+	const syncSkills = (): Promise<void> => {
+		const run = async (): Promise<void> => {
+			for (const name of syncedSkillNames) {
+				skillRegistry.unregister(name);
+				logger.log(`[Extension] 卸载生态配置 Skill name=${name}`);
+			}
+			syncedSkillNames = [];
+			const source = getSyncSource();
+			const workspaceRoot = workspaceRoots[0] ?? process.cwd();
+			const syncDirs =
+				source === 'claude'
+					? [
+						path.join(os.homedir(), '.claude', 'skills'),
+						path.join(workspaceRoot, '.claude', 'skills'),
+					]
+					: source === 'trae'
+						? [
+							path.join(os.homedir(), '.trae', 'skills'),
+							path.join(os.homedir(), '.trae-cn', 'skills'),
+							path.join(workspaceRoot, '.trae', 'skills'),
+							path.join(workspaceRoot, '.trae-cn', 'skills'),
+						]
+						: [];
+			for (const dir of syncDirs) {
+				const loaded = await loadSkillsFromDirectory(dir);
+				for (const skill of loaded) {
+					// 去重：显式配置目录优先，生态目录同名不覆盖（仅补缺）
+					if (skillRegistry.get(skill.name)) {
+						logger.log(`[Extension] 跳过同名 Skill（显式目录优先） name=${skill.name} 目录=${dir}`);
+						continue;
+					}
+					skillRegistry.register(skill);
+					syncedSkillNames.push(skill.name);
 				}
-				skillRegistry.register(skill);
-				claudeSkillNames.push(skill.name);
-			}
-			if (loaded.length > 0) {
-				logger.log(`[Extension] 从 Claude 目录加载了 ${loaded.length} 个 Skill: ${dir}`);
-			}
-		}
-		provider.refreshSlashCommands();
-	};
-	await syncClaudeSkills();
-	// 配置变更热生效：重新同步并刷新斜杠命令数据
-	context.subscriptions.push(
-		onClaudeConfigChange(() => {
-			// Claude 变更后联动重跑 Trae 同步：让 Trae 补上因卸载而空出的同名 skill（去重协调）
-			void (async () => {
-				await syncClaudeSkills();
-				await syncTraeSkills();
-			})();
-		})
-	);
-
-	// Trae 目录 SKILL 同步（「同步TRAE配置」开启时加载 ~/.trae/skills、~/.trae-cn/skills
-	// 与项目 .trae/skills、.trae-cn/skills；关闭时卸载本次注册的 Trae skill）
-	let traeSkillNames: string[] = [];
-	const syncTraeSkills = async (): Promise<void> => {
-		for (const name of traeSkillNames) {
-			skillRegistry.unregister(name);
-			logger.log(`[Extension] 卸载 Trae 目录 Skill name=${name}`);
-		}
-		traeSkillNames = [];
-		if (!getTraeSyncEnabled()) {
-			provider.refreshSlashCommands();
-			return;
-		}
-		const workspaceRoot = workspaceRoots[0] ?? process.cwd();
-		const traeDirs = [
-			path.join(os.homedir(), '.trae', 'skills'),
-			path.join(os.homedir(), '.trae-cn', 'skills'),
-			path.join(workspaceRoot, '.trae', 'skills'),
-			path.join(workspaceRoot, '.trae-cn', 'skills'),
-		];
-		for (const dir of traeDirs) {
-			const loaded = await loadSkillsFromDirectory(dir);
-			for (const skill of loaded) {
-				// 去重：显式配置目录与 Claude 目录优先，Trae 目录同名不覆盖（仅补缺）
-				if (skillRegistry.get(skill.name)) {
-					logger.log(`[Extension] 跳过同名 Skill（显式/Claude 目录优先） name=${skill.name} 目录=${dir}`);
-					continue;
+				if (loaded.length > 0) {
+					logger.log(`[Extension] 从生态配置目录加载了 ${loaded.length} 个 Skill: ${dir}`);
 				}
-				skillRegistry.register(skill);
-				traeSkillNames.push(skill.name);
 			}
-			if (loaded.length > 0) {
-				logger.log(`[Extension] 从 Trae 目录加载了 ${loaded.length} 个 Skill: ${dir}`);
-			}
-		}
-		provider.refreshSlashCommands();
+			provider.refreshSlashCommands();
+		};
+		syncChain = syncChain.then(run, run);
+		return syncChain;
 	};
-	await syncTraeSkills();
-	// 配置变更热生效：重新同步并刷新斜杠命令数据
+	await syncSkills();
+	// 配置变更热生效：切换来源时重新同步并刷新斜杠命令数据
 	context.subscriptions.push(
-		onTraeConfigChange(() => {
-			void syncTraeSkills();
+		onSyncConfigChange(() => {
+			void syncSkills();
 		})
 	);
 
@@ -306,6 +269,7 @@ async function _activate(context: vscode.ExtensionContext) {
 			toolResultLimit: config.get<number>('toolResultLimit', 10_000),
 			agentPrompt: config.get<string>('agent.systemPrompt', '') || undefined,
 			skillRegistry,
+			syncSource: () => getSyncSource(),
 			compaction: compactionConfig,
 		}
 	);
@@ -315,14 +279,6 @@ async function _activate(context: vscode.ExtensionContext) {
 
 	// 回填 provider 的依赖（解决循环依赖：provider -> approval -> provider）
 	(provider as unknown as { _sessionManager: LocalSessionManager })._sessionManager = sessionManager;
-
-	// 历史会话视图（侧边栏 TreeView）：列出/打开/删除会话，订阅变更自动刷新
-	const historyTreeProvider = new HistoryTreeProvider(sessionManager);
-	context.subscriptions.push(
-		vscode.window.registerTreeDataProvider('yunxiaoAgent.historyView', historyTreeProvider),
-		historyTreeProvider,
-	);
-	registerHistoryCommands(context, historyTreeProvider, sessionManager, provider);
 
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider('yunxiaoAgent.chatView', provider, {
