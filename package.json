@@ -207,6 +207,12 @@
           "description": "同步CLAUDE配置：开启后读取 Claude 目录中的 SKILL（~/.claude/skills 与项目 .claude/skills）注册进 Skill 系统，供斜杠菜单与 Skill 工具使用；本期仅同步 SKILL 与项目 CLAUDE.md",
           "scope": "window"
         },
+        "yunxiaoAgent.trae.syncEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "同步TRAE配置：开启后读取 Trae 目录中的 SKILL（~/.trae/skills、~/.trae-cn/skills 与项目 .trae/skills、.trae-cn/skills）注册进 Skill 系统，供斜杠菜单与 Skill 工具使用；本期仅同步 SKILL（项目 .trae/rules 规则注入始终生效）",
+          "scope": "window"
+        },
         "yunxiaoAgent.agent.maxSteps": {
           "type": "number",
           "default": 50,

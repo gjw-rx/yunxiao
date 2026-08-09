@@ -20,6 +20,7 @@ import type { SkillRegistry } from '../skill/skillRegistry';
 import { toolSchemasToDefinitions, llmToolCallToCoreToolCall, toolResultToContent } from './toolAdapter';
 import { buildSystemPrompt } from './systemPrompt';
 import { loadProjectRules } from './projectRules';
+import { loadTraeRules } from './traeRules';
 import type { CompactionConfig } from './compaction';
 import { compactIfNeeded } from './compaction';
 import { estimateText, estimateRequest } from './tokenEstimator';
@@ -153,6 +154,7 @@ export class AgentLoop {
 					modelId: this.config.model,
 					providerId: this.config.providerId,
 					projectRules: await loadProjectRules(this.config.workspaceRoots[0] ?? ''),
+					traeRules: await loadTraeRules(this.config.workspaceRoots[0] ?? ''),
 				});
 
 				// ── 4. 组装消息 ──

@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as logger from '../logger';
 import type { Skill } from '../skill/types';
 import type { ProjectRules } from './projectRules';
+import type { TraeRules } from './traeRules';
 
 /** 默认 Agent 系统提示词。借鉴 opencode default.txt + anthropic.txt 设计。 */
 export const DEFAULT_AGENT_PROMPT = `You are an AI coding assistant integrated into VSCode. You help users with software engineering tasks by understanding their codebase, making changes, and running commands.
@@ -105,6 +106,8 @@ export interface SystemPromptContext {
 	readonly providerId?: string;
 	/** 项目级规范（CLAUDE.md / AGENTS.md 内容） */
 	readonly projectRules?: ProjectRules | null;
+	/** Trae 项目规则（.trae/rules 与 .trae-cn/rules 内容，始终生效） */
+	readonly traeRules?: TraeRules | null;
 }
 
 /** 检测目录是否为 git 仓库 */
@@ -176,7 +179,21 @@ function buildProjectRulesSection(rules: ProjectRules | null | undefined): strin
 	].join('\n');
 }
 
-/** 构建完整系统提示词：Agent 提示词 + 环境信息 + 项目规范 + Skill guidance。 */
+/** 构建 Trae 项目规则段。无规则时返回空字符串。 */
+function buildTraeRulesSection(rules: TraeRules | null | undefined): string {
+	if (!rules) {
+		return '';
+	}
+	return [
+		'# Trae 项目规则',
+		`以下内容为项目 Trae 规则（来源：${rules.sources.join('、')}），做开发工作时须遵循：`,
+		'<trae_rules>',
+		rules.content,
+		'</trae_rules>',
+	].join('\n');
+}
+
+/** 构建完整系统提示词：Agent 提示词 + 环境信息 + 项目规范 + Trae 规则 + Skill guidance。 */
 export function buildSystemPrompt(context: SystemPromptContext): string {
 	const sections: string[] = [];
 
@@ -192,6 +209,12 @@ export function buildSystemPrompt(context: SystemPromptContext): string {
 		sections.push(rulesSection);
 	}
 
+	// Trae 项目规则（存在则注入）
+	const traeSection = buildTraeRulesSection(context.traeRules);
+	if (traeSection) {
+		sections.push(traeSection);
+	}
+
 	// Skill guidance（为空则跳过）
 	const guidance = buildSkillGuidance(context.skills);
 	if (guidance) {
@@ -200,7 +223,7 @@ export function buildSystemPrompt(context: SystemPromptContext): string {
 
 	const systemPrompt = sections.join('\n\n');
 
-	logger.log(`[SystemPrompt] 构建完成 length=${systemPrompt.length} 自定义=${context.agentPrompt?.trim() ? 'yes' : 'no'} skills=${context.skills.length} projectRules=${context.projectRules?.source ?? 'none'}`);
+	logger.log(`[SystemPrompt] 构建完成 length=${systemPrompt.length} 自定义=${context.agentPrompt?.trim() ? 'yes' : 'no'} skills=${context.skills.length} projectRules=${context.projectRules?.source ?? 'none'} traeRules=${context.traeRules?.sources.length ?? 0}`);
 	logger.log(`[SystemPrompt] 完整内容如下：\n${systemPrompt}`);
 
 	return systemPrompt;

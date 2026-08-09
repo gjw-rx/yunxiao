@@ -71,5 +71,31 @@ description: 无 type 字段
 			assert.strictEqual(agent?.type, 'agent');
 			assert.strictEqual(skill?.type, undefined);
 		});
+
+		it('支持嵌套 <dir>/<name>/SKILL.md 结构', async () => {
+			await fs.mkdir(path.join(dir, 'nested-skill'));
+			await fs.writeFile(
+				path.join(dir, 'nested-skill', 'SKILL.md'),
+				'---\nname: nested-a\ndescription: 嵌套 skill\n---\nbody'
+			);
+			const skills = await loadSkillsFromDirectory(dir);
+			const nested = skills.find((s) => s.name === 'nested-a');
+			assert.ok(nested, '应加载嵌套 SKILL.md');
+			assert.strictEqual(nested.description, '嵌套 skill');
+			assert.strictEqual(nested.sourcePath, path.join(dir, 'nested-skill', 'SKILL.md'));
+		});
+
+		it('嵌套目录无 SKILL.md 时静默跳过且不影响扁平文件', async () => {
+			await fs.mkdir(path.join(dir, 'empty-dir'));
+			const skills = await loadSkillsFromDirectory(dir);
+			assert.strictEqual(skills.length, 2, '仅保留扁平 agent.md 与 skill.md');
+		});
+
+		it('嵌套 SKILL.md 无 frontmatter 时跳过', async () => {
+			await fs.mkdir(path.join(dir, 'bad-skill'));
+			await fs.writeFile(path.join(dir, 'bad-skill', 'SKILL.md'), '无 frontmatter 的正文');
+			const skills = await loadSkillsFromDirectory(dir);
+			assert.ok(!skills.find((s) => s.name === 'bad-skill'));
+		});
 	});
 });

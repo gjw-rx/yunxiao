@@ -36,6 +36,7 @@ import { loadSkillsFromDirectory } from './skill/skillLoader';
 import { SkillTool } from './skill/skillTool';
 import { getModelConfig } from './config/modelConfig';
 import { getSyncEnabled, onClaudeConfigChange } from './config/claudeConfig';
+import { getSyncEnabled as getTraeSyncEnabled, onTraeConfigChange } from './config/traeConfig';
 import { createProvider } from './llm/provider';
 import { MessageStore } from './memory/messageStore';
 import { AgentLoop } from './agent/agentLoop';
@@ -195,7 +196,56 @@ async function _activate(context: vscode.ExtensionContext) {
 	// 配置变更热生效：重新同步并刷新斜杠命令数据
 	context.subscriptions.push(
 		onClaudeConfigChange(() => {
-			void syncClaudeSkills();
+			// Claude 变更后联动重跑 Trae 同步：让 Trae 补上因卸载而空出的同名 skill（去重协调）
+			void (async () => {
+				await syncClaudeSkills();
+				await syncTraeSkills();
+			})();
+		})
+	);
+
+	// Trae 目录 SKILL 同步（「同步TRAE配置」开启时加载 ~/.trae/skills、~/.trae-cn/skills
+	// 与项目 .trae/skills、.trae-cn/skills；关闭时卸载本次注册的 Trae skill）
+	let traeSkillNames: string[] = [];
+	const syncTraeSkills = async (): Promise<void> => {
+		for (const name of traeSkillNames) {
+			skillRegistry.unregister(name);
+			logger.log(`[Extension] 卸载 Trae 目录 Skill name=${name}`);
+		}
+		traeSkillNames = [];
+		if (!getTraeSyncEnabled()) {
+			provider.refreshSlashCommands();
+			return;
+		}
+		const workspaceRoot = workspaceRoots[0] ?? process.cwd();
+		const traeDirs = [
+			path.join(os.homedir(), '.trae', 'skills'),
+			path.join(os.homedir(), '.trae-cn', 'skills'),
+			path.join(workspaceRoot, '.trae', 'skills'),
+			path.join(workspaceRoot, '.trae-cn', 'skills'),
+		];
+		for (const dir of traeDirs) {
+			const loaded = await loadSkillsFromDirectory(dir);
+			for (const skill of loaded) {
+				// 去重：显式配置目录与 Claude 目录优先，Trae 目录同名不覆盖（仅补缺）
+				if (skillRegistry.get(skill.name)) {
+					logger.log(`[Extension] 跳过同名 Skill（显式/Claude 目录优先） name=${skill.name} 目录=${dir}`);
+					continue;
+				}
+				skillRegistry.register(skill);
+				traeSkillNames.push(skill.name);
+			}
+			if (loaded.length > 0) {
+				logger.log(`[Extension] 从 Trae 目录加载了 ${loaded.length} 个 Skill: ${dir}`);
+			}
+		}
+		provider.refreshSlashCommands();
+	};
+	await syncTraeSkills();
+	// 配置变更热生效：重新同步并刷新斜杠命令数据
+	context.subscriptions.push(
+		onTraeConfigChange(() => {
+			void syncTraeSkills();
 		})
 	);
 
