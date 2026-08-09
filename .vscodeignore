@@ -4,6 +4,16 @@ out/**
 node_modules/**
 src/**
 docs/**
+.agents/**
+.claude/**
+.trae/**
+.reasonix/**
+coverage/**
+openspec/**
+yunxiao-agent-icon/**
+AGENTS.md
+CLAUDE.md
+RTK.md
 .gitignore
 .yarnrc
 esbuild.js
