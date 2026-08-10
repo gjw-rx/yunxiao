@@ -128,7 +128,7 @@ async function _activate(context: vscode.ExtensionContext) {
 	registry.register(new FindReferencesTool());
 	registry.register(new GoToDefinitionTool());
 
-	// 外部网络检索（Tavily）：未配置启用项或 API Key 时 web.search 返回不可用错误，不发起网络请求
+	// 外部网络检索（Tavily）：未配置启用项或 API Key 时 web_search 返回不可用错误，不发起网络请求
 	registry.register(new WebSearchTool({ provider: new TavilyWebSearchProvider() }));
 
 	// 终端执行与 Git 集成

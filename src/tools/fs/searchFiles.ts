@@ -1,5 +1,5 @@
 /**
- * fs.search_files - 文件内容搜索（read 权限，免审批）。
+ * fs_search_files - 文件内容搜索（read 权限，免审批）。
  * 优先 ripgrep（`rg`）：regex 模式 `rg --json -C <n> <pattern>`，glob 模式 `rg --files -g <glob>`。
  * rg 缺失（spawn ENOENT）回退 Node 原生搜索（限文件数/大小，避免 OOM）。
  * 返回匹配位置 + 上下文行。结果上限 MAX_MATCHES，超限标注 truncated。
@@ -36,8 +36,8 @@ const NODE_FALLBACK_MAX_FILES = 500;
 
 export class SearchFilesTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'fs.search_files',
-		description: '搜索工作区文件内容（ripgrep 优先，缺失回退 Node）。支持 regex 与 glob 两种模式。用于代码探索与模糊定位，替代已移除的 code.search_index。',
+		name: 'fs_search_files',
+		description: '搜索工作区文件内容（ripgrep 优先，缺失回退 Node）。支持 regex 与 glob 两种模式。用于代码探索与模糊定位，替代已移除的 code_search_index。',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -73,7 +73,7 @@ export class SearchFilesTool extends BaseTool {
 		const contextLines =
 			typeof args.contextLines === 'number' ? args.contextLines : DEFAULT_CONTEXT_LINES;
 		const startedAt = Date.now();
-		logger.log(`[fs.search_files] 开始 - pattern=${pattern.slice(0, 100)}, mode=${mode}, path=${inputPath}`);
+		logger.log(`[fs_search_files] 开始 - pattern=${pattern.slice(0, 100)}, mode=${mode}, path=${inputPath}`);
 
 		// 1. 路径安全解析（搜索根）
 		let resolved;
@@ -83,7 +83,7 @@ export class SearchFilesTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
-				logger.error(`[fs.search_files] 路径解析失败 - path=${inputPath}, error=${err.message}`);
+				logger.error(`[fs_search_files] 路径解析失败 - path=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -99,7 +99,7 @@ export class SearchFilesTool extends BaseTool {
 		} catch (err) {
 			if (isENOENT(err)) {
 				// rg 不存在，回退 Node
-				logger.log(`[fs.search_files] rg 不可用，回退 Node 搜索 - path=${resolved.fsPath}`);
+				logger.log(`[fs_search_files] rg 不可用，回退 Node 搜索 - path=${resolved.fsPath}`);
 				usedFallback = true;
 				matches = await this.nodeSearch(
 					pattern,
@@ -109,7 +109,7 @@ export class SearchFilesTool extends BaseTool {
 					context.maxFileSize
 				);
 			} else {
-				logger.error(`[fs.search_files] ripgrep 执行失败 - error=${err instanceof Error ? err.message : String(err)}`);
+				logger.error(`[fs_search_files] ripgrep 执行失败 - error=${err instanceof Error ? err.message : String(err)}`);
 				return {
 					status: 'error',
 					error: `ripgrep 执行失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -129,7 +129,7 @@ export class SearchFilesTool extends BaseTool {
 			file: path.relative(root, path.resolve(resolved.fsPath, m.file)).split(path.sep).join('/'),
 		}));
 
-		logger.log(`[fs.search_files] 完成 - path=${inputPath}, matches=${matches.length}, truncated=${truncated}, fallback=${usedFallback}, duration_ms=${Date.now() - startedAt}`);
+		logger.log(`[fs_search_files] 完成 - path=${inputPath}, matches=${matches.length}, truncated=${truncated}, fallback=${usedFallback}, duration_ms=${Date.now() - startedAt}`);
 		return {
 			status: 'success',
 			result: JSON.stringify(

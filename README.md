@@ -43,20 +43,20 @@
 
 | 类别 | 工具 | 说明 | 权限 |
 |------|------|------|------|
-| 文件 | `fs.read_file` | 分页读取文件内容 | 只读 |
-| 文件 | `fs.write_file` | 原子写入 UTF-8 文本文件 | 需审批 |
-| 文件 | `fs.list_dir` | 列出目录内容 | 只读 |
-| 文件 | `fs.search_files` | 按内容搜索文件（ripgrep / glob） | 只读 |
-| 文件 | `fs.delete_file` | 删除文件（移入回收站） | 需审批 |
-| 文件 | `fs.move_file` | 移动 / 重命名文件 | 需审批 |
-| 代码 | `code.edit` | 字符串替换或 unified diff 精准编辑，带 diff 预览与冲突检测 | 需审批 |
-| 代码 | `code.find_references` | 查找符号引用 | 只读 |
-| 代码 | `code.get_diagnostics` | 获取文件诊断信息 | 只读 |
-| 代码 | `code.go_to_definition` | 跳转到符号定义 | 只读 |
-| 代码 | `code.workspace_symbols` | 搜索工作区符号 | 只读 |
-| Git | `git.status` / `git.log` / `git.diff` | 仓库状态、提交历史、差异查看 | 只读 |
-| Git | `git.commit` / `git.branch` / `git.stash` | 提交、分支管理、stash 操作 | 需审批 |
-| 终端 | `terminal.exec` | 执行 shell 命令并捕获输出；白名单命令自动放行，危险命令需审批 | 需审批 |
+| 文件 | `fs_read_file` | 分页读取文件内容 | 只读 |
+| 文件 | `fs_write_file` | 原子写入 UTF-8 文本文件 | 需审批 |
+| 文件 | `fs_list_dir` | 列出目录内容 | 只读 |
+| 文件 | `fs_search_files` | 按内容搜索文件（ripgrep / glob） | 只读 |
+| 文件 | `fs_delete_file` | 删除文件（移入回收站） | 需审批 |
+| 文件 | `fs_move_file` | 移动 / 重命名文件 | 需审批 |
+| 代码 | `code_edit` | 字符串替换或 unified diff 精准编辑，带 diff 预览与冲突检测 | 需审批 |
+| 代码 | `code_find_references` | 查找符号引用 | 只读 |
+| 代码 | `code_get_diagnostics` | 获取文件诊断信息 | 只读 |
+| 代码 | `code_go_to_definition` | 跳转到符号定义 | 只读 |
+| 代码 | `code_workspace_symbols` | 搜索工作区符号 | 只读 |
+| Git | `git_status` / `git_log` / `git_diff` | 仓库状态、提交历史、差异查看 | 只读 |
+| Git | `git_commit` / `git_branch` / `git_stash` | 提交、分支管理、stash 操作 | 需审批 |
+| 终端 | `terminal_exec` | 执行 shell 命令并捕获输出；白名单命令自动放行，危险命令需审批 | 需审批 |
 | Skill | `skill` | 按名称加载 Skill，返回 Markdown 指令 | 只读 |
 
 ## 安全模型
@@ -77,7 +77,7 @@
 | `yunxiaoAgent.model.maxTokens` | `4096` | 单次最大输出 token 数 |
 | `yunxiaoAgent.toolTimeoutMs` | `30000` | 本地工具执行超时（毫秒） |
 | `yunxiaoAgent.terminalTimeoutMs` | `300000` | 终端命令执行超时（毫秒） |
-| `yunxiaoAgent.alwaysAllowTools` | `[]` | 无需审批直接放行的工具名列表（如 `fs.write_file`） |
+| `yunxiaoAgent.alwaysAllowTools` | `[]` | 无需审批直接放行的工具名列表（如 `fs_write_file`） |
 | `yunxiaoAgent.shellWhitelist` | 14 条安全命令前缀 | 终端自动放行的命令前缀 |
 | `yunxiaoAgent.skills.directories` | `[".vscode/skills"]` | Skill 搜索目录（相对工作区根） |
 | `yunxiaoAgent.sync.source` | `none` | 生态配置来源：`none` / `claude`（同步 Claude SKILL 与项目规则）/ `trae` |

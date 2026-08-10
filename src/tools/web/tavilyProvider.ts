@@ -1,7 +1,7 @@
 /**
  * TavilyWebSearchProvider - 通过 Tavily 搜索 API 提供外部网络检索。
  * 使用全局 fetch + AbortController 实现超时控制；不记录凭据、请求头或完整认证响应，
- * 错误仅返回通用中文文案（不含 API Key），供 web.search 工具按现有失败协议转为结构化错误。
+ * 错误仅返回通用中文文案（不含 API Key），供 web_search 工具按现有失败协议转为结构化错误。
  */
 import * as logger from '../../logger';
 import {

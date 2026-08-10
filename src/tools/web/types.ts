@@ -1,6 +1,6 @@
 /**
  * Web 搜索契约 - Provider 接口、标准化请求/响应与错误类型。
- * Provider 实现（Tavily）与工具（web.search）通过本文件解耦：
+ * Provider 实现（Tavily）与工具（web_search）通过本文件解耦：
  * 工具只依赖接口，外部响应格式变化不影响工具契约。
  */
 

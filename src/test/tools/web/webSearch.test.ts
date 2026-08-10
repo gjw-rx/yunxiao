@@ -78,10 +78,10 @@ describe('WebSearchTool', () => {
 		const registry = new ToolRegistry();
 		registry.register(tool);
 		// Act / Assert
-		assert.throws(() => registry.validateArgs('web.search', { query: 'x', maxResults: 0 }), InvalidArgumentsError);
-		assert.throws(() => registry.validateArgs('web.search', { query: 'x', maxResults: 11 }), InvalidArgumentsError);
-		assert.throws(() => registry.validateArgs('web.search', { query: 'x', searchDepth: 'deep' }), InvalidArgumentsError);
-		assert.throws(() => registry.validateArgs('web.search', { query: 'x', unknown: 1 }), InvalidArgumentsError);
+		assert.throws(() => registry.validateArgs('web_search', { query: 'x', maxResults: 0 }), InvalidArgumentsError);
+		assert.throws(() => registry.validateArgs('web_search', { query: 'x', maxResults: 11 }), InvalidArgumentsError);
+		assert.throws(() => registry.validateArgs('web_search', { query: 'x', searchDepth: 'deep' }), InvalidArgumentsError);
+		assert.throws(() => registry.validateArgs('web_search', { query: 'x', unknown: 1 }), InvalidArgumentsError);
 	});
 
 	it('未启用时不发起网络请求，返回不可用错误且不可重试', async () => {

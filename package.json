@@ -102,25 +102,25 @@
         "yunxiaoAgent.maxFileSize": {
           "type": "number",
           "default": 1048576,
-          "description": "fs.read_file 读取文件大小上限（字节），作为分页读取的护栏，默认 1MB",
+          "description": "fs_read_file 读取文件大小上限（字节），作为分页读取的护栏，默认 1MB",
           "scope": "window"
         },
         "yunxiaoAgent.readFile.maxLines": {
           "type": "number",
           "default": 2000,
-          "description": "fs.read_file 单页最大行数（默认 2000），配合 offset 分页续读",
+          "description": "fs_read_file 单页最大行数（默认 2000），配合 offset 分页续读",
           "scope": "window"
         },
         "yunxiaoAgent.readFile.maxBytes": {
           "type": "number",
           "default": 51200,
-          "description": "fs.read_file 单页累计字节预算（默认 50KB），超过即停止并提示 offset 续读",
+          "description": "fs_read_file 单页累计字节预算（默认 50KB），超过即停止并提示 offset 续读",
           "scope": "window"
         },
         "yunxiaoAgent.readFile.maxLineLength": {
           "type": "number",
           "default": 2000,
-          "description": "fs.read_file 单行最大字符数（默认 2000），超出截断并标注",
+          "description": "fs_read_file 单行最大字符数（默认 2000），超出截断并标注",
           "scope": "window"
         },
         "yunxiaoAgent.toolTimeoutMs": {
@@ -135,7 +135,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "无需审批直接放行的本地工具名列表（如 fs.write_file）；只读工具本就免审批",
+          "description": "无需审批直接放行的本地工具名列表（如 fs_write_file）；只读工具本就免审批",
           "scope": "window"
         },
         "yunxiaoAgent.scopedApprovals": {
@@ -204,7 +204,7 @@
         "yunxiaoAgent.webSearch.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "是否启用外部网络检索（web.search 工具）；启用后还需配置 Tavily API Key 才会发起请求",
+          "description": "是否启用外部网络检索（web_search 工具）；启用后还需配置 Tavily API Key 才会发起请求",
           "scope": "window"
         },
         "yunxiaoAgent.webSearch.apiKey": {
@@ -218,7 +218,7 @@
           "default": 5,
           "minimum": 1,
           "maximum": 10,
-          "description": "web.search 默认结果数（1-10，调用参数缺省时使用，越界将被约束到该范围）",
+          "description": "web_search 默认结果数（1-10，调用参数缺省时使用，越界将被约束到该范围）",
           "scope": "window"
         },
         "yunxiaoAgent.webSearch.searchDepth": {

@@ -39,9 +39,9 @@ export interface ToolResultMetadata {
 	readonly affected_files?: string[];
 	readonly diff?: string;
 	readonly duration_ms?: number;
-	/** 终端命令退出码（terminal.exec 填充）。 */
+	/** 终端命令退出码（terminal_exec 填充）。 */
 	readonly exitCode?: number;
-	/** git commit 短 SHA（git.commit 填充）。 */
+	/** git commit 短 SHA（git_commit 填充）。 */
 	readonly sha?: string;
 	/** 结果是否可由 Agent 在调整策略后有限重试。缺省为 false。 */
 	readonly retryable?: boolean;
@@ -51,9 +51,9 @@ export interface ToolResultMetadata {
 	readonly redacted?: boolean;
 	/** 本地执行已开始但结果未确认，禁止自动重放。 */
 	readonly execution_state?: 'unknown';
-	/** code.edit 预览所依据的文件内容版本。 */
+	/** code_edit 预览所依据的文件内容版本。 */
 	readonly base_version?: string;
-	/** code.edit 成功写入后的文件内容版本。 */
+	/** code_edit 成功写入后的文件内容版本。 */
 	readonly applied_version?: string;
 }
 

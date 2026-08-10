@@ -52,12 +52,12 @@ describe('ApprovalGateway', () => {
 	});
 
 	it('命中 alwaysAllow 配置则不弹窗直接放行', async () => {
-		const { store } = mockStore(['fs.write_file']);
+		const { store } = mockStore(['fs_write_file']);
 		const { prompter, calls } = mockPrompter(['deny']);
 		const gw = new ApprovalGateway({ prompter, store });
 		// Act
 		const decision = await gw.requestApproval(
-			'fs.write_file',
+			'fs_write_file',
 			'写入 src/x.ts',
 			'sess-1'
 		);
@@ -71,11 +71,11 @@ describe('ApprovalGateway', () => {
 		const { prompter, calls } = mockPrompter(['allow']);
 		const gw = new ApprovalGateway({ prompter, store });
 		// 第一次：弹窗 -> allow
-		const d1 = await gw.requestApproval('fs.write_file', '写入 a', 'sess-1');
+		const d1 = await gw.requestApproval('fs_write_file', '写入 a', 'sess-1');
 		assert.strictEqual(d1, 'allow');
 		assert.strictEqual(calls.length, 1);
 		// 第二次：会话级命中，不弹窗
-		const d2 = await gw.requestApproval('fs.write_file', '写入 b', 'sess-1');
+		const d2 = await gw.requestApproval('fs_write_file', '写入 b', 'sess-1');
 		assert.strictEqual(d2, 'allow');
 		assert.strictEqual(calls.length, 1);
 	});
@@ -84,9 +84,9 @@ describe('ApprovalGateway', () => {
 		const { store } = mockStore();
 		const { prompter, calls } = mockPrompter(['allow', 'deny']);
 		const gw = new ApprovalGateway({ prompter, store });
-		await gw.requestApproval('fs.write_file', '写入 a', 'sess-1');
+		await gw.requestApproval('fs_write_file', '写入 a', 'sess-1');
 		// 新 session：不命中会话级，重新弹窗
-		const d2 = await gw.requestApproval('fs.write_file', '写入 b', 'sess-2');
+		const d2 = await gw.requestApproval('fs_write_file', '写入 b', 'sess-2');
 		assert.strictEqual(d2, 'deny');
 		assert.strictEqual(calls.length, 2);
 	});
@@ -96,17 +96,17 @@ describe('ApprovalGateway', () => {
 		const { prompter } = mockPrompter(['always', undefined]);
 		const gw = new ApprovalGateway({ prompter, store });
 		// 第一次：弹窗 -> always，写入配置
-		const d1 = await gw.requestApproval('fs.move_file', '移动 a', 'sess-1');
+		const d1 = await gw.requestApproval('fs_move_file', '移动 a', 'sess-1');
 		assert.strictEqual(d1, 'always');
-		assert.deepStrictEqual(store.added, ['fs.move_file']);
+		assert.deepStrictEqual(store.added, ['fs_move_file']);
 		// 第二次：持久允许命中，不弹窗
-		const d2 = await gw.requestApproval('fs.move_file', '移动 b', 'sess-2');
+		const d2 = await gw.requestApproval('fs_move_file', '移动 b', 'sess-2');
 		assert.strictEqual(d2, 'allow');
 	});
 
 	it('范围授权不得跨工作区、资源或有效期复用', async () => {
 		const approvals = [{
-			toolName: 'code.edit',
+			toolName: 'code_edit',
 			workspaceId: 'c:/repo',
 			resourcePattern: 'src/a.ts',
 			expiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -122,15 +122,15 @@ describe('ApprovalGateway', () => {
 				addScopedApproval: async () => {},
 			},
 		});
-		const exact = await gw.requestApproval('code.edit', '编辑', 's1', undefined, {
+		const exact = await gw.requestApproval('code_edit', '编辑', 's1', undefined, {
 			workspaceId: 'C:\\repo', resourcePattern: 'src\\a.ts',
 		});
 		assert.strictEqual(exact, 'allow');
 		assert.strictEqual(calls.length, 0);
-		await gw.requestApproval('code.edit', '编辑', 's1', undefined, { workspaceId: 'c:/repo', resourcePattern: 'src/b.ts' });
-		await gw.requestApproval('code.edit', '编辑', 's1', undefined, { workspaceId: 'c:/other', resourcePattern: 'src/a.ts' });
+		await gw.requestApproval('code_edit', '编辑', 's1', undefined, { workspaceId: 'c:/repo', resourcePattern: 'src/b.ts' });
+		await gw.requestApproval('code_edit', '编辑', 's1', undefined, { workspaceId: 'c:/other', resourcePattern: 'src/a.ts' });
 		approvals[0] = { ...approvals[0], expiresAt: new Date(Date.now() - 1).toISOString() };
-		await gw.requestApproval('code.edit', '编辑', 's1', undefined, { workspaceId: 'c:/repo', resourcePattern: 'src/a.ts' });
+		await gw.requestApproval('code_edit', '编辑', 's1', undefined, { workspaceId: 'c:/repo', resourcePattern: 'src/a.ts' });
 		assert.strictEqual(calls.length, 3);
 	});
 
@@ -139,7 +139,7 @@ describe('ApprovalGateway', () => {
 		const { prompter } = mockPrompter([undefined]); // 关闭弹窗
 		const gw = new ApprovalGateway({ prompter, store });
 		const decision = await gw.requestApproval(
-			'fs.delete_file',
+			'fs_delete_file',
 			'删除 a',
 			'sess-1'
 		);
@@ -150,10 +150,10 @@ describe('ApprovalGateway', () => {
 		const { store } = mockStore();
 		const { prompter, calls } = mockPrompter(['allow', 'deny']);
 		const gw = new ApprovalGateway({ prompter, store });
-		await gw.requestApproval('fs.write_file', '写入 a', 'sess-1');
+		await gw.requestApproval('fs_write_file', '写入 a', 'sess-1');
 		gw.clearSession('sess-1');
 		// 清理后同 session 同工具重新弹窗
-		const d = await gw.requestApproval('fs.write_file', '写入 b', 'sess-1');
+		const d = await gw.requestApproval('fs_write_file', '写入 b', 'sess-1');
 		assert.strictEqual(d, 'deny');
 		assert.strictEqual(calls.length, 2);
 	});
@@ -162,8 +162,8 @@ describe('ApprovalGateway', () => {
 		const { store } = mockStore();
 		const { prompter, calls } = mockPrompter(['allow', 'deny']);
 		const gw = new ApprovalGateway({ prompter, store });
-		await gw.requestApproval('fs.write_file', '写入 a');
-		const d2 = await gw.requestApproval('fs.write_file', '写入 b');
+		await gw.requestApproval('fs_write_file', '写入 a');
+		const d2 = await gw.requestApproval('fs_write_file', '写入 b');
 		assert.strictEqual(d2, 'deny');
 		assert.strictEqual(calls.length, 2);
 	});
@@ -172,7 +172,7 @@ describe('ApprovalGateway', () => {
 		const { store } = mockStore();
 		const { prompter, calls } = mockPrompter(['allow', 'allow']);
 		const gw = new ApprovalGateway({ prompter, store });
-		const decision = await gw.requestDestructiveApproval('fs.delete_file', '删除 a', 'sess-1');
+		const decision = await gw.requestDestructiveApproval('fs_delete_file', '删除 a', 'sess-1');
 		assert.strictEqual(decision, 'allow');
 		assert.strictEqual(calls.length, 2);
 	});

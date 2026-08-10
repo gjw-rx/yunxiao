@@ -1,5 +1,5 @@
 /**
- * git.status - 查询工作区状态（只读）。
+ * git_status - 查询工作区状态（只读）。
  *
  * 返回当前分支、跟踪分支，以及已暂存 / 未暂存 / 未跟踪文件列表。
  * 文件列表超过阈值时截断并标注 truncated 与 total。
@@ -85,7 +85,7 @@ function mapStatus(status: StatusResult): MappedStatus {
 
 export class GitStatusTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'git.status',
+		name: 'git_status',
 		description: '查询工作区 git 状态：当前分支、暂存/未暂存/未跟踪文件列表。',
 		parameters: { type: 'object', properties: {} },
 		permissions: 'read',
@@ -105,20 +105,20 @@ export class GitStatusTool extends BaseTool {
 		const startedAt = Date.now();
 		const root = context.workspaceRoots[0];
 		if (!root) {
-			logger.error('[git.status] 执行失败 - 错误=未打开工作区');
+			logger.error('[git_status] 执行失败 - 错误=未打开工作区');
 			return { status: 'error', error: '未打开工作区' };
 		}
 		const git = this.createClient(root);
-		logger.log(`[git.status] 开始执行 - cwd=${root}`);
+		logger.log(`[git_status] 开始执行 - cwd=${root}`);
 
 		if (!(await git.checkIsRepo())) {
-			logger.error(`[git.status] 执行失败 - 错误=当前工作区不是 git 仓库, cwd=${root}`);
+			logger.error(`[git_status] 执行失败 - 错误=当前工作区不是 git 仓库, cwd=${root}`);
 			return { status: 'error', error: '当前工作区不是 git 仓库' };
 		}
 
 		const status = await git.status();
 		const mapped = mapStatus(status);
-		logger.log(`[git.status] 执行完成 - staged=${mapped.staged.length}, unstaged=${mapped.unstaged.length}, untracked=${mapped.untracked.length}, truncated=${mapped.truncated ? '是' : '否'}, duration_ms=${Date.now() - startedAt}`);
+		logger.log(`[git_status] 执行完成 - staged=${mapped.staged.length}, unstaged=${mapped.unstaged.length}, untracked=${mapped.untracked.length}, truncated=${mapped.truncated ? '是' : '否'}, duration_ms=${Date.now() - startedAt}`);
 
 		return {
 			status: 'success',

@@ -1,5 +1,5 @@
 /**
- * terminal.exec - 受控终端执行（execute 权限，自行处理审批）。
+ * terminal_exec - 受控终端执行（execute 权限，自行处理审批）。
  *
  * 流程：ShellWhitelist.classify ->
  *   dangerous -> ApprovalGateway 审批 -> 允许则执行，拒绝则 cancelled
@@ -27,7 +27,7 @@ import { ShellWhitelist } from './shellWhitelist';
 import type { ApprovalGateway } from '../../core/approvalGateway';
 import * as logger from '../../logger';
 
-/** terminal.exec 构造依赖。 */
+/** terminal_exec 构造依赖。 */
 export interface TerminalExecToolOptions {
 	readonly approval: ApprovalGateway;
 	readonly shellWhitelist: ShellWhitelist;
@@ -53,7 +53,7 @@ export type SpawnFn = (
 
 export class TerminalExecTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'terminal.exec',
+		name: 'terminal_exec',
 		description:
 			'在工作区执行 shell 命令，捕获 stdout/stderr/exitCode。危险命令（rm -rf、管道、重定向等）和未知命令需用户审批；白名单命令（npm test 等）自动放行。用于运行测试/构建/lint。',
 		parameters: {
@@ -157,9 +157,9 @@ export class TerminalExecTool extends BaseTool {
 			const risk = classifyResult.category === 'dangerous'
 				? `检测到危险模式：${classifyResult.reason}\n`
 				: '';
-			const summary = `${risk}terminal.exec 将执行：\n${command}`;
+			const summary = `${risk}terminal_exec 将执行：\n${command}`;
 			const decision = await this.approval.requestApproval(
-				'terminal.exec',
+				'terminal_exec',
 				summary,
 				context.sessionId,
 				undefined,

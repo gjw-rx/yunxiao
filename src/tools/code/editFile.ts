@@ -1,5 +1,5 @@
 /**
- * code.edit - 精准代码编辑（write 权限，自行处理审批：先 diff 预览再确认）。
+ * code_edit - 精准代码编辑（write 权限，自行处理审批：先 diff 预览再确认）。
  *
  * 两种模式：
  * - { path, oldString, newString }：精确替换。oldString 须在文件中唯一出现（0=未找到，>1=多处匹配）。
@@ -29,7 +29,7 @@ import { DiffViewer } from '../diff/diffViewer';
 import type { ApprovalGateway } from '../../core/approvalGateway';
 import * as logger from '../../logger';
 
-/** code.edit 构造依赖。 */
+/** code_edit 构造依赖。 */
 export interface CodeEditToolOptions {
 	readonly approval: ApprovalGateway;
 	readonly diffViewer?: DiffViewer;
@@ -37,7 +37,7 @@ export interface CodeEditToolOptions {
 
 export class CodeEditTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'code.edit',
+		name: 'code_edit',
 		description: '精准编辑工作区内文件：精确字符串替换或应用 unified diff，含 diff 预览与冲突检测。',
 		parameters: {
 			type: 'object',
@@ -84,7 +84,7 @@ export class CodeEditTool extends BaseTool {
 	): Promise<ToolExecutionResult> {
 		const inputPath = args.path as string;
 		const startedAt = Date.now();
-		logger.log(`[code.edit] 开始执行 - path=${inputPath}, mode=${typeof args.patch === 'string' ? 'patch' : 'replace'}, hasExpectedVersion=${args.expectedVersion !== undefined && args.expectedVersion !== null}`);
+		logger.log(`[code_edit] 开始执行 - path=${inputPath}, mode=${typeof args.patch === 'string' ? 'patch' : 'replace'}, hasExpectedVersion=${args.expectedVersion !== undefined && args.expectedVersion !== null}`);
 
 		// 1. 路径安全解析
 		let resolved;
@@ -94,7 +94,7 @@ export class CodeEditTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
-				logger.error(`[code.edit] 路径解析失败 - path=${inputPath}, error=${err.message}`);
+				logger.error(`[code_edit] 路径解析失败 - path=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -105,7 +105,7 @@ export class CodeEditTool extends BaseTool {
 		try {
 			content = await fs.readFile(resolved.fsPath, 'utf8');
 		} catch {
-			logger.error(`[code.edit] 文件不存在或不可读 - path=${inputPath}`);
+			logger.error(`[code_edit] 文件不存在或不可读 - path=${inputPath}`);
 			return { status: 'error', error: `文件不存在或不可读: ${inputPath}` };
 		}
 		const baseVersion = getFileVersionFromContent(content);
@@ -175,7 +175,7 @@ export class CodeEditTool extends BaseTool {
 			await this.diffViewer.showDiff(
 				snapshotPath,
 				previewPath,
-				`code.edit: ${inputPath}`
+				`code_edit: ${inputPath}`
 			);
 		} catch {
 			await cleanupTemp();
@@ -185,7 +185,7 @@ export class CodeEditTool extends BaseTool {
 		// 7. 审批（自行处理）
 		const summary = this.buildSummary(inputPath, hasPatch ? 'patch' : 'replace', diff);
 		const decision = await this.approval.requestApproval(
-			'code.edit',
+			'code_edit',
 			summary,
 			context.sessionId,
 			undefined,
@@ -235,21 +235,21 @@ export class CodeEditTool extends BaseTool {
 			`.${path.basename(resolved.fsPath)}.${crypto.randomUUID()}.tmp`
 		);
 		try {
-			// 原子应用：同目录临时文件 + rename（与 fs.write_file 一致，避免半写）；
+			// 原子应用：同目录临时文件 + rename（与 fs_write_file 一致，避免半写）；
 			// tmpdir 中的 before/after 快照保留，diff 视图保持打开（旧 vs 新）
 			await fs.writeFile(applyTmp, proposed, 'utf8');
 			await fs.rename(applyTmp, resolved.fsPath);
 		} catch (err) {
 			await fs.rm(applyTmp, { force: true }).catch(() => { });
 			await cleanupTemp();
-			logger.error(`[code.edit] 应用编辑失败 - path=${inputPath}, error=${err instanceof Error ? err.message : String(err)}`);
+			logger.error(`[code_edit] 应用编辑失败 - path=${inputPath}, error=${err instanceof Error ? err.message : String(err)}`);
 			return {
 				status: 'error',
 				error: `应用编辑失败: ${err instanceof Error ? err.message : String(err)}`,
 			};
 		}
 
-		logger.log(`[code.edit] 执行完成 - path=${inputPath}, 状态=成功, 耗时=${Date.now() - startedAt}ms`);
+		logger.log(`[code_edit] 执行完成 - path=${inputPath}, 状态=成功, 耗时=${Date.now() - startedAt}ms`);
 		return {
 			status: 'success',
 			result: `已应用 1 处编辑: ${inputPath}`,
@@ -266,14 +266,14 @@ export class CodeEditTool extends BaseTool {
 	/** 构造审批摘要：路径 + 模式 + diff 片段（截断防过长）。 */
 	private buildSummary(inputPath: string, mode: string, diff: string): string {
 		const snippet = diff.length > 600 ? diff.slice(0, 600) + '\n...(diff 已截断)' : diff;
-		return `code.edit 将修改 ${inputPath}（${mode} 模式）：\n${snippet}`;
+		return `code_edit 将修改 ${inputPath}（${mode} 模式）：\n${snippet}`;
 	}
 }
 
-/** code.edit 预览快照的任务根目录（系统临时目录下，不在工作区内）。 */
+/** code_edit 预览快照的任务根目录（系统临时目录下，不在工作区内）。 */
 const PREVIEW_TMP_ROOT = path.join(os.tmpdir(), 'yunxiao-agent-code-edit');
 
-/** 快照任务目录的最大保留时长：超过后在下一次 code.edit 时清理（短期保留供 diff 视图，避免永久累积）。 */
+/** 快照任务目录的最大保留时长：超过后在下一次 code_edit 时清理（短期保留供 diff 视图，避免永久累积）。 */
 const PREVIEW_MAX_AGE_MS = 60 * 60 * 1000;
 
 /** 清理超过最大保留时长的旧预览任务目录（best-effort，根目录不存在时静默返回）。 */

@@ -1,6 +1,6 @@
 /**
  * 工具注册表 - 本地工具的发现、注册与列举。
- * 工具按 namespaced name（如 fs.read_file）唯一注册，供路由层与 LLM 工具定义转换使用。
+ * 工具按 namespaced name（如 fs_read_file）唯一注册，供路由层与 LLM 工具定义转换使用。
  */
 import type { ToolSchema } from './types';
 import type { BaseTool } from '../tools/baseTool';

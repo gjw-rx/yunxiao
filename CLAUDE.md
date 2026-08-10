@@ -129,7 +129,7 @@ npm test              # vscode-test（pretest 自动 compile-tests + compile + l
 - 注释、错误消息、日志一律中文。
 - 缩进：多数文件用 tab（`chatPanel.ts` 为 2 空格例外——新代码跟随所在文件既有风格）。
 - TypeScript strict 全开；接口字段用 `readonly`；类型契约集中在 `src/core/types.ts`、`llm/types.ts`、`memory/types.ts`。
-- 新工具开发模式：继承 `tools/baseTool.ts` 的 `BaseTool`，声明 `schema`（工具名 snake_case 如 `fs.read_file`、权限级别 `read/write/execute/destructive`），可选覆盖 `validate`，实现 `execute(args, context)` 返回结构化 `ToolExecutionResult`，然后到 `extension.ts` 注册。
+- 新工具开发模式：继承 `tools/baseTool.ts` 的 `BaseTool`，声明 `schema`（工具名 snake_case 如 `fs_read_file`、权限级别 `read/write/execute/destructive`），可选覆盖 `validate`，实现 `execute(args, context)` 返回结构化 `ToolExecutionResult`，然后到 `extension.ts` 注册。
 - 安全红线：路径必须经 `pathGuard.resolveWithinRoots` 校验；写/执行类工具走审批网关；返回云端前结果会自动脱敏/截断（`BaseTool.governResult`），工具内不自行打印密钥。
 
 ## 10. Notes

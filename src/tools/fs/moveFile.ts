@@ -1,5 +1,5 @@
 /**
- * fs.move_file - 移动/重命名文件（write 权限，经审批网关）。
+ * fs_move_file - 移动/重命名文件（write 权限，经审批网关）。
  * 职责：pathGuard 解析 from/to -> 覆盖检测 -> 自动建 to 父目录 -> rename（跨设备回退 copy+delete）。
  */
 import { promises as fs } from 'fs';
@@ -18,7 +18,7 @@ import * as logger from '../../logger';
 
 export class MoveFileTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'fs.move_file',
+		name: 'fs_move_file',
 		description: '移动/重命名工作区内文件，自动创建目标父目录（write，需审批）。',
 		parameters: {
 			type: 'object',
@@ -44,7 +44,7 @@ export class MoveFileTool extends BaseTool {
 		const fromInput = args.from as string;
 		const toInput = args.to as string;
 		const startedAt = Date.now();
-		logger.log(`[fs.move_file] 开始 - from=${fromInput}, to=${toInput}`);
+		logger.log(`[fs_move_file] 开始 - from=${fromInput}, to=${toInput}`);
 
 		// 1. 解析 from / to
 		let fromResolved, toResolved;
@@ -55,7 +55,7 @@ export class MoveFileTool extends BaseTool {
 			]);
 		} catch (err) {
 			if (err instanceof PathGuardError) {
-				logger.error(`[fs.move_file] 路径解析失败 - from=${fromInput}, to=${toInput}, error=${err.message}`);
+				logger.error(`[fs_move_file] 路径解析失败 - from=${fromInput}, to=${toInput}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -68,7 +68,7 @@ export class MoveFileTool extends BaseTool {
 			return { status: 'error', error: `源文件不存在: ${fromInput}` };
 		}
 		if (await hasVersionConflict(fromResolved.fsPath, args.expectedVersion)) {
-			logger.error(`[fs.move_file] 版本冲突未移动 - from=${fromInput}`);
+			logger.error(`[fs_move_file] 版本冲突未移动 - from=${fromInput}`);
 			return { status: 'error', error: `源文件已被并发修改，未移动: ${fromInput}`, metadata: { retryable: false } };
 		}
 
@@ -97,14 +97,14 @@ export class MoveFileTool extends BaseTool {
 				}
 			}
 		} catch (err) {
-			logger.error(`[fs.move_file] 移动失败 - from=${fromInput}, to=${toInput}, error=${err instanceof Error ? err.message : String(err)}`);
+			logger.error(`[fs_move_file] 移动失败 - from=${fromInput}, to=${toInput}, error=${err instanceof Error ? err.message : String(err)}`);
 			return {
 				status: 'error',
 				error: `移动失败: ${fromInput} -> ${toInput}（${err instanceof Error ? err.message : String(err)}）`,
 			};
 		}
 
-		logger.log(`[fs.move_file] 完成 - from=${fromInput}, to=${toInput}, overwritten=${overwritten}, duration_ms=${Date.now() - startedAt}`);
+		logger.log(`[fs_move_file] 完成 - from=${fromInput}, to=${toInput}, overwritten=${overwritten}, duration_ms=${Date.now() - startedAt}`);
 		return {
 			status: 'success',
 			result: overwritten

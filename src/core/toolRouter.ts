@@ -40,7 +40,7 @@ export class ToolRouter {
 		}
 
 		// 审批门：write/execute/destructive 须经用户确认（read 直通）。
-		// handlesOwnApproval 的工具（如 code.edit 需先 diff 预览）由其在 execute 内自行审批，路由层跳过。
+		// handlesOwnApproval 的工具（如 code_edit 需先 diff 预览）由其在 execute 内自行审批，路由层跳过。
 		if (
 			this.approval?.shouldGate(tool.permission) &&
 			!tool.handlesOwnApproval

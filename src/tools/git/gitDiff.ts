@@ -1,5 +1,5 @@
 /**
- * git.diff - 查询工作区差异（只读）。
+ * git_diff - 查询工作区差异（只读）。
  *
  * 三种模式：
  * - unstaged（默认）：未暂存的改动
@@ -28,7 +28,7 @@ const VALID_MODES: readonly DiffMode[] = ['unstaged', 'staged', 'ref'];
 
 export class GitDiffTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'git.diff',
+		name: 'git_diff',
 		description: '查询工作区差异：未暂存、已暂存或与指定引用的差异。',
 		parameters: {
 			type: 'object',
@@ -76,18 +76,18 @@ export class GitDiffTool extends BaseTool {
 		const startedAt = Date.now();
 		const root = context.workspaceRoots[0];
 		if (!root) {
-			logger.error('[git.diff] 执行失败 - 错误=未打开工作区');
+			logger.error('[git_diff] 执行失败 - 错误=未打开工作区');
 			return { status: 'error', error: '未打开工作区' };
 		}
 		const git = this.createClient(root);
 
 		if (!(await git.checkIsRepo())) {
-			logger.error(`[git.diff] 执行失败 - 错误=当前工作区不是 git 仓库, cwd=${root}`);
+			logger.error(`[git_diff] 执行失败 - 错误=当前工作区不是 git 仓库, cwd=${root}`);
 			return { status: 'error', error: '当前工作区不是 git 仓库' };
 		}
 
 		const mode = (args.mode as DiffMode | undefined) ?? 'unstaged';
-		logger.log(`[git.diff] 开始执行 - cwd=${root}, mode=${mode}, base=${mode === 'ref' ? String(args.base) : '未指定'}`);
+		logger.log(`[git_diff] 开始执行 - cwd=${root}, mode=${mode}, base=${mode === 'ref' ? String(args.base) : '未指定'}`);
 		let diffOutput: string;
 		if (mode === 'staged') {
 			diffOutput = await git.diff(['--cached']);
@@ -117,7 +117,7 @@ export class GitDiffTool extends BaseTool {
 			payload.truncated = true;
 			payload.total_chars = totalChars;
 		}
-		logger.log(`[git.diff] 执行完成 - mode=${mode}, totalChars=${totalChars ?? diffOutput.length}, truncated=${truncated ? '是' : '否'}, duration_ms=${Date.now() - startedAt}`);
+		logger.log(`[git_diff] 执行完成 - mode=${mode}, totalChars=${totalChars ?? diffOutput.length}, truncated=${truncated ? '是' : '否'}, duration_ms=${Date.now() - startedAt}`);
 
 		return {
 			status: 'success',

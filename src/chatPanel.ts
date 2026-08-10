@@ -217,8 +217,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           output?: unknown;
         };
         panel.webview.postMessage({ command: 'toolState', ...p });
-        // code.edit 成功且有 diff 数据时，额外发送 diffResult 命令
-        if (p.tool === 'code.edit' && p.state === 'success' && p.output) {
+        // code_edit 成功且有 diff 数据时，额外发送 diffResult 命令
+        if (p.tool === 'code_edit' && p.state === 'success' && p.output) {
           const out = p.output as Record<string, unknown>;
           if (out.diff) {
             panel.webview.postMessage({

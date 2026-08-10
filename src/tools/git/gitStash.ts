@@ -1,5 +1,5 @@
 /**
- * git.stash - 暂存管理（write 权限，路由层统一审批）。
+ * git_stash - 暂存管理（write 权限，路由层统一审批）。
  *
  * 三种操作：
  * - push（默认）：暂存当前改动（可选 message）
@@ -28,7 +28,7 @@ const NO_STASH_PATTERN = /no stash entries|no stash found|does not have a stash/
 
 export class GitStashTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'git.stash',
+		name: 'git_stash',
 		description: '暂存管理：暂存改动 / 恢复 stash / 列出 stash 条目。',
 		parameters: {
 			type: 'object',
@@ -77,11 +77,11 @@ export class GitStashTool extends BaseTool {
 		}
 
 		const action = (args.action as StashAction | undefined) ?? 'push';
-		logger.log(`[git.stash] 开始执行 - cwd=${root}, action=${action}, messageLen=${typeof args.message === 'string' ? args.message.length : 0}`);
+		logger.log(`[git_stash] 开始执行 - cwd=${root}, action=${action}, messageLen=${typeof args.message === 'string' ? args.message.length : 0}`);
 
 		if (action === 'list') {
 			const list = await git.stash(['list']);
-			logger.log(`[git.stash] 执行完成 - action=list, stashCount=${list.length}, duration_ms=${Date.now() - startedAt}`);
+			logger.log(`[git_stash] 执行完成 - action=list, stashCount=${list.length}, duration_ms=${Date.now() - startedAt}`);
 			return {
 				status: 'success',
 				result: JSON.stringify({ stash: list }, null, 2),
@@ -92,7 +92,7 @@ export class GitStashTool extends BaseTool {
 		if (action === 'pop') {
 			try {
 				await git.stash(['pop']);
-				logger.log(`[git.stash] 执行完成 - action=pop, duration_ms=${Date.now() - startedAt}`);
+				logger.log(`[git_stash] 执行完成 - action=pop, duration_ms=${Date.now() - startedAt}`);
 				return {
 					status: 'success',
 					result: '已恢复最近的 stash 条目',
@@ -100,7 +100,7 @@ export class GitStashTool extends BaseTool {
 				};
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
-				logger.error(`[git.stash] 执行失败 - action=pop, 错误=${msg}`);
+				logger.error(`[git_stash] 执行失败 - action=pop, 错误=${msg}`);
 				if (NO_STASH_PATTERN.test(msg)) {
 					return {
 						status: 'error',
@@ -118,7 +118,7 @@ export class GitStashTool extends BaseTool {
 				? ['push', '-m', message]
 				: ['push'];
 		await git.stash(stashArgs);
-		logger.log(`[git.stash] 执行完成 - action=push, messageLen=${typeof message === 'string' ? message.length : 0}, duration_ms=${Date.now() - startedAt}`);
+		logger.log(`[git_stash] 执行完成 - action=push, messageLen=${typeof message === 'string' ? message.length : 0}, duration_ms=${Date.now() - startedAt}`);
 		return {
 			status: 'success',
 			result:

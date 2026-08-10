@@ -1,5 +1,5 @@
 /**
- * code.go_to_definition - 通过 VSCode Language API 查找符号定义位置（只读）。
+ * code_go_to_definition - 通过 VSCode Language API 查找符号定义位置（只读）。
  *
  * 流程：pathGuard 解析 -> 校验文件存在 -> 调用 vscode.executeDefinitionProvider
  *   -> 处理 Location / LocationLink[] 多种返回 -> 映射为 { file, line, column }（1-based）。
@@ -63,7 +63,7 @@ const defaultShim: VsCodeDefShim = {
 
 export class GoToDefinitionTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'code.go_to_definition',
+		name: 'code_go_to_definition',
 		description: '查找给定文件位置处符号的定义位置（经 VSCode Language API）。',
 		parameters: {
 			type: 'object',
@@ -104,7 +104,7 @@ export class GoToDefinitionTool extends BaseTool {
 		const line = args.line as number;
 		const column = args.column as number;
 		const startedAt = Date.now();
-		logger.log(`[code.go_to_definition] 开始执行 - file=${inputPath}, line=${line}, column=${column}`);
+		logger.log(`[code_go_to_definition] 开始执行 - file=${inputPath}, line=${line}, column=${column}`);
 
 		// 1. 路径安全解析
 		let resolved;
@@ -114,7 +114,7 @@ export class GoToDefinitionTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
-				logger.error(`[code.go_to_definition] 路径解析失败 - file=${inputPath}, error=${err.message}`);
+				logger.error(`[code_go_to_definition] 路径解析失败 - file=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -124,7 +124,7 @@ export class GoToDefinitionTool extends BaseTool {
 		try {
 			await fs.stat(resolved.fsPath);
 		} catch {
-			logger.error(`[code.go_to_definition] 文件不存在 - file=${inputPath}`);
+			logger.error(`[code_go_to_definition] 文件不存在 - file=${inputPath}`);
 			return { status: 'error', error: `文件不存在: ${inputPath}` };
 		}
 
@@ -141,7 +141,7 @@ export class GoToDefinitionTool extends BaseTool {
 				position
 			);
 		} catch (err) {
-			logger.error(`[code.go_to_definition] 查询定义失败 - file=${inputPath}, line=${line}, column=${column}, error=${err instanceof Error ? err.message : String(err)}`);
+			logger.error(`[code_go_to_definition] 查询定义失败 - file=${inputPath}, line=${line}, column=${column}, error=${err instanceof Error ? err.message : String(err)}`);
 			return {
 				status: 'error',
 				error: `查询定义失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -150,7 +150,7 @@ export class GoToDefinitionTool extends BaseTool {
 
 		// 5. 映射结果（0-based -> 1-based）
 		const definitions = this.mapDefinitions(raw, context.workspaceRoots[0]);
-		logger.log(`[code.go_to_definition] 执行完成 - file=${inputPath}, line=${line}, column=${column}, 命中数=${definitions.length}, 耗时=${Date.now() - startedAt}ms`);
+		logger.log(`[code_go_to_definition] 执行完成 - file=${inputPath}, line=${line}, column=${column}, 命中数=${definitions.length}, 耗时=${Date.now() - startedAt}ms`);
 
 		return {
 			status: 'success',

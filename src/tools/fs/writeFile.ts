@@ -1,5 +1,5 @@
 /**
- * fs.write_file - 写文本文件（write 权限，经审批网关）。
+ * fs_write_file - 写文本文件（write 权限，经审批网关）。
  * 职责：经 pathGuard 解析 -> 自动建父目录 -> 原子写入（临时文件 + rename）-> 返回结果。
  * 覆盖检测：目标已存在时 metadata 标注 overwritten（审批提示由路由层基于 permission 触发）。
  */
@@ -19,7 +19,7 @@ import * as logger from '../../logger';
 
 export class WriteFileTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'fs.write_file',
+		name: 'fs_write_file',
 		description: '向工作区内写入文本文件（UTF-8），自动创建父目录，原子写入。',
 		parameters: {
 			type: 'object',
@@ -46,7 +46,7 @@ export class WriteFileTool extends BaseTool {
 		const inputPath = args.path as string;
 		const content = args.content as string;
 		const startedAt = Date.now();
-		logger.log(`[fs.write_file] 开始 - path=${inputPath}, contentLength=${content.length}`);
+		logger.log(`[fs_write_file] 开始 - path=${inputPath}, contentLength=${content.length}`);
 
 		// 1. 路径安全解析
 		let resolved;
@@ -56,7 +56,7 @@ export class WriteFileTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
-				logger.error(`[fs.write_file] 路径解析失败 - path=${inputPath}, error=${err.message}`);
+				logger.error(`[fs_write_file] 路径解析失败 - path=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -83,14 +83,14 @@ export class WriteFileTool extends BaseTool {
 		} catch (err) {
 			// 清理残留临时文件（best-effort，忽略清理错误）
 			await fs.rm(tmpPath, { force: true, recursive: true }).catch(() => {});
-			logger.error(`[fs.write_file] 写入失败 - path=${inputPath}, error=${err instanceof Error ? err.message : String(err)}`);
+			logger.error(`[fs_write_file] 写入失败 - path=${inputPath}, error=${err instanceof Error ? err.message : String(err)}`);
 			return {
 				status: 'error',
 				error: `写入文件失败: ${inputPath}（${err instanceof Error ? err.message : String(err)}）`,
 			};
 		}
 
-		logger.log(`[fs.write_file] 完成 - path=${inputPath}, overwritten=${overwritten}, duration_ms=${Date.now() - startedAt}`);
+		logger.log(`[fs_write_file] 完成 - path=${inputPath}, overwritten=${overwritten}, duration_ms=${Date.now() - startedAt}`);
 		return {
 			status: 'success',
 			result: overwritten ? `已覆盖: ${inputPath}` : `已创建: ${inputPath}`,

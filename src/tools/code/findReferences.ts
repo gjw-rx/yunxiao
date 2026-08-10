@@ -1,5 +1,5 @@
 /**
- * code.find_references - 查找符号的所有引用（read 权限，本地执行）。
+ * code_find_references - 查找符号的所有引用（read 权限，本地执行）。
  *
  * 经 VSCode Language API（executeReferenceProvider）查找给定位置符号的全部引用，
  * 返回 { file, line, column } 列表（1-based）。结果超 50 条时按文件分组截断（每文件最多 10 条）。
@@ -57,7 +57,7 @@ const defaultShim: VsCodeRefShim = {
 
 export class FindReferencesTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'code.find_references',
+		name: 'code_find_references',
 		description: '查找工作区内某符号位置的全部引用，返回文件/行/列列表（1-based）。',
 		parameters: {
 			type: 'object',
@@ -98,7 +98,7 @@ export class FindReferencesTool extends BaseTool {
 		const line = args.line as number;
 		const column = args.column as number;
 		const startedAt = Date.now();
-		logger.log(`[code.find_references] 开始执行 - file=${inputPath}, line=${line}, column=${column}`);
+		logger.log(`[code_find_references] 开始执行 - file=${inputPath}, line=${line}, column=${column}`);
 
 		// 1. 路径安全解析
 		let resolved;
@@ -108,7 +108,7 @@ export class FindReferencesTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
-				logger.error(`[code.find_references] 路径解析失败 - file=${inputPath}, error=${err.message}`);
+				logger.error(`[code_find_references] 路径解析失败 - file=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -118,7 +118,7 @@ export class FindReferencesTool extends BaseTool {
 		try {
 			await fs.stat(resolved.fsPath);
 		} catch {
-			logger.error(`[code.find_references] 文件不存在 - file=${inputPath}`);
+			logger.error(`[code_find_references] 文件不存在 - file=${inputPath}`);
 			return { status: 'error', error: `文件不存在: ${inputPath}` };
 		}
 
@@ -135,7 +135,7 @@ export class FindReferencesTool extends BaseTool {
 				position
 			);
 		} catch (err) {
-			logger.error(`[code.find_references] 查找引用失败 - file=${inputPath}, line=${line}, column=${column}, error=${err instanceof Error ? err.message : String(err)}`);
+			logger.error(`[code_find_references] 查找引用失败 - file=${inputPath}, line=${line}, column=${column}, error=${err instanceof Error ? err.message : String(err)}`);
 			return {
 				status: 'error',
 				error: `查找引用失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -179,7 +179,7 @@ export class FindReferencesTool extends BaseTool {
 			output.total = totalOut;
 		}
 
-		logger.log(`[code.find_references] 执行完成 - file=${inputPath}, 命中数=${references.length}, truncated=${truncated ?? false}, 耗时=${Date.now() - startedAt}ms`);
+		logger.log(`[code_find_references] 执行完成 - file=${inputPath}, 命中数=${references.length}, truncated=${truncated ?? false}, 耗时=${Date.now() - startedAt}ms`);
 		return {
 			status: 'success',
 			result: JSON.stringify(output),

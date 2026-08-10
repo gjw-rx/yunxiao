@@ -91,7 +91,7 @@ export abstract class BaseTool {
 	}
 
 	/**
-	 * 是否自行处理审批（如 code.edit 需先展示 diff 预览再确认）。
+	 * 是否自行处理审批（如 code_edit 需先展示 diff 预览再确认）。
 	 * 默认 false：由路由层统一审批。true 时路由层跳过审批，工具在 execute 内自行弹窗。
 	 */
 	readonly handlesOwnApproval: boolean = false;
