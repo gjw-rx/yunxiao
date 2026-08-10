@@ -21,6 +21,8 @@ import { GetDiagnosticsTool } from './tools/code/getDiagnostics';
 import { WorkspaceSymbolsTool } from './tools/code/workspaceSymbols';
 import { FindReferencesTool } from './tools/code/findReferences';
 import { GoToDefinitionTool } from './tools/code/goToDefinition';
+import { WebSearchTool } from './tools/web/webSearch';
+import { TavilyWebSearchProvider } from './tools/web/tavilyProvider';
 import { DiffViewer } from './tools/diff/diffViewer';
 import { TerminalExecTool } from './tools/terminal/terminalExec';
 import { ShellWhitelist } from './tools/terminal/shellWhitelist';
@@ -125,6 +127,9 @@ async function _activate(context: vscode.ExtensionContext) {
 	registry.register(new WorkspaceSymbolsTool());
 	registry.register(new FindReferencesTool());
 	registry.register(new GoToDefinitionTool());
+
+	// 外部网络检索（Tavily）：未配置启用项或 API Key 时 web.search 返回不可用错误，不发起网络请求
+	registry.register(new WebSearchTool({ provider: new TavilyWebSearchProvider() }));
 
 	// 终端执行与 Git 集成
 	const shellWhitelist = new ShellWhitelist(

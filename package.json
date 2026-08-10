@@ -201,6 +201,61 @@
           "description": "工具结果治理的最大字节数（默认 50KB，UTF-8），超出截断并标注",
           "scope": "window"
         },
+        "yunxiaoAgent.webSearch.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否启用外部网络检索（web.search 工具）；启用后还需配置 Tavily API Key 才会发起请求",
+          "scope": "window"
+        },
+        "yunxiaoAgent.webSearch.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Tavily API Key（插件不内置或自动提供凭据，需用户自行配置）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.webSearch.maxResults": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "web.search 默认结果数（1-10，调用参数缺省时使用，越界将被约束到该范围）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.webSearch.searchDepth": {
+          "type": "string",
+          "enum": [
+            "basic",
+            "advanced"
+          ],
+          "default": "basic",
+          "description": "Tavily 搜索深度（basic/advanced，默认 basic）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.webSearch.timeoutMs": {
+          "type": "number",
+          "default": 15000,
+          "minimum": 1000,
+          "description": "Tavily 请求超时（毫秒），默认 15 秒",
+          "scope": "window"
+        },
+        "yunxiaoAgent.webSearch.includeDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "仅在这些域名内搜索（空数组表示不限）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.webSearch.excludeDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "排除这些域名（空数组表示不排除）",
+          "scope": "window"
+        },
         "yunxiaoAgent.skills.directories": {
           "type": "array",
           "items": {
