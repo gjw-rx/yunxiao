@@ -36,6 +36,10 @@ export interface TokenUsageSnapshot {
 	readonly total_tokens: number;
 	/** 思考 token（usage 提供时） */
 	readonly reasoning_tokens?: number;
+	/** 缓存命中读取 token（provider 提供 cache 明细时存在，来源为 usage） */
+	readonly cache_read_tokens?: number;
+	/** 缓存写入 token（provider 提供 cache 明细时存在，来源为 usage） */
+	readonly cache_write_tokens?: number;
 	/** 思考（优先 usage，缺失时估算） */
 	readonly reasoning: number;
 	/** 工具调用（对 toolCall.name+arguments 估算） */

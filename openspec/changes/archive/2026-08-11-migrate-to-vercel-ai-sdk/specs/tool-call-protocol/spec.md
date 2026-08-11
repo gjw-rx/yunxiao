@@ -1,8 +1,5 @@
-# tool-call-protocol Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change phase1-local-tool-calling. Update Purpose after archive.
-## Requirements
 ### Requirement: tool_call SSE event
 The local `AgentLoop` SHALL receive normalized tool calls from the AI SDK model runtime's `fullStream` rather than directly parsing `choices[0].delta.tool_calls`. Tool calls SHALL originate from the local AI SDK stream adapter, not from cloud SSE events. The `ToolCall` object SHALL contain `call_id`, `tool`, and `args` fields. The `site` field SHALL be removed as all tools are local.
 
@@ -24,11 +21,3 @@ The AgentLoop SHALL emit a `tool_call` event on the EventBus immediately when th
 #### Scenario: Multiple tool calls in one LLM response
 - **WHEN** the AI SDK stream adapter yields two or more complete `toolCall` events
 - **THEN** the AgentLoop emits a `tool_call` event for each one, in stream order, before executing any of them
-
-### Requirement: Tool result event forwarding
-The ChatViewProvider SHALL forward `tool_result` EventBus events to the webview as `toolResult` postMessage commands, containing the full `ToolResult` payload.
-
-#### Scenario: Tool result is forwarded to webview
-- **WHEN** the AgentLoop emits a `tool_result` event
-- **THEN** the ChatViewProvider posts `{ command: 'toolResult', ...resultPayload }` to the webview
-

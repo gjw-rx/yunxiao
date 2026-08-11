@@ -107,7 +107,7 @@ export class AgentLoop {
 		private readonly toolRegistry: ToolRegistry,
 		private readonly eventBus: EventBus,
 		private readonly config: AgentLoopConfig,
-	) {}
+	) { }
 
 	/** 主循环入口：追加用户消息，进入 Agent Loop。 */
 	async run(sessionId: string, userText: string): Promise<void> {
@@ -195,6 +195,8 @@ export class AgentLoop {
 					maxTokens: this.config.maxTokens,
 					reasoningEffort: this.config.reasoningEffort,
 					stream: true,
+					// 将取消信号透传给 AI SDK runtime，真正取消 provider 请求
+					abortSignal: signal,
 				};
 
 				logger.log(`[AgentLoop] step=${step} 调用 LLM model=${this.config.model} 消息数=${messages.length} tools=${tools?.length ?? 0} toolChoice=${toolChoice}`);
@@ -563,6 +565,8 @@ export class AgentLoop {
 			outputTokens: number;
 			reasoningTokens?: number;
 			totalTokens?: number;
+			cacheReadTokens?: number;
+			cacheWriteTokens?: number;
 		} | null;
 	}> {
 		let textContent = '';
@@ -576,6 +580,8 @@ export class AgentLoop {
 			outputTokens: number;
 			reasoningTokens?: number;
 			totalTokens?: number;
+			cacheReadTokens?: number;
+			cacheWriteTokens?: number;
 		} | null = null;
 
 		for await (const event of eventStream) {
@@ -622,6 +628,8 @@ export class AgentLoop {
 					outputTokens: event.outputTokens,
 					...(event.reasoningTokens !== undefined ? { reasoningTokens: event.reasoningTokens } : {}),
 					...(event.totalTokens !== undefined ? { totalTokens: event.totalTokens } : {}),
+					...(event.cacheReadTokens !== undefined ? { cacheReadTokens: event.cacheReadTokens } : {}),
+					...(event.cacheWriteTokens !== undefined ? { cacheWriteTokens: event.cacheWriteTokens } : {}),
 				};
 				logger.log(`[AgentLoop] token 用量: input=${event.inputTokens} output=${event.outputTokens} reasoning=${event.reasoningTokens ?? 'n/a'}`);
 				this.eventBus.emit({
@@ -633,6 +641,8 @@ export class AgentLoop {
 							completion_tokens: event.outputTokens,
 							total_tokens: event.totalTokens ?? event.inputTokens + event.outputTokens,
 							...(event.reasoningTokens !== undefined ? { reasoning_tokens: event.reasoningTokens } : {}),
+							...(event.cacheReadTokens !== undefined ? { cache_read_tokens: event.cacheReadTokens } : {}),
+							...(event.cacheWriteTokens !== undefined ? { cache_write_tokens: event.cacheWriteTokens } : {}),
 						},
 						// 真实 prompt token 数（provider 报告），不再硬编码 0
 						input_length: event.inputTokens,
@@ -726,6 +736,8 @@ export class AgentLoop {
 			completion_tokens: completion,
 			total_tokens: total,
 			...(usage?.reasoningTokens !== undefined ? { reasoning_tokens: usage.reasoningTokens } : {}),
+			...(usage?.cacheReadTokens !== undefined ? { cache_read_tokens: usage.cacheReadTokens } : {}),
+			...(usage?.cacheWriteTokens !== undefined ? { cache_write_tokens: usage.cacheWriteTokens } : {}),
 			reasoning,
 			tool_calls: toolCalls,
 			model_output: modelOutput,

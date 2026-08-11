@@ -121,6 +121,10 @@ export interface TokenUsage {
 	readonly total_tokens: number;
 	/** 思考 token 数（provider 提供时存在） */
 	readonly reasoning_tokens?: number;
+	/** 缓存命中读取 token（provider 提供 cache 明细时存在） */
+	readonly cache_read_tokens?: number;
+	/** 缓存写入 token（provider 提供 cache 明细时存在） */
+	readonly cache_write_tokens?: number;
 }
 
 /** token 数字来源标记：真实 usage 或估算 */

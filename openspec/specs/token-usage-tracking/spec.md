@@ -1,19 +1,26 @@
-## ADDED Requirements
+# token-usage-tracking Specification
 
+## Purpose
+TBD - created by archiving change migrate-to-vercel-ai-sdk. Update Purpose after archive.
+## Requirements
 ### Requirement: LLM usage 完整解析与透传
-流式响应解析器 SHALL 解析 usage 中的 `prompt_tokens`、`completion_tokens`、`total_tokens` 与 `reasoning_tokens`(provider 提供时),并将其实时通过 `token_usage` 事件透传给前端。`input_length` 字段 SHALL 反映本次请求的真实 prompt token 数:优先取 `prompt_tokens`,缺失时 SHALL 使用估算器对请求体(system prompt + 历史消息 + 用户输入 + 工具定义)估算,不得硬编码为 0。
+AI SDK 模型运行时 SHALL 从一次 `fullStream` 的最终 usage 元数据中解析 `inputTokens`、`outputTokens`、`totalTokens` 与 `reasoningTokens`（provider 提供时），并将其规范化为现有 `token_usage` 事件。`input_length` 字段 SHALL 反映本次请求的真实 prompt token 数：优先取规范化的 `inputTokens`，缺失时 SHALL 使用估算器对请求体（system prompt + 历史消息 + 用户输入 + 工具定义）估算，不得硬编码为 0。每次模型调用 SHALL 最多透传一条权威 usage 事件，避免中间 step usage 与最终 usage 重复记账。
 
-#### Scenario: usage 含完整字段
-- **WHEN** 流式响应末尾的 usage chunk 包含 prompt_tokens=100、completion_tokens=50、total_tokens=150、reasoning_tokens=20
-- **THEN** 解析器产出 usage 事件携带全部四个字段,`token_usage` 事件载荷中 `total_tokens=150`、`reasoning_tokens=20`、`input_length=100`
+#### Scenario: AI SDK usage 含完整字段
+- **WHEN** AI SDK 最终 usage 包含 inputTokens=100、outputTokens=50、totalTokens=150、reasoningTokens=20
+- **THEN** 运行时产出一条 usage 事件，`token_usage` 事件载荷中 `total_tokens=150`、`reasoning_tokens=20`、`input_length=100`
 
-#### Scenario: usage 缺少 reasoning_tokens
-- **WHEN** provider 返回的 usage 只有 prompt_tokens 与 completion_tokens,无 reasoning_tokens
-- **THEN** 系统对本次流中累积的 reasoning 增量文本估算 reasoning token,并以 `source=estimated` 标记
+#### Scenario: usage 缺少 reasoningTokens
+- **WHEN** AI SDK 最终 usage 只有 inputTokens 与 outputTokens，无 reasoningTokens
+- **THEN** 系统对本次流中累积的 reasoning 增量文本估算 reasoning token，并以 `source=estimated` 标记
 
 #### Scenario: usage 缺失时按请求体估算 input_length
-- **WHEN** 响应未携带 usage 数据,但 LLM 请求体包含 system prompt、历史消息、用户输入与工具定义
-- **THEN** `input_length` 等于估算器对完整请求体的估算值,且标注 `source=estimated`
+- **WHEN** AI SDK 响应未携带 usage 数据，但 LLM 请求体包含 system prompt、历史消息、用户输入与工具定义
+- **THEN** `input_length` 等于估算器对完整请求体的估算值，且标注 `source=estimated`
+
+#### Scenario: 中间 step usage 与最终 usage 同时存在
+- **WHEN** AI SDK 流同时产生中间 step usage 与最终 total usage
+- **THEN** 系统仅使用最终 total usage 生成权威 token_usage 事件和本步骤 token 账
 
 ### Requirement: 每步 token 记账与四类拆分
 AgentLoop 每步 LLM 调用结束时 SHALL 记录一笔 token 账,包含输入侧的真实/估算 token 与输出侧的四类拆分:思考(reasoning)、工具调用(tool calls)、模型回复(model output)、用户输入(user input)。拆分规则:思考优先取 usage 的 `reasoning_tokens`,缺失时对 reasoning 增量文本估算;工具调用对每个 toolCall 的 `name + arguments` 估算;模型回复优先按 `completion_tokens - reasoning_tokens - 工具调用估算` 计算(结果小于 0 时对正文文本估算);用户输入 SHALL 采用分摊法,按估算占比把权威 `prompt_tokens` 分摊到用户消息(`用户输入 = prompt_tokens × 估算(用户消息) / 估算(完整请求体)`),保证四类之和与总量自洽。每条数字 SHALL 携带 `source` 标记(`usage` 或 `estimated`)。
@@ -71,3 +78,15 @@ UI SHALL 展示当前会话的累计 token 消耗,包含总量、四类拆分(�
 #### Scenario: 无 token 数据的会话
 - **WHEN** 当前会话尚无任何 LLM 调用
 - **THEN** 累计面板显示为 0,不报错
+
+### Requirement: AI SDK cache token metadata is retained when available
+When AI SDK final usage includes cache read or cache write token details, the token usage snapshot SHALL retain the values with their source metadata. Providers that omit cache details SHALL remain compatible and SHALL NOT produce fabricated cache values.
+
+#### Scenario: Provider reports cache token details
+- **WHEN** AI SDK final usage includes cache read tokens or cache write tokens
+- **THEN** the persisted token usage snapshot retains those values and marks them as provider usage
+
+#### Scenario: Provider omits cache token details
+- **WHEN** AI SDK final usage does not include cache read or cache write details
+- **THEN** token tracking leaves the cache fields absent and preserves the existing total, reasoning, tool-call, model-output, user-input, and context accounting
+

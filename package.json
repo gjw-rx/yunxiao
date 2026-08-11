@@ -99,6 +99,20 @@
           "description": "LLM 最大输出 token 数",
           "scope": "window"
         },
+        "yunxiaoAgent.model.runtime": {
+          "type": "string",
+          "enum": [
+            "ai-sdk",
+            "legacy"
+          ],
+          "enumDescriptions": [
+            "默认：使用 Vercel AI SDK 6.x 模型协议层（OpenAI-compatible Provider）",
+            "迁移期回退：使用原手写 OpenAI fetch + SSE parser 实现"
+          ],
+          "default": "ai-sdk",
+          "description": "迁移期模型运行时选择：默认 ai-sdk，仅在出现兼容问题时显式设为 legacy 回退。稳定后将移除该选项。",
+          "scope": "window"
+        },
         "yunxiaoAgent.maxFileSize": {
           "type": "number",
           "default": 1048576,
@@ -348,8 +362,11 @@
     "serialize-javascript": "^7.0.6"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "2.0.66",
+    "ai": "6.0.248",
     "diff": "^8.0.4",
     "marked": "^18.0.7",
-    "simple-git": "^3.27.0"
+    "simple-git": "^3.27.0",
+    "zod": "4.4.3"
   }
 }
