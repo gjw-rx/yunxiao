@@ -123,6 +123,8 @@ export interface UsageEvent {
 	readonly cacheReadTokens?: number;
 	/** 缓存写入 token 数（provider 提供 cache 明细时存在） */
 	readonly cacheWriteTokens?: number;
+	/** 非缓存输入 token 数（provider 提供 cache 明细时存在） */
+	readonly noCacheTokens?: number;
 }
 
 /** 流结束 */

@@ -94,7 +94,7 @@ describe('ChatViewProvider HTML rendering', () => {
 		assert.strictEqual(merge('The user wants', 'The user wants'), 'The user wants');
 	});
 
-	it('formats token usage with context ratio and prompt/completion details', () => {
+	it('formats token usage as absolute totals without a fake context ratio', () => {
 		const { internals } = setup();
 		const html = internals._getHtml({
 			asWebviewUri: (uri: vscode.Uri) => uri,
@@ -102,36 +102,126 @@ describe('ChatViewProvider HTML rendering', () => {
 		} as unknown as vscode.Webview);
 
 		const numberSource = html.match(/function formatNumber\(n\) \{[\s\S]*?\n    \}/)?.[0];
-		const source = html.match(/function formatTokenUsage\(usage, inputLength\) \{[\s\S]*?\n    \}/)?.[0];
+		const source = html.match(/function formatTokenUsage\(usage\) \{[\s\S]*?\n    \}/)?.[0];
 		assert.ok(numberSource);
 		assert.ok(source);
 		const format = new Function(`${numberSource}; ${source}; return formatTokenUsage;`)() as (
-			usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number },
-			inputLength: number,
+			usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number; reasoning_tokens?: number; cache_read_tokens?: number },
 		) => {
 			text: string;
 			title: string;
-			percent: number | null;
 		};
 
 		assert.deepStrictEqual(format({
 			prompt_tokens: 15_700,
 			completion_tokens: 2_600,
 			total_tokens: 18_300,
-		}, 128_000), {
-			text: '18,300 / 128,000 (14.3%)',
-			title: '本轮 Token 消耗：18,300 / 128,000 (14.3%)；输入 15,700，输出 2,600',
-			percent: 14.3,
+		}), {
+			text: '18,300',
+			title: '本次 Token 消耗：18,300；输入 15,700，输出 2,600（缓存为输入侧明细，不计入总量）',
 		});
 		assert.deepStrictEqual(format({
 			prompt_tokens: 0,
 			completion_tokens: 0,
 			total_tokens: 0,
-		}, 128_000), {
+		}), {
 			text: '--',
 			title: 'Token 用量不可用',
-			percent: null,
 		});
+	});
+
+	it('大缓存命中不显示 100% 伪上下文占比：只展示本次 total 与输入侧明细', () => {
+		const { internals } = setup();
+		const html = internals._getHtml({
+			asWebviewUri: (uri: vscode.Uri) => uri,
+			cspSource: 'vscode-webview:',
+		} as unknown as vscode.Webview);
+
+		const numberSource = html.match(/function formatNumber\(n\) \{[\s\S]*?\n    \}/)?.[0];
+		const source = html.match(/function formatTokenUsage\(usage\) \{[\s\S]*?\n    \}/)?.[0];
+		assert.ok(numberSource);
+		assert.ok(source);
+		const format = new Function(`${numberSource}; ${source}; return formatTokenUsage;`)() as (
+			usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number; reasoning_tokens?: number; cache_read_tokens?: number; cache_write_tokens?: number; no_cache_tokens?: number },
+		) => {
+			text: string;
+			title: string;
+		};
+
+		// 用户日志场景：prompt=11583、output=105、total=11688、cacheRead=11392
+		const formatted = format({
+			prompt_tokens: 11583,
+			completion_tokens: 105,
+			total_tokens: 11688,
+			reasoning_tokens: 0,
+			cache_read_tokens: 11392,
+		});
+		assert.strictEqual(formatted.text, '11,688', '只显示本次 total，不显示 total/input 比值');
+		assert.ok(!formatted.text.includes('%'), '不应出现百分比');
+		assert.ok(formatted.title.includes('缓存读 11,392'), '缓存读取作为输入侧明细展示');
+		assert.ok(!formatted.title.includes('100%'), '不应出现约 100% 占比');
+	});
+
+	it('历史恢复聚合：仅以 assistant tokenUsage 快照为权威，user inputTokens 不双重累计', () => {
+		const { internals } = setup();
+		const html = internals._getHtml({
+			asWebviewUri: (uri: vscode.Uri) => uri,
+			cspSource: 'vscode-webview:',
+		} as unknown as vscode.Webview);
+
+		const source = html.match(/function aggregateSessionTokens\(messages\) \{[\s\S]*?\n    \}/)?.[0];
+		assert.ok(source);
+		const aggregate = new Function(`${source}; return aggregateSessionTokens;`)() as (
+			messages: Array<Record<string, unknown>>,
+		) => {
+			total_tokens: number;
+			breakdown: Record<string, number>;
+			cache_read_tokens?: number;
+			cache_write_tokens?: number;
+			no_cache_tokens?: number;
+		} | null;
+
+		// 与实时 session_token_usage payload 口径一致：user 消息 inputTokens 不参与累计
+		const messages = [
+			{ role: 'user', seq: 1, content: 'hello', inputTokens: 50 },
+			{ role: 'assistant', seq: 2, content: 'hi', tokenUsage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, reasoning: 20, tool_calls: 0, model_output: 30, user_input: 10, context: 90 } },
+			{ role: 'user', seq: 3, content: 'again', inputTokens: 40 },
+			{ role: 'assistant', seq: 4, content: 'ok', tokenUsage: { prompt_tokens: 200, completion_tokens: 60, total_tokens: 260, reasoning: 0, tool_calls: 0, model_output: 60, user_input: 20, context: 180, cache_read_tokens: 90, no_cache_tokens: 110 } },
+		];
+		const agg = aggregate(messages);
+		assert.ok(agg);
+		assert.strictEqual(agg.total_tokens, 410, 'user inputTokens 不被重复累加');
+		assert.strictEqual(agg.breakdown.user_input, 30, 'user_input 仅来自 assistant 快照');
+		assert.strictEqual(agg.breakdown.context, 270, '上下文仅来自快照');
+		assert.strictEqual(agg.cache_read_tokens, 90);
+		assert.strictEqual(agg.no_cache_tokens, 110);
+	});
+
+	it('历史恢复聚合：无快照旧 assistant 消息按内容估算补齐（仅展示），不写回', () => {
+		const { internals } = setup();
+		const html = internals._getHtml({
+			asWebviewUri: (uri: vscode.Uri) => uri,
+			cspSource: 'vscode-webview:',
+		} as unknown as vscode.Webview);
+
+		const source = html.match(/function aggregateSessionTokens\(messages\) \{[\s\S]*?\n    \}/)?.[0];
+		assert.ok(source);
+		const aggregate = new Function(`${source}; return aggregateSessionTokens;`)() as (
+			messages: Array<Record<string, unknown>>,
+		) => {
+			total_tokens: number;
+			breakdown: Record<string, number>;
+		} | null;
+
+		const oldText = 'old reply without usage';
+		const agg = aggregate([
+			{ role: 'user', seq: 1, content: 'hello' },
+			{ role: 'assistant', seq: 2, content: oldText },
+			{ role: 'assistant', seq: 3, content: 'ok', tokenUsage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, reasoning: 20, tool_calls: 0, model_output: 30, user_input: 10, context: 90 } },
+		]);
+		assert.ok(agg);
+		assert.strictEqual(agg.total_tokens, 150 + Math.ceil(oldText.length / 4), '无快照旧消息按内容估算补齐');
+		assert.strictEqual(agg.breakdown.model_output, 30 + Math.ceil(oldText.length / 4), '估算归入模型回复展示');
 	});
 
 	it('preserves tool arguments while the same entry receives its result', () => {

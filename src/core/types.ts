@@ -125,6 +125,8 @@ export interface TokenUsage {
 	readonly cache_read_tokens?: number;
 	/** 缓存写入 token（provider 提供 cache 明细时存在） */
 	readonly cache_write_tokens?: number;
+	/** 非缓存输入 token（provider 提供 cache 明细时存在） */
+	readonly no_cache_tokens?: number;
 }
 
 /** token 数字来源标记：真实 usage 或估算 */
@@ -165,4 +167,10 @@ export interface SessionTokenUsagePayload {
 	readonly breakdown: TokenBreakdown;
 	/** 本 run 新增 token 数（便于前端增量展示） */
 	readonly delta_tokens: number;
+	/** 会话累计非缓存输入 token（输入侧明细，不计入 total_tokens；无缓存数据时省略） */
+	readonly no_cache_tokens?: number;
+	/** 会话累计缓存读取 token（输入侧明细，不计入 total_tokens；无缓存数据时省略） */
+	readonly cache_read_tokens?: number;
+	/** 会话累计缓存写入 token（输入侧明细，不计入 total_tokens；无缓存数据时省略） */
+	readonly cache_write_tokens?: number;
 }

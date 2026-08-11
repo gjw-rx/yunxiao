@@ -1751,22 +1751,6 @@ ${this._getJs()}
       opacity: 0.7;
       flex-shrink: 0;
     }
-    .token-progress {
-      display: inline-block;
-      width: 24px;
-      height: 3px;
-      overflow: hidden;
-      border-radius: 999px;
-      background: var(--vscode-progressBar-background, var(--border));
-      opacity: 0.35;
-    }
-    .token-progress-fill {
-      display: block;
-      width: 0;
-      height: 100%;
-      border-radius: inherit;
-      background: var(--accent);
-    }
 
     /* ── Session-level token usage bar ── */
     #sessionTokenBar {
@@ -2799,20 +2783,30 @@ ${this._getJs()}
       return n.toLocaleString('en-US');
     }
 
-    /** 按云端上下文上限格式化本轮 Token 用量 */
-    function formatTokenUsage(usage, inputLength) {
+    /** 按绝对 token 数格式化单次调用用量（不展示伪上下文百分比） */
+    function formatTokenUsage(usage) {
       const total = usage && Number.isFinite(usage.total_tokens) ? usage.total_tokens : 0;
+      if (total <= 0) {
+        return { text: '--', title: 'Token 用量不可用' };
+      }
       const prompt = usage && Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : 0;
       const completion = usage && Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : 0;
-      if (total <= 0 || !Number.isFinite(inputLength) || inputLength <= 0) {
-        return { text: '--', title: 'Token 用量不可用', percent: null };
+      const parts = ['输入 ' + formatNumber(prompt), '输出 ' + formatNumber(completion)];
+      if (usage && Number.isFinite(usage.reasoning_tokens) && usage.reasoning_tokens > 0) {
+        parts.push('思考 ' + formatNumber(usage.reasoning_tokens));
       }
-      const percent = Number(((total / inputLength) * 100).toFixed(1));
-      const ratio = formatNumber(total) + ' / ' + formatNumber(inputLength) + ' (' + percent.toFixed(1) + '%)';
+      if (usage && Number.isFinite(usage.no_cache_tokens) && usage.no_cache_tokens > 0) {
+        parts.push('非缓存输入 ' + formatNumber(usage.no_cache_tokens));
+      }
+      if (usage && Number.isFinite(usage.cache_read_tokens) && usage.cache_read_tokens > 0) {
+        parts.push('缓存读 ' + formatNumber(usage.cache_read_tokens));
+      }
+      if (usage && Number.isFinite(usage.cache_write_tokens) && usage.cache_write_tokens > 0) {
+        parts.push('缓存写 ' + formatNumber(usage.cache_write_tokens));
+      }
       return {
-        text: ratio,
-        title: '本轮 Token 消耗：' + ratio + '；输入 ' + formatNumber(prompt) + '，输出 ' + formatNumber(completion),
-        percent,
+        text: formatNumber(total),
+        title: '本次 Token 消耗：' + formatNumber(total) + '；' + parts.join('，') + '（缓存为输入侧明细，不计入总量）',
       };
     }
 
@@ -2830,7 +2824,6 @@ ${this._getJs()}
           <path d="M8 4v4l2 2"/>
         </svg>
         <span class="token-count">--</span>
-        <span class="token-progress" hidden><span class="token-progress-fill"></span></span>
       \`;
       tokenUsage.title = 'Token 用量不可用';
       actions.appendChild(tokenUsage);
@@ -2867,28 +2860,19 @@ ${this._getJs()}
       return actions;
     }
 
-    /** 更新消息的 token 显示 */
-    function updateMsgTokenUsage(row, usage, inputLength) {
+    /** 更新消息的 token 显示（绝对用量 + 明细，无进度条） */
+    function updateMsgTokenUsage(row, usage) {
       if (!row) return;
       const tokenEl = row.querySelector('.token-usage');
       if (!tokenEl || !usage) return;
 
-      const formatted = formatTokenUsage(usage, inputLength);
+      const formatted = formatTokenUsage(usage);
 
       const countEl = tokenEl.querySelector('.token-count');
       if (countEl) {
         countEl.textContent = formatted.text;
       }
       tokenEl.title = formatted.title;
-
-      const progressEl = tokenEl.querySelector('.token-progress');
-      const progressFillEl = tokenEl.querySelector('.token-progress-fill');
-      if (progressEl && progressFillEl) {
-        progressEl.hidden = formatted.percent === null;
-        progressFillEl.style.width = formatted.percent === null
-          ? '0'
-          : Math.min(formatted.percent, 100) + '%';
-      }
     }
 
     /** 回复气泡挂在当前回合消息流末尾——与思考/工具步骤按发生顺序交错。 */
@@ -3054,13 +3038,13 @@ ${this._getJs()}
         row = lastAssistant ? lastAssistant.parentElement : null;
       }
       if (row) {
-        updateMsgTokenUsage(row, payload.token_usage, payload.input_length);
+        updateMsgTokenUsage(row, payload.token_usage);
         // 更新后清空引用，避免影响后续消息
         currentAssistantRow = null;
       }
     }
 
-    /** 渲染会话级累计条：总量 + 四类拆分 + 上下文占比。估算项带"约"。 */
+    /** 渲染会话级累计条：总量 + 四类拆分 + 缓存输入明细；上下文明确为输入归属估算，估算项带"约"。 */
     function showSessionTokenUsage(payload) {
       if (!payload) return;
       const bar = document.getElementById('sessionTokenBar');
@@ -3075,46 +3059,63 @@ ${this._getJs()}
         { label: '工具', val: b.tool_calls || 0, approx: true },
         { label: '回复', val: b.model_output || 0, approx: true },
         { label: '输入', val: b.user_input || 0, approx: true },
-        { label: '上下文', val: b.context || 0, approx: true },
+        { label: '上下文(输入估)', val: b.context || 0, approx: true },
       ];
+      // 缓存为输入侧明细，仅在有数据时展示；真实 usage 值不带"约"
+      if ((payload.no_cache_tokens || 0) > 0) {
+        items.push({ label: '非缓存输入', val: payload.no_cache_tokens, approx: false });
+      }
+      if ((payload.cache_read_tokens || 0) > 0) {
+        items.push({ label: '缓存读', val: payload.cache_read_tokens, approx: false });
+      }
+      if ((payload.cache_write_tokens || 0) > 0) {
+        items.push({ label: '缓存写', val: payload.cache_write_tokens, approx: false });
+      }
       itemsEl.innerHTML = items.map((it) =>
         '<span class="stb-item">' +
           '<span class="stb-label">' + it.label + '</span> ' +
           '<span class="stb-val">' + (it.approx ? '约' : '') + formatNumber(it.val) + '</span>' +
         '</span>'
       ).join('');
-      bar.title = '会话累计 Token：' + formatNumber(total) + '；四类不含上下文';
+      bar.title = '会话累计 Token：' + formatNumber(total) + '；四类不含上下文，缓存为输入侧明细不计入总量';
     }
 
-    /** 历史重载时按消息聚合会话累计；旧消息无 token 字段时按内容估算补齐（仅展示）。 */
+    /** 历史重载时按 assistant tokenUsage 快照聚合会话累计（与实时服务端汇总一致）；
+        不再累加 user 消息 inputTokens，避免与快照 user_input 双重累计；无快照旧消息按内容估算补齐（仅展示）。 */
     function aggregateSessionTokens(messages) {
       if (!messages || messages.length === 0) return null;
       let total = 0;
       const breakdown = { reasoning: 0, tool_calls: 0, model_output: 0, user_input: 0, context: 0 };
+      let noCache = 0;
+      let cacheRead = 0;
+      let cacheWrite = 0;
       for (const m of messages) {
-        if (m.role === 'user') {
-          const est = m.inputTokens || Math.ceil((m.content || '').length / 4);
-          breakdown.user_input += est;
-        } else if (m.role === 'assistant') {
-          if (m.tokenUsage) {
-            total += m.tokenUsage.total_tokens || 0;
-            breakdown.reasoning += m.tokenUsage.reasoning || 0;
-            breakdown.tool_calls += m.tokenUsage.tool_calls || 0;
-            breakdown.model_output += m.tokenUsage.model_output || 0;
-            breakdown.user_input += m.tokenUsage.user_input || 0;
-            breakdown.context += m.tokenUsage.context || 0;
-          } else {
-            // 旧消息无 token 账：按内容估算（不回写）
-            const text = (m.content || '') + (m.toolCalls || []).map((tc) => tc.name + tc.arguments).join('');
-            const est = Math.ceil(text.length / 4);
-            breakdown.model_output += est;
-            total += est;
-          }
+        if (m.role !== 'assistant') continue;
+        if (m.tokenUsage) {
+          total += m.tokenUsage.total_tokens || 0;
+          breakdown.reasoning += m.tokenUsage.reasoning || 0;
+          breakdown.tool_calls += m.tokenUsage.tool_calls || 0;
+          breakdown.model_output += m.tokenUsage.model_output || 0;
+          breakdown.user_input += m.tokenUsage.user_input || 0;
+          breakdown.context += m.tokenUsage.context || 0;
+          noCache += m.tokenUsage.no_cache_tokens || 0;
+          cacheRead += m.tokenUsage.cache_read_tokens || 0;
+          cacheWrite += m.tokenUsage.cache_write_tokens || 0;
+        } else {
+          // 旧消息无 token 账：按内容估算（不回写）
+          const text = (m.content || '') + (m.toolCalls || []).map((tc) => tc.name + tc.arguments).join('');
+          const est = Math.ceil(text.length / 4);
+          breakdown.model_output += est;
+          total += est;
         }
       }
       if (total <= 0 && breakdown.user_input <= 0 && breakdown.model_output <= 0) return null;
       total = total || (breakdown.user_input + breakdown.model_output);
-      return { total_tokens: total, breakdown };
+      const result = { total_tokens: total, breakdown };
+      if (noCache > 0) result.no_cache_tokens = noCache;
+      if (cacheRead > 0) result.cache_read_tokens = cacheRead;
+      if (cacheWrite > 0) result.cache_write_tokens = cacheWrite;
+      return result;
     }
 
     function showError(msg) {

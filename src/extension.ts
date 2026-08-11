@@ -46,8 +46,30 @@ import { AgentLoop } from './agent/agentLoop';
 import type { CompactionConfig } from './agent/compaction';
 import * as logger from './logger';
 
+/**
+ * 判断异常是否为 Node inspector 内部运行时噪音。
+ * VSCode 调试扩展宿主（extensionHost）时，Node inspector 在向调试前端广播网络事件的过程中，
+ * 可能在流式 HTTP 响应（如 SSE）上抛出 "Missing dataLength in event" 等内部错误；
+ * 这类错误源于运行时自身，与扩展功能无关，不应作为 FATAL 弹窗打扰用户。
+ *
+ * @param err 捕获到的异常
+ * @returns true 表示确认为 inspector 内部噪音，应仅记录日志而不弹窗
+ */
+function isInspectorRuntimeNoise(err: unknown): boolean {
+	const text = err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err);
+	return (
+		text.includes('Missing dataLength in event') ||
+		text.includes('node:inspector') ||
+		text.includes('node:internal/inspector')
+	);
+}
+
 // 全局崩溃捕获：进程死之前把错误写进 OutputChannel + 弹窗通知
 process.on('uncaughtException', (err) => {
+	if (isInspectorRuntimeNoise(err)) {
+		logger.log('[Extension] 忽略 Node inspector 运行时噪音（非扩展错误）:', err instanceof Error ? err.stack ?? err.message : err);
+		return;
+	}
 	logger.notifyError('[FATAL] uncaughtException', err instanceof Error ? err.stack ?? err.message : err);
 });
 process.on('unhandledRejection', (reason) => {

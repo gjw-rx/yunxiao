@@ -567,6 +567,7 @@ export class AgentLoop {
 			totalTokens?: number;
 			cacheReadTokens?: number;
 			cacheWriteTokens?: number;
+			noCacheTokens?: number;
 		} | null;
 	}> {
 		let textContent = '';
@@ -582,6 +583,7 @@ export class AgentLoop {
 			totalTokens?: number;
 			cacheReadTokens?: number;
 			cacheWriteTokens?: number;
+			noCacheTokens?: number;
 		} | null = null;
 
 		for await (const event of eventStream) {
@@ -630,8 +632,9 @@ export class AgentLoop {
 					...(event.totalTokens !== undefined ? { totalTokens: event.totalTokens } : {}),
 					...(event.cacheReadTokens !== undefined ? { cacheReadTokens: event.cacheReadTokens } : {}),
 					...(event.cacheWriteTokens !== undefined ? { cacheWriteTokens: event.cacheWriteTokens } : {}),
+					...(event.noCacheTokens !== undefined ? { noCacheTokens: event.noCacheTokens } : {}),
 				};
-				logger.log(`[AgentLoop] token 用量: input=${event.inputTokens} output=${event.outputTokens} reasoning=${event.reasoningTokens ?? 'n/a'}`);
+				logger.log(`[AgentLoop] token 用量: input=${event.inputTokens} output=${event.outputTokens} reasoning=${event.reasoningTokens ?? 'n/a'} cacheRead=${event.cacheReadTokens ?? 'n/a'} cacheWrite=${event.cacheWriteTokens ?? 'n/a'} noCache=${event.noCacheTokens ?? 'n/a'}`);
 				this.eventBus.emit({
 					type: 'token_usage',
 					sessionId,
@@ -643,6 +646,7 @@ export class AgentLoop {
 							...(event.reasoningTokens !== undefined ? { reasoning_tokens: event.reasoningTokens } : {}),
 							...(event.cacheReadTokens !== undefined ? { cache_read_tokens: event.cacheReadTokens } : {}),
 							...(event.cacheWriteTokens !== undefined ? { cache_write_tokens: event.cacheWriteTokens } : {}),
+							...(event.noCacheTokens !== undefined ? { no_cache_tokens: event.noCacheTokens } : {}),
 						},
 						// 真实 prompt token 数（provider 报告），不再硬编码 0
 						input_length: event.inputTokens,
@@ -700,14 +704,21 @@ export class AgentLoop {
 		const usage = streamResult.usage;
 		const hasUsage = usage !== null && usage.inputTokens + usage.outputTokens > 0;
 
-		const prompt = hasUsage ? usage.inputTokens : estimateRequest(systemPrompt, request.messages, request.tools);
-		const completion = hasUsage ? usage.outputTokens : estimateText(streamResult.textContent);
+		// prompt/completion：仅当 usage 提供了非零计数才直接采用；0（缺失或无效被兜底）时按请求体/正文估算，
+		// 避免非法 input/output 兜底为 0 后污染账本（如 input=0/output=50 场景）
+		const prompt = hasUsage && usage.inputTokens > 0
+			? usage.inputTokens
+			: estimateRequest(systemPrompt, request.messages, request.tools);
+		const completion = hasUsage && usage.outputTokens > 0
+			? usage.outputTokens
+			: estimateText(streamResult.textContent);
 		const total = usage?.totalTokens ?? prompt + completion;
 
-		// 思考：优先 usage.reasoning_tokens，缺失时对 reasoning 增量文本估算
-		const reasoning = hasUsage && (usage.reasoningTokens ?? 0) > 0
-			? usage.reasoningTokens!
-			: estimateText(streamResult.reasoningText);
+		// 思考：优先 usage.reasoning_tokens（含合法 0），缺失时对 reasoning 增量文本估算
+		const reasoning =
+			hasUsage && usage.reasoningTokens !== undefined
+				? usage.reasoningTokens
+				: estimateText(streamResult.reasoningText);
 
 		// 工具调用：对每个 toolCall 的 name+arguments 估算
 		const toolCalls = streamResult.pendingToolCalls.reduce(
@@ -738,6 +749,7 @@ export class AgentLoop {
 			...(usage?.reasoningTokens !== undefined ? { reasoning_tokens: usage.reasoningTokens } : {}),
 			...(usage?.cacheReadTokens !== undefined ? { cache_read_tokens: usage.cacheReadTokens } : {}),
 			...(usage?.cacheWriteTokens !== undefined ? { cache_write_tokens: usage.cacheWriteTokens } : {}),
+			...(usage?.noCacheTokens !== undefined ? { no_cache_tokens: usage.noCacheTokens } : {}),
 			reasoning,
 			tool_calls: toolCalls,
 			model_output: modelOutput,
@@ -759,10 +771,13 @@ export class AgentLoop {
 		return total;
 	}
 
-	/** 发射 session_token_usage 事件（会话级汇总）。 */
+	/** 发射 session_token_usage 事件（会话级汇总，缓存细分作为输入侧明细独立累计，不计入 total） */
 	private emitSessionTokenUsage(sessionId: string, baseTotal: number): void {
 		const messages = this.messageStore.loadHistory(sessionId);
 		let total = 0;
+		let noCache = 0;
+		let cacheRead = 0;
+		let cacheWrite = 0;
 		const breakdown = { reasoning: 0, tool_calls: 0, model_output: 0, user_input: 0, context: 0 };
 		for (const m of messages) {
 			if (m.role === 'assistant' && 'tokenUsage' in m && m.tokenUsage) {
@@ -773,6 +788,9 @@ export class AgentLoop {
 				breakdown.model_output += t.model_output;
 				breakdown.user_input += t.user_input;
 				breakdown.context += t.context;
+				noCache += t.no_cache_tokens ?? 0;
+				cacheRead += t.cache_read_tokens ?? 0;
+				cacheWrite += t.cache_write_tokens ?? 0;
 			}
 		}
 		this.eventBus.emit({
@@ -782,6 +800,9 @@ export class AgentLoop {
 				total_tokens: total,
 				breakdown,
 				delta_tokens: Math.max(0, total - baseTotal),
+				...(noCache > 0 ? { no_cache_tokens: noCache } : {}),
+				...(cacheRead > 0 ? { cache_read_tokens: cacheRead } : {}),
+				...(cacheWrite > 0 ? { cache_write_tokens: cacheWrite } : {}),
 			},
 		});
 	}

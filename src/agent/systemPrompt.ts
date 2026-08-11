@@ -225,7 +225,6 @@ export function buildSystemPrompt(context: SystemPromptContext): string {
 	const systemPrompt = sections.join('\n\n');
 
 	logger.log(`[SystemPrompt] 构建完成 length=${systemPrompt.length} 自定义=${context.agentPrompt?.trim() ? 'yes' : 'no'} skills=${context.skills.length} projectRules=${context.projectRules?.source ?? 'none'} traeRules=${context.traeRules?.sources.length ?? 0}`);
-	logger.log(`[SystemPrompt] 完整内容如下：\n${systemPrompt}`);
 
 	return systemPrompt;
 }

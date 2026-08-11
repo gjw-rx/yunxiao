@@ -40,6 +40,8 @@ export interface TokenUsageSnapshot {
 	readonly cache_read_tokens?: number;
 	/** 缓存写入 token（provider 提供 cache 明细时存在，来源为 usage） */
 	readonly cache_write_tokens?: number;
+	/** 非缓存输入 token（provider 提供 cache 明细时存在，来源为 usage） */
+	readonly no_cache_tokens?: number;
 	/** 思考（优先 usage，缺失时估算） */
 	readonly reasoning: number;
 	/** 工具调用（对 toolCall.name+arguments 估算） */

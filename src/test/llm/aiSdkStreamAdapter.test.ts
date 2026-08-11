@@ -114,7 +114,7 @@ describe('mapStreamPart', () => {
 		assert.deepStrictEqual(events, []);
 	});
 
-	it('cache 明细存在时 usage 透传 cacheReadTokens / cacheWriteTokens', () => {
+	it('cache 明细存在时 usage 透传 cacheReadTokens / cacheWriteTokens / noCacheTokens', () => {
 		const events = mapStreamPart(
 			part('finish', {
 				finishReason: 'stop',
@@ -128,10 +128,11 @@ describe('mapStreamPart', () => {
 			}),
 			{ usageEmitted: false },
 		);
-		const usage = events[0] as { type: string; cacheReadTokens?: number; cacheWriteTokens?: number };
+		const usage = events[0] as { type: string; cacheReadTokens?: number; cacheWriteTokens?: number; noCacheTokens?: number };
 		assert.strictEqual(usage.type, 'usage');
 		assert.strictEqual(usage.cacheReadTokens, 40);
 		assert.strictEqual(usage.cacheWriteTokens, 0);
+		assert.strictEqual(usage.noCacheTokens, 60);
 	});
 
 	it('协议内部 part（tool-input-* / start-step / finish-step）不泄漏为事件', () => {
@@ -153,7 +154,7 @@ describe('mapStreamPart', () => {
 });
 
 describe('normalizeUsage', () => {
-	it('完整 usage 归一化', () => {
+	it('完整 usage 归一化（含 noCacheTokens 透传）', () => {
 		const n = normalizeUsage({
 			inputTokens: 100,
 			outputTokens: 50,
@@ -161,24 +162,159 @@ describe('normalizeUsage', () => {
 			inputTokenDetails: { noCacheTokens: 60, cacheReadTokens: 40, cacheWriteTokens: 5 },
 			outputTokenDetails: { textTokens: 30, reasoningTokens: 20 },
 		});
-		assert.deepStrictEqual(n, {
+		assert.deepStrictEqual(n.usage, {
 			inputTokens: 100,
 			outputTokens: 50,
 			reasoningTokens: 20,
 			totalTokens: 150,
 			cacheReadTokens: 40,
 			cacheWriteTokens: 5,
+			noCacheTokens: 60,
 		});
+		assert.deepStrictEqual(n.rejected, []);
 	});
 
-	it('usage 缺失字段归一化为 undefined（不硬造）', () => {
+	it('usage 缺失字段归一化为 undefined（不硬造），rejected 为空', () => {
+		const n = normalizeUsage({
+			inputTokens: 100,
+			outputTokens: 50,
+			totalTokens: 150,
+			inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+			outputTokenDetails: { textTokens: 50, reasoningTokens: undefined },
+		});
+		assert.deepStrictEqual(n.usage, { inputTokens: 100, outputTokens: 50, totalTokens: 150 });
+		assert.deepStrictEqual(n.rejected, []);
+	});
+
+	it('负 reasoning（-59）→ 省略并记录拒绝，保留 input/output/total', () => {
+		const n = normalizeUsage({
+			inputTokens: 11583,
+			outputTokens: 105,
+			totalTokens: 11688,
+			inputTokenDetails: { noCacheTokens: 191, cacheReadTokens: 11392, cacheWriteTokens: undefined },
+			outputTokenDetails: { textTokens: 105, reasoningTokens: -59 },
+		});
+		assert.strictEqual(n.usage.inputTokens, 11583);
+		assert.strictEqual(n.usage.outputTokens, 105);
+		assert.strictEqual(n.usage.totalTokens, 11688);
+		assert.strictEqual(n.usage.reasoningTokens, undefined, '负 reasoning 应省略');
+		assert.strictEqual(n.usage.cacheReadTokens, 11392, '有效缓存读取应保留');
+		assert.deepStrictEqual(n.rejected, [{ field: 'reasoningTokens', value: -59, reason: '非有限非负整数' }]);
+	});
+
+	it('reasoning 超过 output → 省略并记录拒绝', () => {
 		const n = normalizeUsage({
 			inputTokens: 100,
 			outputTokens: 50,
 			totalTokens: 150,
 			inputTokenDetails: { noCacheTokens: 100, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+			outputTokenDetails: { textTokens: 0, reasoningTokens: 60 },
+		});
+		assert.strictEqual(n.usage.reasoningTokens, undefined);
+		assert.deepStrictEqual(n.rejected, [{ field: 'reasoningTokens', value: 60, reason: '超过上限 50' }]);
+	});
+
+	it('cacheRead 超过 input → 省略并记录拒绝，保留顶层有效字段', () => {
+		const n = normalizeUsage({
+			inputTokens: 100,
+			outputTokens: 50,
+			totalTokens: 150,
+			inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 101, cacheWriteTokens: 5 },
 			outputTokenDetails: { textTokens: 50, reasoningTokens: undefined },
 		});
-		assert.deepStrictEqual(n, { inputTokens: 100, outputTokens: 50, totalTokens: 150 });
+		assert.strictEqual(n.usage.inputTokens, 100);
+		assert.strictEqual(n.usage.totalTokens, 150);
+		assert.strictEqual(n.usage.cacheReadTokens, undefined, '超上限的 cacheRead 应省略');
+		assert.strictEqual(n.usage.cacheWriteTokens, 5, '其他有效细分应保留');
+		assert.strictEqual(n.usage.noCacheTokens, 0, '合法 0 应保留');
+		assert.deepStrictEqual(n.rejected, [{ field: 'cacheReadTokens', value: 101, reason: '超过上限 100' }]);
+	});
+
+	it('noCacheTokens 超过 input → 省略并记录拒绝', () => {
+		const n = normalizeUsage({
+			inputTokens: 100,
+			outputTokens: 50,
+			totalTokens: 150,
+			inputTokenDetails: { noCacheTokens: 120, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+			outputTokenDetails: { textTokens: 50, reasoningTokens: undefined },
+		});
+		assert.strictEqual(n.usage.noCacheTokens, undefined);
+		assert.deepStrictEqual(n.rejected, [{ field: 'noCacheTokens', value: 120, reason: '超过上限 100' }]);
+	});
+
+	it('非有限数（NaN/Infinity）→ 省略并记录拒绝', () => {
+		const n = normalizeUsage({
+			inputTokens: 100,
+			outputTokens: 50,
+			totalTokens: 150,
+			inputTokenDetails: { noCacheTokens: Infinity, cacheReadTokens: NaN, cacheWriteTokens: undefined },
+			outputTokenDetails: { textTokens: 50, reasoningTokens: NaN },
+		});
+		assert.strictEqual(n.usage.reasoningTokens, undefined);
+		assert.strictEqual(n.usage.cacheReadTokens, undefined);
+		assert.strictEqual(n.usage.noCacheTokens, undefined);
+		assert.deepStrictEqual(n.rejected, [
+			{ field: 'reasoningTokens', value: NaN, reason: '非有限非负整数' },
+			{ field: 'cacheReadTokens', value: NaN, reason: '非有限非负整数' },
+			{ field: 'noCacheTokens', value: Infinity, reason: '非有限非负整数' },
+		]);
+	});
+
+	it('合法 0 的细分全部保留（0 是有效值，非未提供）', () => {
+		const n = normalizeUsage({
+			inputTokens: 0,
+			outputTokens: 0,
+			totalTokens: 0,
+			inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+			outputTokenDetails: { textTokens: 0, reasoningTokens: 0 },
+		});
+		assert.deepStrictEqual(n.usage, {
+			inputTokens: 0,
+			outputTokens: 0,
+			reasoningTokens: 0,
+			totalTokens: 0,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 0,
+			noCacheTokens: 0,
+		});
+		assert.deepStrictEqual(n.rejected, []);
+	});
+
+	it('provider total ≠ input+output 时原样保留（AI SDK 允许差异）', () => {
+		const n = normalizeUsage({
+			inputTokens: 11583,
+			outputTokens: 105,
+			totalTokens: 11688,
+			inputTokenDetails: { noCacheTokens: 191, cacheReadTokens: 11392, cacheWriteTokens: undefined },
+			outputTokenDetails: { textTokens: 105, reasoningTokens: 0 },
+		});
+		assert.strictEqual(n.usage.totalTokens, 11688, 'total 11688 ≠ 11583+105，仍应保留');
+		assert.deepStrictEqual(n.rejected, []);
+	});
+
+	it('totalTokens 无效（非有限数）→ 省略并记录拒绝，由调用方按 input+output 回退', () => {
+		const n = normalizeUsage({
+			inputTokens: 100,
+			outputTokens: 50,
+			totalTokens: Number.NaN,
+			inputTokenDetails: { noCacheTokens: 100, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+			outputTokenDetails: { textTokens: 50, reasoningTokens: undefined },
+		});
+		assert.strictEqual(n.usage.totalTokens, undefined);
+		assert.deepStrictEqual(n.rejected, [{ field: 'totalTokens', value: NaN, reason: '非有限非负整数' }]);
+	});
+
+	it('input/output 无效（非有限数）→ 按 0 兜底并记录拒绝（含受影响的输入侧细分）', () => {
+		const n = normalizeUsage({
+			inputTokens: Number.NaN,
+			outputTokens: Infinity,
+			totalTokens: 150,
+			inputTokenDetails: { noCacheTokens: 100, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+			outputTokenDetails: { textTokens: 50, reasoningTokens: undefined },
+		});
+		assert.strictEqual(n.usage.inputTokens, 0);
+		assert.strictEqual(n.usage.outputTokens, 0);
+		// inputTokens/outputTokens 各 1 条；noCacheTokens=100 超过兜底后的上限 0，也被拒绝
+		assert.strictEqual(n.rejected.length, 3);
 	});
 });

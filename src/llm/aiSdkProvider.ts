@@ -76,7 +76,7 @@ export class AISDKProvider implements LLMProvider {
 				for (const event of mapStreamPart(part, state)) {
 					if (event.type === 'usage') {
 						logger.log(
-							`# [AISDKProvider] 权威 usage — input=${event.inputTokens} output=${event.outputTokens} total=${event.totalTokens ?? 'n/a'} reasoning=${event.reasoningTokens ?? 'n/a'} cacheRead=${event.cacheReadTokens ?? 'n/a'}`,
+							`# [AISDKProvider] 权威 usage — input=${event.inputTokens} output=${event.outputTokens} total=${event.totalTokens ?? 'n/a'} reasoning=${event.reasoningTokens ?? 'n/a'} cacheRead=${event.cacheReadTokens ?? 'n/a'} cacheWrite=${event.cacheWriteTokens ?? 'n/a'} noCache=${event.noCacheTokens ?? 'n/a'}`,
 						);
 					}
 					yield event;
