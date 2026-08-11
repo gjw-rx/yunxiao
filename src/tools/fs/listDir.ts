@@ -63,7 +63,9 @@ export class ListDirTool extends BaseTool {
 	};
 
 	validate(args: Record<string, unknown>): void {
-		requireStringArg(args, 'path');
+		if (args.path !== '') {
+			requireStringArg(args, 'path');
+		}
 		const t = args.type;
 		if (t !== undefined && t !== null && t !== 'file' && t !== 'dir' && t !== 'all') {
 			throw new Error('参数 type 必须为 file | dir | all');
@@ -74,7 +76,7 @@ export class ListDirTool extends BaseTool {
 		args: Record<string, unknown>,
 		context: ToolContext
 	): Promise<ToolExecutionResult> {
-		const inputPath = args.path as string;
+		const inputPath = (args.path as string) || '.';
 		const typeFilter = (args.type as 'file' | 'dir' | 'all') ?? 'all';
 		const recursive = args.recursive === true;
 		const offset = typeof args.offset === 'number' ? args.offset : 1;
