@@ -15,6 +15,8 @@ import type { ChatAction } from './reducer';
  */
 export function hostToAction(msg: HostToWebviewMessage): ChatAction | null {
 	switch (msg.command) {
+		case 'runtimeState':
+			return { type: 'runtimeState', status: msg.status, message: msg.message };
 		case 'modelInfo':
 			return { type: 'modelInfo', model: msg.model };
 		case 'slashCommands':

@@ -5,17 +5,18 @@
  */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { HostToWebviewMessage } from '../protocol';
 
 const bridge = vi.hoisted(() => ({
 	/** 捕获的宿主消息订阅回调。 */
-	listener: undefined as undefined | ((message: { readonly command: string; readonly sessionId?: string }) => void),
+	listener: undefined as undefined | ((message: HostToWebviewMessage) => void),
 	/** Webview 发往宿主的消息记录。 */
 	post: vi.fn(),
 }));
 
 vi.mock('../bridge/vscode', () => ({
 	post: bridge.post,
-	subscribe: (listener: (message: { readonly command: string; readonly sessionId?: string }) => void) => {
+	subscribe: (listener: (message: HostToWebviewMessage) => void) => {
 		bridge.listener = listener;
 		return (): void => undefined;
 	},
@@ -32,7 +33,8 @@ afterEach(() => {
 describe('App 设置页导航', () => {
 	/** 点击设置只发送打开独立标签的请求，聊天页面保持原样。 */
 	it('点击设置请求宿主打开独立编辑器标签', () => {
-		render(<App />);
+	render(<App />);
+		act(() => bridge.listener?.({ command: 'runtimeState', status: 'ready' }));
 		act(() => bridge.listener?.({ command: 'sessionCreated', sessionId: 'session-1' }));
 
 		fireEvent.change(screen.getByRole('textbox', { name: '消息输入' }), { target: { value: '保留这段草稿' } });

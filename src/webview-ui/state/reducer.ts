@@ -9,6 +9,7 @@ import type {
 	ApprovalEntry,
 	DiffEntry,
 	HistoryEntry,
+	RuntimeStatus,
 	SessionMeta,
 	SessionTokenPayload,
 	SlashCommand,
@@ -32,6 +33,10 @@ export type MessageItem =
 
 /** Webview 全局界面状态。 */
 export interface ChatState {
+	/** 扩展运行时初始化状态 */
+	runtimeStatus: RuntimeStatus;
+	/** 初始化失败时可展示的简要原因 */
+	runtimeMessage: string;
 	/** 当前会话 ID（未创建/已删除为 null） */
 	currentSessionId: string | null;
 	/** 当前会话标题（历史切换时回填输入框） */
@@ -72,6 +77,8 @@ export interface ChatState {
 
 /** 初始状态。 */
 export const initialState: ChatState = {
+	runtimeStatus: 'initializing',
+	runtimeMessage: '',
 	currentSessionId: null,
 	sessionTitle: '',
 	isStreaming: false,
@@ -134,6 +141,7 @@ export function truncateText(s: string, max: number): string {
 
 /** 渲染动作（与宿主消息命令一一对应，外加本地 UI 动作）。 */
 export type ChatAction =
+	| { type: 'runtimeState'; status: RuntimeStatus; message?: string }
 	| { type: 'openSession'; sessionId: string; title?: string }
 	| { type: 'sessionCreated'; sessionId: string }
 	| { type: 'replyChunk'; text: string }
@@ -278,12 +286,16 @@ function ensureToolStep(state: ChatState, callId: string): ChatState {
  */
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 	switch (action.type) {
+		case 'runtimeState':
+			return { ...state, runtimeStatus: action.status, runtimeMessage: action.message ?? '' };
 		case 'openSession':
 		case 'sessionCreated': {
 			return {
 				...resetConversation(state),
 				currentSessionId: action.sessionId,
-				sessionTitle: action.type === 'openSession' && action.title ? action.title : state.sessionTitle,
+				// 新建会话（sessionCreated）不带标题，必须清空标题，避免沿用上一个会话的名称；
+				// openSession 仅在携带标题时更新，否则保持当前输入框文案
+				sessionTitle: action.type === 'sessionCreated' ? '' : action.title || state.sessionTitle,
 				error: '',
 			};
 		}

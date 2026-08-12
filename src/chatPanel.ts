@@ -9,6 +9,7 @@ import type { ModelConfigStore, ModelSettingsInput } from './config/modelConfigS
 import type { ModelConfig } from './config/modelConfig';
 import type { SyncSource } from './config/syncConfig';
 import type { SkillInstallResult } from './skill/skillInstaller';
+import type { RuntimeStatus } from './webview-ui/protocol';
 import { buildSlashCommandGroups } from './chat/slashCommands';
 import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
 import * as logger from './logger';
@@ -56,6 +57,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
   private _skillRegistry?: SkillRegistry;
   private _settingsDeps?: SettingsPanelDeps;
+  /** 当前扩展运行时状态；未就绪时拒绝聊天业务消息。 */
+  private _runtimeStatus: RuntimeStatus = 'initializing';
+  /** 运行时失败时可显示的简要错误信息。 */
+  private _runtimeMessage?: string;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -85,6 +90,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * 更新扩展运行时状态并通知已打开的聊天 Webview。
+   *
+   * @param status 新的运行时状态
+   * @param message 初始化失败时展示的简要错误信息
+   * @returns void
+   */
+  setRuntimeStatus(status: RuntimeStatus, message?: string): void {
+    this._runtimeStatus = status;
+    this._runtimeMessage = message;
+    if (this._chatWebview) {
+      this._pushRuntimeState(this._chatWebview);
+    }
+    logger.log(`[ChatPanel] 运行时状态已更新 status=${status}${message ? ` message=${message}` : ''}`);
+  }
+
+  /**
+   * 向指定聊天 Webview 发送当前运行时状态。
+   *
+   * @param webview 接收状态的聊天 Webview
+   * @returns void
+   */
+  private _pushRuntimeState(webview: vscode.Webview): void {
+    webview.postMessage({
+      command: 'runtimeState',
+      status: this._runtimeStatus,
+      ...(this._runtimeMessage ? { message: this._runtimeMessage } : {}),
+    });
+  }
+
+  /**
    * 向 webview 推送最新的斜杠命令分组数据（webview 未就绪时忽略）。
    *
    * @param webview 接收斜杠命令分组的聊天 Webview
@@ -103,7 +138,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * @returns void
    */
   refreshSlashCommands(): void {
-    if (this._chatWebview) {
+    if (this._chatWebview && this._runtimeStatus === 'ready') {
       this._pushSlashCommands(this._chatWebview);
     }
   }
@@ -182,16 +217,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     );
 
-    // 发送当前模型名称到 webview
-    const modelName = this._settingsDeps?.getModelName() ?? '';
-    if (modelName) {
-      webview.postMessage({ command: 'modelInfo', model: modelName });
-    }
-
-    // 推送斜杠命令分组（webview 侧亦可主动 requestSlashCommands 拉取）
-    this._pushSlashCommands(webview);
-
-    logger.log('[ChatPanel] 侧栏对话视图已就绪');
+    logger.log(`[ChatPanel] 侧栏对话视图已解析 runtimeStatus=${this._runtimeStatus}`);
   }
 
   /**
@@ -353,6 +379,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * @returns void
    */
   triggerNewSession(): void {
+    if (this._runtimeStatus !== 'ready') {
+      logger.log(`[ChatPanel] 运行时未就绪，忽略新建会话请求 status=${this._runtimeStatus}`);
+      return;
+    }
     this._chatWebview?.postMessage({ command: 'triggerNewSession' });
   }
 
@@ -557,14 +587,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     logger.log(`[ChatPanel] 收到 webview 消息: ${msg.command}`);
 
+    const guardedCommands = new Set([
+      'createSession',
+      'sendMessage',
+      'stopStream',
+      'loadHistory',
+      'requestSlashCommands',
+      'requestWorkspaceFiles',
+      'renameSession',
+      'requestSessions',
+      'openSession',
+      'deleteSession',
+    ]);
+    if (this._runtimeStatus !== 'ready' && guardedCommands.has(msg.command)) {
+      logger.log(`[ChatPanel] 运行时未就绪，忽略业务消息 command=${msg.command} status=${this._runtimeStatus}`);
+      return;
+    }
+
     switch (msg.command) {
       case 'webviewReady': {
-        // 握手：UI 挂载完成后推送模型名与斜杠命令初始数据（应对 webview 重建后的数据丢失）
+        // 握手：UI 挂载完成后先同步当前运行时状态，避免未就绪时触发聊天业务。
+        this._pushRuntimeState(webview);
+        if (this._runtimeStatus !== 'ready') {
+          break;
+        }
         const modelName = this._settingsDeps?.getModelName() ?? '';
         if (modelName) {
           webview.postMessage({ command: 'modelInfo', model: modelName });
         }
-        this._pushSlashCommands(webview);
         break;
       }
       case 'openSettings': {

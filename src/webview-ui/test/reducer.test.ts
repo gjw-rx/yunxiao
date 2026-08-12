@@ -19,6 +19,15 @@ function activeState(overrides: Partial<ChatState> = {}): ChatState {
 }
 
 describe('协议映射 hostToAction', () => {
+	it('运行时状态映射并更新加载状态', () => {
+		const action = hostToAction({ command: 'runtimeState', status: 'failed', message: 'Skill 加载失败' });
+		expect(action).toEqual({ type: 'runtimeState', status: 'failed', message: 'Skill 加载失败' });
+		expect(chatReducer(initialState, action!)).toMatchObject({
+			runtimeStatus: 'failed',
+			runtimeMessage: 'Skill 加载失败',
+		});
+	});
+
 	it('webviewReady 握手后宿主推送 modelInfo 与 slashCommands 映射为对应动作', () => {
 		// 握手消息本身由 App 层发送（webview → host），此处验证宿主回推的初始数据映射
 		expect(hostToAction({ command: 'modelInfo', model: 'gpt-4o' })).toEqual({ type: 'modelInfo', model: 'gpt-4o' });
@@ -87,6 +96,13 @@ describe('reducer 状态转换', () => {
 		expect(next.sessionTitle).toBe('新标题');
 		expect(next.messages).toEqual([]);
 		expect(next.isStreaming).toBe(false);
+	});
+
+	it('sessionCreated 新建会话时清空标题，不复用上一个会话的名称', () => {
+		const before = activeState({ currentSessionId: 'session-1', sessionTitle: '上一个会话名称' });
+		const next = chatReducer(before, { type: 'sessionCreated', sessionId: 'session-2' });
+		expect(next.currentSessionId).toBe('session-2');
+		expect(next.sessionTitle).toBe('');
 	});
 
 	it('replyChunk 创建流式 assistant 并追加文本，replyEnd 收尾', () => {

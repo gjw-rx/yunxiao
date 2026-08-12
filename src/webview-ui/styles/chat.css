@@ -15,6 +15,51 @@
 	overflow: hidden;
 }
 
+/* ── 运行时启动状态 ── */
+.runtime-status {
+	display: flex;
+	box-sizing: border-box;
+	align-items: center;
+	justify-content: center;
+	flex-direction: column;
+	width: 100vw;
+	height: 100vh;
+	padding: 24px;
+	color: var(--muted);
+	text-align: center;
+}
+.runtime-status__icon {
+	display: grid;
+	width: 54px;
+	height: 54px;
+	margin-bottom: 14px;
+	place-items: center;
+	border: 1px solid var(--border);
+	border-radius: 50%;
+	background: var(--step-bg);
+	color: var(--fg);
+	font-size: 22px;
+	font-weight: 600;
+	animation: runtime-pulse 1.5s ease-in-out infinite;
+}
+.runtime-status__title,
+.runtime-status__message {
+	margin: 0;
+	font-size: 13px;
+	line-height: 1.6;
+}
+.runtime-status__title {
+	color: var(--fg);
+	font-weight: 500;
+}
+.runtime-status__message {
+	max-width: 280px;
+	margin-top: 6px;
+}
+@keyframes runtime-pulse {
+	50% { opacity: 0.65; transform: scale(0.96); }
+}
+
 /* ── Header ── */
 #header {
 	display: flex;
@@ -863,10 +908,10 @@
 /* ── Input area ── */
 #inputArea {
 	position: relative;
-	padding: 10px 18px 8px;
-	border-top: 1px solid var(--border);
+	padding: 12px 18px 9px;
+	border-top: 0;
 	flex-shrink: 0;
-	background: color-mix(in srgb, var(--bg) 94%, var(--accent) 6%);
+	background: var(--bg);
 }
 
 #filePicker,
@@ -1048,16 +1093,24 @@
 	display: flex;
 	flex-direction: column;
 	align-items: stretch;
-	gap: 9px;
-	background: var(--input-bg);
-	border: 1px solid var(--input-border);
-	border-radius: 12px;
-	padding: 10px 12px;
-	transition: border-color 0.15s, box-shadow 0.15s;
+	gap: 7px;
+	background: var(--composer-bg);
+	border: 1px solid var(--composer-border);
+	border-radius: 18px;
+	padding: 12px 14px 8px;
+	box-shadow: inset 0 1px 0 color-mix(in srgb, var(--fg) 4%, transparent);
+	transition: border-color 160ms ease-out, box-shadow 160ms ease-out;
 }
 #inputWrapper:focus-within {
-	border-color: var(--focus);
-	box-shadow: 0 0 0 1px var(--focus);
+	border-color: var(--composer-border);
+	box-shadow: inset 0 1px 0 color-mix(in srgb, var(--fg) 4%, transparent);
+}
+#inputWrapper:hover {
+	border-color: var(--composer-border-hover);
+}
+#inputWrapper:has(#input:focus-visible) {
+	border-color: var(--composer-focus);
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--focus) 34%, transparent);
 }
 
 .file-reference-list {
@@ -1225,7 +1278,7 @@
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	padding: 6px 2px 0;
+	padding: 3px 0 0;
 	gap: 6px;
 }
 .toolbar-left,
@@ -1270,11 +1323,24 @@
 
 #sendBtn,
 #stopBtn {
-	width: 28px;
-	height: 28px;
+	width: 30px;
+	height: 30px;
 	padding: 0;
-	border-radius: 6px;
+	border-radius: 50%;
 	flex-shrink: 0;
+}
+#sendBtn {
+	background: var(--composer-send-bg);
+	color: var(--composer-send-fg);
+}
+#sendBtn:hover:not(:disabled) {
+	background: var(--composer-send-bg);
+	filter: brightness(1.1);
+}
+#sendBtn:disabled {
+	background: color-mix(in srgb, var(--fg) 14%, transparent);
+	color: var(--muted);
+	opacity: 1;
 }
 
 .session-actions {

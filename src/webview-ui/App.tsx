@@ -22,6 +22,7 @@ export function App(): JSX.Element {
 	const [state, dispatch] = useReducer(chatReducer, initialState);
 	const isSettingsView = document.body.dataset.view === 'settings';
 	const dispatchRef = useRef(dispatch);
+	const initialDataRequestedRef = useRef(false);
 	dispatchRef.current = dispatch;
 
 	useEffect(() => {
@@ -33,19 +34,21 @@ export function App(): JSX.Element {
 			if (action) {
 				dispatchRef.current(action);
 			}
+			if (msg.command === 'runtimeState' && msg.status === 'ready' && !initialDataRequestedRef.current) {
+				initialDataRequestedRef.current = true;
+				post({ command: 'requestSlashCommands' });
+				post({ command: 'createSession' });
+			}
 			// 副作用：会话打开/创建后请求历史
 			if (msg.command === 'openSession' || msg.command === 'sessionCreated') {
 				post({ command: 'loadHistory', sessionId: msg.sessionId });
 			}
-			if (msg.command === 'triggerNewSession') {
+			if (msg.command === 'triggerNewSession' && initialDataRequestedRef.current) {
 				post({ command: 'createSession' });
 			}
 		});
-		// 先订阅再握手，确保宿主同步推送的 modelInfo 不会丢失。
+		// 先订阅再握手，确保宿主同步推送的运行时状态不会丢失。
 		post({ command: 'webviewReady' });
-		post({ command: 'requestSlashCommands' });
-		// 自动创建首个会话（与迁移前行为一致）
-		post({ command: 'createSession' });
 
 		return dispose;
 	}, []);
@@ -54,9 +57,22 @@ export function App(): JSX.Element {
 		return <SettingsPage />;
 	}
 
+	if (state.runtimeStatus !== 'ready') {
+		const failed = state.runtimeStatus === 'failed';
+		return (
+			<div className="runtime-status" role="status" aria-live="polite">
+				<div className="runtime-status__icon" aria-hidden="true">云</div>
+				<p className="runtime-status__title">{failed ? 'Skill 加载失败' : '正在加载 Skill…'}</p>
+				{failed && <p className="runtime-status__message">{state.runtimeMessage || '请查看云效 Agent 日志了解详情。'}</p>}
+			</div>
+		);
+	}
+
 	/** 发送消息：显示拼接文本（引用/Skill 提示），发送原始文本与独立字段。 */
 	const handleSend = (text: string, files: WorkspaceFile[], skills: SlashCommand[]): void => {
-		if (!state.currentSessionId) return;
+		if (!state.currentSessionId) {
+			return;
+		}
 		// 用户气泡展示引用文件与已选 Skill（纯文本提示，不污染工具调用路径）
 		const displayParts: string[] = [];
 		if (files.length > 0) {
@@ -81,13 +97,17 @@ export function App(): JSX.Element {
 
 	/** 追加引用文件（去重）。 */
 	const handleAddFile = (file: WorkspaceFile): void => {
-		if (state.selectedFiles.some((f) => f.path === file.path)) return;
+		if (state.selectedFiles.some((f) => f.path === file.path)) {
+			return;
+		}
 		dispatchRef.current({ type: 'setSelectedFiles', files: [...state.selectedFiles, file] });
 	};
 
 	/** 追加已选 Skill（去重）。 */
 	const handleAddSkill = (skill: SlashCommand): void => {
-		if (state.selectedSkills.some((s) => s.id === skill.id)) return;
+		if (state.selectedSkills.some((s) => s.id === skill.id)) {
+			return;
+		}
 		dispatchRef.current({ type: 'setSelectedSkills', skills: [...state.selectedSkills, skill] });
 	};
 

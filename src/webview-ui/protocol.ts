@@ -416,8 +416,19 @@ export interface SettingsErrorMessage {
 	readonly message: string;
 }
 
+/** 扩展运行时初始化状态。 */
+export type RuntimeStatus = 'initializing' | 'ready' | 'failed';
+
+/** 宿主通知 Webview 当前运行时是否可执行聊天业务。 */
+export interface RuntimeStateMessage {
+	readonly command: 'runtimeState';
+	readonly status: RuntimeStatus;
+	readonly message?: string;
+}
+
 /** Host → Webview 判别联合。 */
 export type HostToWebviewMessage =
+	| RuntimeStateMessage
 	| ModelInfoMessage
 	| SlashCommandsMessage
 	| OpenSessionMessage

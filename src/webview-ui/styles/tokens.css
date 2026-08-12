@@ -20,6 +20,12 @@
 	--input-fg: var(--vscode-input-foreground, #cccccc);
 	--input-border: var(--vscode-input-border, transparent);
 	--input-placeholder: var(--vscode-input-placeholderForeground, #9d9d9d);
+	--composer-bg: color-mix(in srgb, var(--bg) 84%, var(--fg) 16%);
+	--composer-border: color-mix(in srgb, var(--fg) 12%, transparent);
+	--composer-border-hover: color-mix(in srgb, var(--fg) 22%, transparent);
+	--composer-focus: color-mix(in srgb, var(--focus) 58%, var(--composer-border));
+	--composer-send-bg: color-mix(in srgb, var(--fg) 72%, transparent);
+	--composer-send-fg: var(--bg);
 
 	/* 按钮（主/次） */
 	--btn-bg: var(--vscode-button-background, #0e639c);
@@ -104,4 +110,3 @@ body {
 	outline: 1px solid var(--focus);
 	outline-offset: 1px;
 }
-

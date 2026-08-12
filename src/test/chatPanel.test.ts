@@ -20,6 +20,7 @@ interface PanelInternals {
 	): void;
 	_getHtml(webview: vscode.Webview, page?: 'chat' | 'settings'): string;
 	_handleMessage(msg: { command: string; [key: string]: unknown }): Promise<void>;
+	setRuntimeStatus(status: 'initializing' | 'ready' | 'failed', message?: string): void;
 }
 
 /** 构造一个可用的假 WebviewPanel（记录 onDidDispose 回调，供测试触发）。 */
@@ -62,6 +63,7 @@ function setup() {
 	internals._chatWebview = {
 		postMessage: (message: Record<string, unknown>) => messages.push(message),
 	} as unknown as vscode.Webview;
+	internals.setRuntimeStatus('ready');
 	internals._currentSessionId = 'old-session';
 	return { messages, internals };
 }
@@ -78,6 +80,27 @@ function createFakeWebview(calledUris: string[] = []): vscode.Webview {
 }
 
 describe('ChatViewProvider HTML shell 与资源加载', () => {
+	it('运行时未就绪时回传状态并拒绝创建会话', async () => {
+		const { messages, internals } = setup();
+		internals.setRuntimeStatus('initializing');
+
+		await internals._handleMessage({ command: 'webviewReady' });
+		await internals._handleMessage({ command: 'createSession' });
+		await internals._handleMessage({ command: 'requestSlashCommands' });
+
+		assert.ok(messages.some((message) => message.command === 'runtimeState' && message.status === 'initializing'));
+		assert.ok(!messages.some((message) => message.command === 'sessionCreated'));
+		assert.ok(!messages.some((message) => message.command === 'slashCommands'));
+
+		internals.setRuntimeStatus('failed', 'Skill 加载失败');
+		await internals._handleMessage({ command: 'webviewReady' });
+		assert.ok(messages.some((message) => message.command === 'runtimeState' && message.status === 'failed'));
+
+		internals.setRuntimeStatus('ready');
+		await internals._handleMessage({ command: 'createSession' });
+		assert.ok(messages.some((message) => message.command === 'sessionCreated'));
+	});
+
 	it('扩展将聊天容器直接贡献到次级侧边栏', () => {
 		const manifestPath = path.join(__dirname, '..', '..', 'package.json');
 		const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {

@@ -86,7 +86,6 @@ process.on('unhandledRejection', (reason) => {
 
 export async function activate(context: vscode.ExtensionContext) {
 	logger.log('[Extension] 云效 Agent 扩展已激活');
-	logger.show();
 
 	try {
 		await _activate(context);
@@ -188,6 +187,23 @@ async function _activate(context: vscode.ExtensionContext) {
 	// 将 skillRegistry 注入 provider，供斜杠命令数据组装
 	provider.setSkillRegistry(skillRegistry);
 
+	// 先注册侧栏入口：首次 Skill 同步期间也能展示加载视图。
+	context.subscriptions.push(
+		vscode.window.registerWebviewViewProvider('yunxiaoAgent.chatView', provider, {
+			webviewOptions: { retainContextWhenHidden: true },
+		})
+	);
+	context.subscriptions.push(
+		vscode.commands.registerCommand('yunxiaoAgent.openPanel', () => {
+			provider.show();
+		})
+	);
+	context.subscriptions.push(
+		vscode.commands.registerCommand('yunxiaoAgent.newSession', () => {
+			provider.triggerNewSession();
+		})
+	);
+
 	// 生态配置同步（Claude / Trae 二选一）：按「配置来源」读取对应目录的 SKILL 并注册进 Skill 系统
 	// （claude → 项目 .claude/skills（先加载，优先）与 ~/.claude/skills（后加载，同名跳过）；trae → ~/.trae(s) 与项目 .trae(s)/skills；none → 不加载）。
 	// 记录本次同步注册的 skill 名，切换来源或安装刷新时据此卸载，避免多套生态配置叠加。
@@ -241,8 +257,6 @@ async function _activate(context: vscode.ExtensionContext) {
 		syncChain = syncChain.then(run, run);
 		return syncChain;
 	};
-	await syncSkills();
-
 	// 工具路由
 	const metrics = new ReliabilityMetrics();
 	const journal = new ToolExecutionJournal(context.workspaceState);
@@ -373,26 +387,26 @@ async function _activate(context: vscode.ExtensionContext) {
 		onModelConfigSaved: applyModelConfig,
 	});
 
-	// 侧边栏 activity bar 图标入口：点击展开容器时 provider 在侧栏初始化聊天视图（见 ChatViewProvider.resolveWebviewView）
-	context.subscriptions.push(
-		vscode.window.registerWebviewViewProvider('yunxiaoAgent.chatView', provider, {
-			webviewOptions: { retainContextWhenHidden: true },
-		})
-	);
-
-	// 打开对话命令：聚焦云效 Agent 侧栏视图
-	context.subscriptions.push(
-		vscode.commands.registerCommand('yunxiaoAgent.openPanel', () => {
-			provider.show();
-		})
-	);
-
-	// 新建会话命令（工具栏按钮触发）
-	context.subscriptions.push(
-		vscode.commands.registerCommand('yunxiaoAgent.newSession', () => {
-			provider.triggerNewSession();
-		})
-	);
+	/**
+	 * 在后台执行首次 Skill 同步，避免阻塞侧栏加载视图。
+	 *
+	 * @returns Promise<void>
+	 */
+	const initializeSkills = async (): Promise<void> => {
+		const startedAt = Date.now();
+		logger.log('[Extension] 开始后台初始化 Skill');
+		try {
+			await syncSkills();
+			provider.refreshModelInfo();
+			provider.setRuntimeStatus('ready');
+			provider.refreshSlashCommands();
+			logger.log(`[Extension] 后台初始化 Skill 完成 耗时=${Date.now() - startedAt}ms`);
+		} catch (err) {
+			logger.error(`[Extension] 后台初始化 Skill 失败 耗时=${Date.now() - startedAt}ms: ${err instanceof Error ? err.message : String(err)}`);
+			provider.setRuntimeStatus('failed', 'Skill 加载失败，请查看云效 Agent 日志。');
+		}
+	};
+	void initializeSkills();
 }
 
 /**

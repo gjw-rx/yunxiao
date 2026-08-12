@@ -320,55 +320,55 @@ export function MessageInput({
 					onSelect={(e) => handleInputChange(e.currentTarget.value, e.currentTarget.selectionStart ?? e.currentTarget.value.length)}
 					onKeyDown={handleKeyDown}
 				/>
-			</div>
-			<div id="inputToolbar" className="input-toolbar">
-				<div className="toolbar-left">
-					<button
-						type="button"
-						id="openFileBtn"
-						className="btn btn-icon open-file-btn"
-						title="打开文件"
-						aria-label="打开文件"
-						disabled={isStreaming}
-						onClick={() => post({ command: 'openFile' })}
-					>
-						<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-							<path d="M8 2v12M2 8h12" />
-						</svg>
-					</button>
-				</div>
-				<div className="toolbar-right">
-					<div className="model-info">
-						<span id="modelName">{modelName || '--'}</span>
+				<div id="inputToolbar" className="input-toolbar">
+					<div className="toolbar-left">
+						<button
+							type="button"
+							id="openFileBtn"
+							className="btn btn-icon open-file-btn"
+							title="打开文件"
+							aria-label="打开文件"
+							disabled={isStreaming}
+							onClick={() => post({ command: 'openFile' })}
+						>
+							<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+								<path d="M8 2v12M2 8h12" />
+							</svg>
+						</button>
 					</div>
-					{!isStreaming ? (
-						<button
-							type="button"
-							id="sendBtn"
-							className="btn btn-icon"
-							disabled={!currentSessionId || (!text.trim() && selectedFiles.length === 0 && selectedSkills.length === 0)}
-							title="发送 (Enter)"
-							aria-label="发送"
-							onClick={() => handleSend()}
-						>
-							<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-								<path d="M1.5 1.5l13 6.5-13 6.5V8.75l8-1.25-8-1.25V1.5z" />
-							</svg>
-						</button>
-					) : (
-						<button
-							type="button"
-							id="stopBtn"
-							className="btn btn-stop btn-icon"
-							title="停止"
-							aria-label="停止"
-							onClick={() => currentSessionId && post({ command: 'stopStream', sessionId: currentSessionId })}
-						>
-							<svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-								<rect x="1" y="1" width="8" height="8" rx="1" />
-							</svg>
-						</button>
-					)}
+					<div className="toolbar-right">
+						<div className="model-info">
+							<span id="modelName">{modelName || '--'}</span>
+						</div>
+						{!isStreaming ? (
+							<button
+								type="button"
+								id="sendBtn"
+								className="btn btn-icon"
+								disabled={!currentSessionId || (!text.trim() && selectedFiles.length === 0 && selectedSkills.length === 0)}
+								title="发送 (Enter)"
+								aria-label="发送"
+								onClick={() => handleSend()}
+							>
+								<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+									<path d="M1.5 1.5l13 6.5-13 6.5V8.75l8-1.25-8-1.25V1.5z" />
+								</svg>
+							</button>
+						) : (
+							<button
+								type="button"
+								id="stopBtn"
+								className="btn btn-stop btn-icon"
+								title="停止"
+								aria-label="停止"
+								onClick={() => currentSessionId && post({ command: 'stopStream', sessionId: currentSessionId })}
+							>
+								<svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+									<rect x="1" y="1" width="8" height="8" rx="1" />
+								</svg>
+							</button>
+						)}
+					</div>
 				</div>
 			</div>
 			<div id="hint">Enter 发送 &middot; Shift+Enter 换行 &middot; 中文输入法下 Enter 确认候选词 &middot; / 命令 &middot; @ 引用文件</div>
