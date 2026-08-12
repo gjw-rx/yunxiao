@@ -1,10 +1,11 @@
 /**
- * 工作区模型配置存储。
+ * 全局模型配置存储。
  *
  * 职责：将可公开的多模型配置保存到 `.yunForce/modelConfig/models.json`，
  * 并将每个模型的 API Key 保存在 VS Code SecretStorage，绝不下发到 Webview。
  */
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
@@ -93,8 +94,8 @@ const LEGACY_MODEL_STATE_KEY = 'yunxiaoAgent.modelConfig';
 const LEGACY_API_KEY_SECRET_KEY = 'yunxiaoAgent.model.apiKey';
 /** 每个模型 API Key 的 SecretStorage 键前缀。 */
 const API_KEY_SECRET_PREFIX = 'yunxiaoAgent.model.apiKey.';
-/** 配置文件相对工作区根目录。 */
-const MODEL_CONFIG_RELATIVE_PATH = path.join('.yunForce', 'modelConfig', 'models.json');
+/** 配置文件相对全局 `.yunForce` 配置目录的路径。 */
+const MODEL_CONFIG_RELATIVE_PATH = path.join('modelConfig', 'models.json');
 const TEMPERATURE_MIN = 0;
 const TEMPERATURE_MAX = 2;
 const MAX_TOKENS_MIN = 1;
@@ -159,7 +160,7 @@ export function validateModelSettings(input: ModelSettingsInput): string | null 
 	return null;
 }
 
-/** 工作区多模型配置存储服务。 */
+/** 全局多模型配置存储服务。 */
 export class ModelConfigStore {
 	/** 配置文件绝对路径。 */
 	private readonly _filePath: string;
@@ -168,10 +169,10 @@ export class ModelConfigStore {
 	 * 创建存储服务。
 	 *
 	 * @param context VS Code 扩展上下文（用于迁移与 SecretStorage）
-	 * @param workspaceRoot 工作区根目录；生产环境由扩展注入
+	 * @param globalConfigRoot 全局 `.yunForce` 配置目录；缺省时使用用户主目录下的 `.yunForce`
 	 */
-	constructor(private readonly context: vscode.ExtensionContext, workspaceRoot = process.cwd()) {
-		this._filePath = path.join(workspaceRoot, MODEL_CONFIG_RELATIVE_PATH);
+	constructor(private readonly context: vscode.ExtensionContext, globalConfigRoot = path.join(os.homedir(), '.yunForce')) {
+		this._filePath = path.join(globalConfigRoot, MODEL_CONFIG_RELATIVE_PATH);
 	}
 
 	/**
@@ -249,7 +250,7 @@ export class ModelConfigStore {
 			await this.context.secrets.store(this._apiKeySecretKey(id), input.apiKey.trim());
 			logger.log(`[ModelConfigStore] API Key 已更新 modelId=${id}（SecretStorage）`);
 		}
-		logger.log(`[ModelConfigStore] 模型配置已保存 id=${id} model=${profile.model}`);
+		logger.log(`[ModelConfigStore] 模型配置已保存 id=${id} model=${profile.model} path=${this._filePath}`);
 		return this.getModelConfig();
 	}
 
@@ -330,7 +331,7 @@ export class ModelConfigStore {
 	}
 
 	/**
-	 * 将历史 globalState 单模型配置迁移到工作区文件。
+	 * 将历史 globalState 单模型配置迁移到全局配置文件。
 	 *
 	 * @returns 迁移后的文档；没有历史配置时返回空文档
 	 */
