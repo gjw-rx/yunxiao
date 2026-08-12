@@ -159,6 +159,10 @@ export function MessageInput({
 			if (currentSessionId) post({ command: 'stopStream', sessionId: currentSessionId });
 			return;
 		}
+		if (command.action === 'switchModel') {
+			post({ command: 'switchModel' });
+			return;
+		}
 		// skill 命令：加入对话框引用块（chip），由用户确认后发送
 		if (command.id && command.id.indexOf('skill.') === 0) {
 			if (token) {

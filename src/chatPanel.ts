@@ -606,6 +606,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._sessionManager.cancel(sessionId);
         break;
       }
+      case 'switchModel': {
+        // /model 命令：QuickPick 选择已启用模型并切换当前默认模型（复用设置页「设为默认」链路：持久化 + 重建 Provider）
+        const deps = this._settingsDeps;
+        if (!deps) {
+          break;
+        }
+        try {
+          const view = await deps.modelStore.getSettingsView();
+          const enabled = (view.models ?? []).filter((m) => m.enabled);
+          if (enabled.length === 0) {
+            const choice = await vscode.window.showInformationMessage('尚未配置可用的模型，请先到设置页配置模型', '打开设置');
+            if (choice === '打开设置') {
+              this._showSettingsPanel();
+            }
+            break;
+          }
+          const picked = await vscode.window.showQuickPick(
+            enabled.map((m) => ({
+              label: m.model,
+              description: m.provider,
+              detail: m.isDefault ? '当前默认模型' : m.apiKeyConfigured ? '已配置 API Key' : '未配置 API Key',
+              modelId: m.id,
+            })),
+            { placeHolder: '选择要切换的模型' }
+          );
+          if (!picked) {
+            break; // 用户取消选择
+          }
+          const config = await deps.modelStore.setDefaultModel(picked.modelId);
+          deps.onModelConfigSaved?.(config);
+          logger.log(`[ChatPanel] /model 已切换默认模型 id=${picked.modelId} model=${picked.label}`);
+        } catch (err) {
+          logger.error(`[ChatPanel] /model 切换模型失败: ${err instanceof Error ? err.message : String(err)}`);
+          vscode.window.showErrorMessage(`切换模型失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
       case 'loadHistory': {
         const history = this._sessionManager.loadHistory(msg.sessionId as string);
         panel.webview.postMessage({ command: 'historyLoaded', messages: history });

@@ -19,7 +19,7 @@ export interface SlashCommand {
 	/** true=选中即发送；false=回填输入框由用户编辑后发送 */
 	readonly send: boolean;
 	/** 可选特殊动作：直接触发扩展侧命令而非发消息 */
-	readonly action?: 'newSession' | 'stopStream';
+	readonly action?: 'newSession' | 'stopStream' | 'switchModel';
 }
 
 /** 斜杠命令分组。 */
@@ -49,6 +49,14 @@ const BASIC_COMMANDS: readonly SlashCommand[] = [
 		description: '停止当前回复',
 		send: true,
 		action: 'stopStream',
+	},
+	{
+		id: 'basic.switch-model',
+		command: 'model',
+		label: '切换模型',
+		description: '切换当前对话使用的模型',
+		send: true,
+		action: 'switchModel',
 	},
 	{
 		id: 'basic.help',

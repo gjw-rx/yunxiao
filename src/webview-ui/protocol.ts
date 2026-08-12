@@ -101,7 +101,7 @@ export interface SlashCommand {
 	/** true=选中即发送；false=回填输入框由用户编辑后发送 */
 	readonly send: boolean;
 	/** 可选特殊动作：直接触发扩展侧命令而非发消息 */
-	readonly action?: 'newSession' | 'stopStream';
+	readonly action?: 'newSession' | 'stopStream' | 'switchModel';
 }
 
 /** 斜杠命令分组。 */
@@ -536,6 +536,11 @@ export interface OpenSettingsMessage {
 	readonly command: 'openSettings';
 }
 
+/** 触发切换当前默认模型（/model 命令选中后发送，宿主弹模型选择列表）。 */
+export interface SwitchModelMessage {
+	readonly command: 'switchModel';
+}
+
 /** 设置页请求模型配置快照（挂载时发送）。 */
 export interface RequestModelSettingsMessage {
 	readonly command: 'requestModelSettings';
@@ -614,6 +619,7 @@ export type WebviewToHostMessage =
 	| OpenSessionRequestMessage
 	| DeleteSessionMessage
 	| OpenSettingsMessage
+	| SwitchModelMessage
 	| RequestModelSettingsMessage
 	| SaveModelSettingsMessage
 	| SetDefaultModelMessage
