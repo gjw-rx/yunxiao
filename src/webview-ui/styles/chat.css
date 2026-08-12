@@ -1561,7 +1561,7 @@
 .settings-card + .settings-card {
 	margin-top: 16px;
 }
-.settings-model-list-card { overflow: visible; }
+.settings-model-list-card { overflow: hidden; container-type: inline-size; }
 .settings-add-model-btn,
 .settings-model-actions button {
 	border: 1px solid var(--border-light);
@@ -1596,6 +1596,23 @@
 .settings-toggle span { position: absolute; top: 3px; left: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); transition: transform .12s, background .12s; }
 .settings-toggle.on { border-color: color-mix(in srgb, var(--success) 60%, var(--border-light)); background: color-mix(in srgb, var(--success) 20%, var(--step-bg)) !important; }
 .settings-toggle.on span { transform: translateX(12px); background: var(--success); }
+@container (max-width: 620px) {
+	.settings-model-table { overflow: hidden; }
+	.settings-model-table-head { display: none; }
+	.settings-model-table-row {
+		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-areas:
+			"model actions"
+			"provider status";
+		gap: 8px 12px;
+		min-height: 0;
+		padding: 12px 14px;
+	}
+	.settings-model-table-row > div:first-child { grid-area: model; }
+	.settings-model-table-row > span:nth-of-type(1) { grid-area: provider; }
+	.settings-model-table-row > span:nth-of-type(2) { grid-area: status; justify-self: end; }
+	.settings-model-actions { grid-area: actions; flex-wrap: wrap; }
+}
 .settings-empty-list { padding: 20px; color: var(--muted); font-size: 11px; }
 .settings-card-header {
 	display: flex;
@@ -1994,9 +2011,6 @@
 	.settings-card-footer { align-items: stretch; flex-direction: column; }
 	.settings-save-btn { width: 100%; }
 	.settings-status-badge { display: none; }
-	.settings-model-table { overflow-x: auto; }
-	.settings-model-table-head,
-	.settings-model-table-row { min-width: 620px; padding-left: 14px; padding-right: 14px; }
 	.settings-radio-group { align-self: stretch; }
 	.settings-radio { flex: 1; text-align: center; }
 }

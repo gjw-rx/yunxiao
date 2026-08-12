@@ -115,6 +115,23 @@ describe('SettingsPage', () => {
 		expect(bridge.post).toHaveBeenCalledWith({ command: 'setDefaultModel', modelId: 'model-b' });
 	});
 
+	/** 窄宽度下模型列表应切换为紧凑布局，避免横向溢出后首列内容留空。 */
+	it('窄宽度下模型列表使用紧凑布局', () => {
+		const styles = readFileSync(resolve(process.cwd(), 'src/webview-ui/styles/chat.css'), 'utf8');
+		const compactLayoutStart = styles.indexOf('@container (max-width: 620px)');
+		const compactLayoutEnd = styles.indexOf('\n}\n.settings-empty-list', compactLayoutStart) + 2;
+		const compactLayout = styles.slice(compactLayoutStart, compactLayoutEnd);
+
+		expect(styles).toMatch(/\.settings-model-list-card\s*\{[^}]*container-type:\s*inline-size;/);
+		expect(compactLayout).toMatch(/\.settings-model-table\s*\{[^}]*overflow:\s*hidden;/);
+		expect(compactLayout).toMatch(/\.settings-model-table-head\s*\{\s*display:\s*none;/);
+		expect(compactLayout).toMatch(/\.settings-model-table-row\s*\{[^}]*grid-template-areas:\s*"model actions"\s*"provider status";/);
+		expect(compactLayout).toMatch(/\.settings-model-table-row > div:first-child\s*\{\s*grid-area:\s*model;/);
+		expect(compactLayout).toMatch(/\.settings-model-table-row > span:nth-of-type\(1\)\s*\{\s*grid-area:\s*provider;/);
+		expect(compactLayout).toMatch(/\.settings-model-table-row > span:nth-of-type\(2\)\s*\{\s*grid-area:\s*status;/);
+		expect(compactLayout).toMatch(/\.settings-model-actions\s*\{[^}]*grid-area:\s*actions;/);
+	});
+
 	/** 点击添加模型必须清空字段且创建新条目，而不是覆盖当前默认模型。 */
 	it('添加模型时清空全部参数且不携带已有模型 ID', async () => {
 		render(<SettingsPage />);
