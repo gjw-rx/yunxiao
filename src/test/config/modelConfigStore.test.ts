@@ -51,11 +51,12 @@ function setup() {
 	const globalState = createMemoryMemento();
 	const secrets = createMemorySecrets();
 	const globalConfigRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'yunxiao-model-store-'));
+	const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'yunxiao-model-workspace-'));
 	const store = new ModelConfigStore({
 		globalState,
 		secrets,
-	} as unknown as vscode.ExtensionContext, globalConfigRoot);
-	return { store, globalState, secrets, globalConfigRoot };
+	} as unknown as vscode.ExtensionContext, globalConfigRoot, workspaceRoot);
+	return { store, globalState, secrets, globalConfigRoot, workspaceRoot };
 }
 
 /** 合法模型配置输入。 */
@@ -100,6 +101,23 @@ describe('ModelConfigStore', () => {
 			await store.save(validInput({ apiKey: 'sk-secret' }));
 			const rawState = JSON.stringify(globalState.keys());
 			assert.ok(!rawState.includes('sk-secret'), 'globalState 不应包含密钥明文');
+		});
+
+		it('全局配置不存在时迁移当前工作区的旧模型档案', async () => {
+			const { store, globalConfigRoot, workspaceRoot } = setup();
+			const legacyPath = path.join(workspaceRoot, '.yunForce', 'modelConfig', 'models.json');
+			fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+			fs.writeFileSync(legacyPath, JSON.stringify({
+				version: 1,
+				defaultModelId: 'legacy-model',
+				models: [{
+					id: 'legacy-model', provider: 'openai', model: 'legacy-gpt', baseURL: 'https://api.openai.com/v1',
+					temperature: 0.7, maxTokens: 4096, maxContextTokens: 262144, runtime: 'ai-sdk', enabled: true,
+				}],
+			}), 'utf8');
+
+			assert.strictEqual((await store.getModelConfig()).model, 'legacy-gpt');
+			assert.ok(fs.existsSync(path.join(globalConfigRoot, 'modelConfig', 'models.json')));
 		});
 	});
 
