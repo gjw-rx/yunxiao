@@ -71,9 +71,9 @@ export function SessionHeader({ currentSessionId, sessionTitle, sessions, onOpen
 	const [historyOpen, setHistoryOpen] = useState(false);
 	const headerRef = useRef<HTMLDivElement>(null);
 
-	// 外部标题变更（打开历史会话/删除）时同步输入框
+	// 外部标题变更（打开历史会话/新建/删除）时同步输入框；无标题时留空显示占位符
 	useEffect(() => {
-		setTitle(sessionTitle || 'Untitled');
+		setTitle(sessionTitle);
 	}, [sessionTitle]);
 
 	// 点击外部关闭历史下拉

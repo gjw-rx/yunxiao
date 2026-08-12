@@ -133,6 +133,12 @@ npm test              # vscode-test（pretest 自动 compile-tests + compile + l
 - 新工具开发模式：继承 `tools/baseTool.ts` 的 `BaseTool`，声明 `schema`（工具名 snake_case 如 `fs_read_file`、权限级别 `read/write/execute/destructive`），可选覆盖 `validate`，实现 `execute(args, context)` 返回结构化 `ToolExecutionResult`，然后到 `extension.ts` 注册。
 - 安全红线：路径必须经 `pathGuard.resolveWithinRoots` 校验；写/执行类工具走审批网关；返回云端前结果会自动脱敏/截断（`BaseTool.governResult`），工具内不自行打印密钥。
 
+### 9.4 Git 提交规范
+
+- 提交信息必须使用 `type(功能名): 具体描述` 格式；功能名应准确指向本次变更范围，具体描述使用中文并说明实际改动。
+- `type` 仅可使用：`feat`（新功能）、`fix`（修复 bug）、`docs`（文档）、`style`（不影响逻辑的格式）、`refactor`（重构）、`perf`（性能优化）、`test`（测试）、`chore`（构建或辅助工具）、`ci`（CI/CD）、`build`（构建系统或外部依赖）、`revert`（回滚）。
+- 创建或修改提交前，必须确认提交类型与描述和暂存变更一致。
+
 ## 10. Notes
 
 （后续补充）
