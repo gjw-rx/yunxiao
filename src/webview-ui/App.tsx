@@ -5,7 +5,7 @@
  * 应用挂载完成后发送 `webviewReady` 握手并请求初始数据；组装会话头部、
  * Token 条、消息流、错误条与消息输入等全部界面组件，并处理发送等副作用。
  */
-import { useEffect, useReducer, useRef, type JSX } from 'react';
+import { useEffect, useReducer, useRef, useState, type JSX } from 'react';
 import { chatReducer, initialState } from './state/reducer';
 import { hostToAction } from './state/hostActions';
 import { post, subscribe } from './bridge/vscode';
@@ -15,10 +15,12 @@ import { SessionTokenBar } from './components/session/SessionTokenBar';
 import { MessageList } from './components/chat/MessageList';
 import { MessageInput } from './components/chat/MessageInput';
 import { ErrorBar } from './components/shared/ErrorBar';
+import { SettingsPage } from './components/settings/SettingsPage';
 
 /** Webview 根应用。 */
 export function App(): JSX.Element {
 	const [state, dispatch] = useReducer(chatReducer, initialState);
+	const [activeView, setActiveView] = useState<'chat' | 'settings'>('chat');
 	const dispatchRef = useRef(dispatch);
 	dispatchRef.current = dispatch;
 
@@ -83,39 +85,43 @@ export function App(): JSX.Element {
 
 	return (
 		<div className="app">
-			<SessionHeader
-				currentSessionId={state.currentSessionId}
-				sessionTitle={state.sessionTitle}
-				sessions={state.sessions}
-			/>
-			<SessionTokenBar payload={state.sessionTokenUsage} />
-			<MessageList
-				state={state}
-				onDeleteUser={(id) => dispatchRef.current({ type: 'deleteUserMessage', messageId: id })}
-				onDeleteAssistant={(id) => dispatchRef.current({ type: 'deleteAssistantMessage', messageId: id })}
-				onToggleTool={(callId) => dispatchRef.current({ type: 'toggleToolExpand', callId })}
-				onToggleDiff={(callId) => dispatchRef.current({ type: 'toggleDiffExpand', callId })}
-				onResolveApproval={(callId) => dispatchRef.current({ type: 'approvalResolved', callId })}
-			/>
-			<ErrorBar message={state.error} onClear={() => dispatchRef.current({ type: 'clearError' })} />
-			<MessageInput
-				currentSessionId={state.currentSessionId}
-				isStreaming={state.isStreaming}
-				modelName={state.modelName}
-				selectedFiles={state.selectedFiles}
-				selectedSkills={state.selectedSkills}
-				slashCommandGroups={state.slashCommandGroups}
-				workspaceFiles={state.workspaceFiles}
-				onRemoveFile={(file) =>
-					dispatchRef.current({ type: 'setSelectedFiles', files: state.selectedFiles.filter((f) => f.path !== file.path) })
-				}
-				onRemoveSkill={(skill) =>
-					dispatchRef.current({ type: 'setSelectedSkills', skills: state.selectedSkills.filter((s) => s.id !== skill.id) })
-				}
-				onAddFile={handleAddFile}
-				onAddSkill={handleAddSkill}
-				onSend={handleSend}
-			/>
+			<div className="chat-view" hidden={activeView !== 'chat'}>
+				<SessionHeader
+					currentSessionId={state.currentSessionId}
+					sessionTitle={state.sessionTitle}
+					sessions={state.sessions}
+					onOpenSettings={() => setActiveView('settings')}
+				/>
+				<SessionTokenBar payload={state.sessionTokenUsage} />
+				<MessageList
+					state={state}
+					onDeleteUser={(id) => dispatchRef.current({ type: 'deleteUserMessage', messageId: id })}
+					onDeleteAssistant={(id) => dispatchRef.current({ type: 'deleteAssistantMessage', messageId: id })}
+					onToggleTool={(callId) => dispatchRef.current({ type: 'toggleToolExpand', callId })}
+					onToggleDiff={(callId) => dispatchRef.current({ type: 'toggleDiffExpand', callId })}
+					onResolveApproval={(callId) => dispatchRef.current({ type: 'approvalResolved', callId })}
+				/>
+				<ErrorBar message={state.error} onClear={() => dispatchRef.current({ type: 'clearError' })} />
+				<MessageInput
+					currentSessionId={state.currentSessionId}
+					isStreaming={state.isStreaming}
+					modelName={state.modelName}
+					selectedFiles={state.selectedFiles}
+					selectedSkills={state.selectedSkills}
+					slashCommandGroups={state.slashCommandGroups}
+					workspaceFiles={state.workspaceFiles}
+					onRemoveFile={(file) =>
+						dispatchRef.current({ type: 'setSelectedFiles', files: state.selectedFiles.filter((f) => f.path !== file.path) })
+					}
+					onRemoveSkill={(skill) =>
+						dispatchRef.current({ type: 'setSelectedSkills', skills: state.selectedSkills.filter((s) => s.id !== skill.id) })
+					}
+					onAddFile={handleAddFile}
+					onAddSkill={handleAddSkill}
+					onSend={handleSend}
+				/>
+			</div>
+			{activeView === 'settings' && <SettingsPage onClose={() => setActiveView('chat')} />}
 		</div>
 	);
 }

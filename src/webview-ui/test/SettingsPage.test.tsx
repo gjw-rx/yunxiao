@@ -3,9 +3,11 @@
  *
  * 职责：验证设置页默认分类、分类切换与静态展示边界。
  */
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPage } from '../components/settings/SettingsPage';
+
+afterEach(cleanup);
 
 describe('SettingsPage', () => {
 	/** 默认展示模型分类，并说明该界面尚未接入保存能力。 */

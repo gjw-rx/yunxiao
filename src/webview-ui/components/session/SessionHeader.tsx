@@ -17,6 +17,8 @@ export interface SessionHeaderProps {
 	sessionTitle: string;
 	/** 历史会话列表 */
 	sessions: SessionMeta[];
+	/** 打开设置页 */
+	onOpenSettings: () => void;
 }
 
 /** 历史会话下拉项。 */
@@ -64,7 +66,7 @@ function HistoryItem({ session, active, onOpen, onDelete }: {
 }
 
 /** 会话头部：标题编辑 + 新建/历史操作。 */
-export function SessionHeader({ currentSessionId, sessionTitle, sessions }: SessionHeaderProps): JSX.Element {
+export function SessionHeader({ currentSessionId, sessionTitle, sessions, onOpenSettings }: SessionHeaderProps): JSX.Element {
 	const [title, setTitle] = useState(sessionTitle);
 	const [historyOpen, setHistoryOpen] = useState(false);
 	const headerRef = useRef<HTMLDivElement>(null);
@@ -146,6 +148,19 @@ export function SessionHeader({ currentSessionId, sessionTitle, sessions }: Sess
 				>
 					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
 						<path d="M7.25 1a.75.75 0 0 1 .75.75V7h5.25a.75.75 0 0 1 0 1.5H8v5.25a.75.75 0 0 1-1.5 0V8.5H1.25a.75.75 0 0 1 0-1.5H6.5V1.75A.75.75 0 0 1 7.25 1z" />
+					</svg>
+				</button>
+				<button
+					type="button"
+					id="settingsIconBtn"
+					className="btn btn-icon"
+					title="设置"
+					aria-label="设置"
+					onClick={onOpenSettings}
+				>
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M8 5.3A2.7 2.7 0 1 0 8 10.7 2.7 2.7 0 0 0 8 5.3zm0 1.4a1.3 1.3 0 1 1 0 2.6 1.3 1.3 0 0 1 0-2.6z" />
+						<path d="M8 1.5c.6 0 1.1.4 1.2 1l.2 1a5 5 0 0 1 1.1.6l.9-.4c.6-.3 1.3 0 1.5.5l.6 1c.3.5.1 1.2-.4 1.5l-.8.6v1.3l.8.6c.5.3.7 1 .4 1.5l-.6 1c-.3.5-.9.8-1.5.5l-.9-.4a5 5 0 0 1-1.1.6l-.2 1c-.1.6-.6 1-1.2 1H6.8c-.6 0-1.1-.4-1.2-1l-.2-1a5 5 0 0 1-1.1-.6l-.9.4c-.6.3-1.3 0-1.5-.5l-.6-1c-.3-.5-.1-1.2.4-1.5l.8-.6V7.2l-.8-.6c-.5-.3-.7-1-.4-1.5l.6-1c.3-.5.9-.8 1.5-.5l.9.4a5 5 0 0 1 1.1-.6l.2-1c.1-.6.6-1 1.2-1H8zm-.2 1.4-.2 1.2-.5.2a3.6 3.6 0 0 0-1.2.7l-.4.4-1.1-.5-.5.9 1 .7-.1.6a3.7 3.7 0 0 0 0 1.4l.1.6-1 .7.5.9 1.1-.5.4.4a3.6 3.6 0 0 0 1.2.7l.5.2.2 1.2h1l.2-1.2.5-.2a3.6 3.6 0 0 0 1.2-.7l.4-.4 1.1.5.5-.9-1-.7.1-.6a3.7 3.7 0 0 0 0-1.4l-.1-.6 1-.7-.5-.9-1.1.5-.4-.4a3.6 3.6 0 0 0-1.2-.7l-.5-.2-.2-1.2h-1z" />
 					</svg>
 				</button>
 				<button
