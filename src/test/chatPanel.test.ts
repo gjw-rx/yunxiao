@@ -8,9 +8,10 @@ import type { EventBus } from '../core/eventBus';
 
 interface PanelInternals {
 	_panel?: vscode.WebviewPanel;
+	_settingsPanel?: vscode.WebviewPanel;
 	_currentSessionId?: string;
 	show(): void;
-	_getHtml(webview: vscode.Webview): string;
+	_getHtml(webview: vscode.Webview, page?: 'chat' | 'settings'): string;
 	_handleMessage(msg: { command: string; [key: string]: unknown }): Promise<void>;
 }
 
@@ -231,5 +232,29 @@ describe('ChatViewProvider 编辑区面板（show 单例与关闭清理）', () 
 		const deleted = messages.find((m) => m.command === 'currentSessionDeleted');
 		assert.ok(deleted, '删除当前会话应回推 currentSessionDeleted');
 		assert.strictEqual(internals._currentSessionId, undefined, 'host 当前会话指针应清空');
+	});
+
+	it('openSettings 在编辑器打开独立设置标签，重复打开时复用已有标签', async () => {
+		const orig = vscode.window.createWebviewPanel;
+		const created: vscode.WebviewPanel[] = [];
+		let revealCount = 0;
+		vscode.window.createWebviewPanel = ((_viewType: string, _title: string) => {
+			const panel = createFakePanel([]);
+			panel.reveal = () => { revealCount++; };
+			created.push(panel);
+			return panel;
+		}) as unknown as typeof vscode.window.createWebviewPanel;
+		try {
+			const { internals } = setup();
+			await internals._handleMessage({ command: 'openSettings' });
+			await internals._handleMessage({ command: 'openSettings' });
+
+			assert.strictEqual(created.length, 1, '设置页应只创建一个独立编辑器标签');
+			assert.strictEqual(internals._settingsPanel, created[0], '设置标签应由 Provider 持有');
+			assert.match(created[0].webview.html, /<body data-view="settings">/);
+			assert.strictEqual(revealCount, 1, '再次点击设置应聚焦已有标签');
+		} finally {
+			vscode.window.createWebviewPanel = orig;
+		}
 	});
 });

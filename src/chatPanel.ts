@@ -20,6 +20,7 @@ type ApprovalResolver = (decision: 'allow' | 'always' | 'deny') => void;
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _panel?: vscode.WebviewPanel; // 编辑区对话面板（单例，用户关闭后置空）
+  private _settingsPanel?: vscode.WebviewPanel; // 编辑区设置面板（单例，用户关闭后置空）
   private readonly _registry: ToolRegistry;
   private readonly _sessionManager: LocalSessionManager;
   private readonly _eventBus: EventBus;
@@ -110,7 +111,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
     panel.iconPath = vscode.Uri.file(path.join(this._context.extensionPath, 'media', 'icon.png'));
 
-    panel.webview.html = this._getHtml(panel.webview);
+    panel.webview.html = this._getHtml(panel.webview, 'chat');
 
     panel.webview.onDidReceiveMessage(
       async (msg: { command: string;[key: string]: unknown }) => {
@@ -152,6 +153,51 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._pushSlashCommands(panel);
 
     logger.log('[ChatPanel] 编辑区对话面板已打开');
+    return panel;
+  }
+
+  /**
+   * 打开设置面板：在编辑器区域创建（或聚焦）独立的单例 WebviewPanel。
+   */
+  private _showSettingsPanel(): void {
+    if (this._settingsPanel) {
+      this._settingsPanel.reveal(vscode.ViewColumn.Active);
+      return;
+    }
+    this._settingsPanel = this._createSettingsPanel();
+  }
+
+  /**
+   * 创建独立设置面板并加载设置入口的 Webview 应用。
+   * @returns 新创建的设置 WebviewPanel
+   */
+  private _createSettingsPanel(): vscode.WebviewPanel {
+    const panel = vscode.window.createWebviewPanel(
+      'yunxiaoAgent.settingsPanel',
+      '云效 Agent 设置',
+      vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [
+          vscode.Uri.file(path.join(this._context.extensionPath, 'dist')),
+          vscode.Uri.file(path.join(this._context.extensionPath, 'media')),
+        ],
+      }
+    );
+    panel.iconPath = vscode.Uri.file(path.join(this._context.extensionPath, 'media', 'icon.png'));
+    panel.webview.html = this._getHtml(panel.webview, 'settings');
+    panel.onDidDispose(
+      () => {
+        logger.log('[ChatPanel] 编辑区设置面板已关闭');
+        if (this._settingsPanel === panel) {
+          this._settingsPanel = undefined;
+        }
+      },
+      undefined,
+      this._context.subscriptions
+    );
+    logger.log('[ChatPanel] 编辑区设置面板已打开');
     return panel;
   }
 
@@ -322,6 +368,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           panel.webview.postMessage({ command: 'modelInfo', model: modelName });
         }
         this._pushSlashCommands(panel);
+        break;
+      }
+      case 'openSettings': {
+        this._showSettingsPanel();
         break;
       }
       case 'createSession': {
@@ -554,7 +604,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * @param webview 目标 Webview（用于生成可加载的资源 URI）
    * @returns Webview HTML 字符串
    */
-  private _getHtml(webview: vscode.Webview): string {
+  private _getHtml(webview: vscode.Webview, page: 'chat' | 'settings' = 'chat'): string {
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.file(path.join(this._context.extensionPath, 'dist', 'webview-ui', 'index.js'))
     );
@@ -568,10 +618,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource}; img-src ${webview.cspSource} data:; font-src ${webview.cspSource};">
-  <title>云效 Agent</title>
+  <title>${page === 'settings' ? '云效 Agent 设置' : '云效 Agent'}</title>
   <link rel="stylesheet" href="${styleUri}">
 </head>
-<body>
+<body data-view="${page}">
   <div id="root"></div>
   <script type="module" src="${scriptUri}"></script>
 </body>

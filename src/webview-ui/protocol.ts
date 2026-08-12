@@ -418,6 +418,11 @@ export interface DeleteSessionMessage {
 	readonly sessionId: string;
 }
 
+/** 请求在编辑器中打开独立设置标签。 */
+export interface OpenSettingsMessage {
+	readonly command: 'openSettings';
+}
+
 /** Webview → Host 判别联合。 */
 export type WebviewToHostMessage =
 	| WebviewReadyMessage
@@ -433,7 +438,8 @@ export type WebviewToHostMessage =
 	| RenameSessionMessage
 	| RequestSessionsMessage
 	| OpenSessionRequestMessage
-	| DeleteSessionMessage;
+	| DeleteSessionMessage
+	| OpenSettingsMessage;
 
 /** 任一方向消息的命令名（用于日志与调试）。 */
 export type MessageCommand = HostToWebviewMessage['command'] | WebviewToHostMessage['command'];

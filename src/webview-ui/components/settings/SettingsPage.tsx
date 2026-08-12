@@ -25,12 +25,6 @@ const SETTINGS_NAV_ITEMS: readonly SettingsNavItem[] = [
 	{ id: 'usage', label: '使用情况', description: '用量与统计' },
 ];
 
-/** 设置页属性。 */
-export interface SettingsPageProps {
-	/** 返回聊天页。 */
-	onClose: () => void;
-}
-
 /** 设置分类图标。 */
 function SettingsSectionIcon({ section }: { section: SettingsSection }): JSX.Element {
 	if (section === 'model') {
@@ -40,11 +34,6 @@ function SettingsSectionIcon({ section }: { section: SettingsSection }): JSX.Ele
 		return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35"><path d="M8 1.7 9.4 5l3.4 1.4-3.4 1.4L8 11.1 6.6 7.8 3.2 6.4 6.6 5 8 1.7Z" /><path d="m12.1 10.2.7 1.7 1.7.7-1.7.7-.7 1.7-.7-1.7-1.7-.7 1.7-.7.7-1.7Z" /></svg>;
 	}
 	return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35"><path d="M3 12V8m5 4V4m5 8V6" /><path d="M2 13.5h12" /></svg>;
-}
-
-/** 返回聊天页图标。 */
-function BackIcon(): JSX.Element {
-	return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m8 3-5 5 5 5M3.5 8H14" /></svg>;
 }
 
 /** 模型分类静态内容。 */
@@ -120,18 +109,13 @@ function SettingsContent({ section }: { section: SettingsSection }): JSX.Element
 }
 
 /** 设置页：分类导航与静态内容展示。 */
-export function SettingsPage({ onClose }: SettingsPageProps): JSX.Element {
+export function SettingsPage(): JSX.Element {
 	const [activeSection, setActiveSection] = useState<SettingsSection>('model');
 
 	return (
 		<section className="settings-page" aria-label="设置">
 			<aside className="settings-nav" aria-label="设置分类">
-				<button type="button" className="settings-back" onClick={onClose}>
-					<BackIcon />
-					<span>返回聊天</span>
-				</button>
-				<div className="settings-brand"><span className="settings-brand-mark">Y</span><span>云效 Agent</span></div>
-				<div className="settings-nav-label">设置</div>
+				<div className="settings-nav-title">设置</div>
 				<nav>
 					{SETTINGS_NAV_ITEMS.map((item) => (
 						<button
