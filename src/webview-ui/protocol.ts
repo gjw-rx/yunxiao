@@ -9,6 +9,85 @@
 
 // ── 共享界面状态类型 ──
 
+/** 配置来源（生态 Skill 与项目规则加载来源）。 */
+export type SyncSource = 'none' | 'claude' | 'trae';
+
+/** 设置页展示的模型配置视图（API Key 只以"是否已配置"布尔形式返回，密钥永不回传）。 */
+export interface ModelSettingsView {
+	/** 当前默认模型 ID；未配置时缺省。 */
+	readonly defaultModelId?: string;
+	/** 已保存模型列表。 */
+	readonly models?: readonly ModelProfileView[];
+	/** Provider ID（如 "openai"） */
+	readonly provider: string;
+	/** 模型名称 */
+	readonly model: string;
+	/** API 地址 */
+	readonly baseURL: string;
+	/** 温度参数 */
+	readonly temperature: number;
+	/** 最大输出 token 数 */
+	readonly maxTokens: number;
+	/** 模型运行时选择（迁移期开关） */
+	readonly runtime?: 'ai-sdk' | 'legacy';
+	/** API Key 是否已配置（不含密钥明文） */
+	readonly apiKeyConfigured: boolean;
+}
+
+/** 设置页中的单个模型（不含 API Key 明文）。 */
+export interface ModelProfileView {
+	/** 模型配置 ID。 */
+	readonly id: string;
+	/** Provider ID。 */
+	readonly provider: string;
+	/** 模型名称。 */
+	readonly model: string;
+	/** API 地址。 */
+	readonly baseURL: string;
+	/** 温度参数。 */
+	readonly temperature: number;
+	/** 最大输出 token 数。 */
+	readonly maxTokens: number;
+	/** 模型运行时选择。 */
+	readonly runtime: 'ai-sdk' | 'legacy';
+	/** 是否启用。 */
+	readonly enabled: boolean;
+	/** 是否为默认模型。 */
+	readonly isDefault: boolean;
+	/** API Key 是否已配置。 */
+	readonly apiKeyConfigured: boolean;
+}
+
+/** 设置页提交的模型配置（API Key 可选：非空时覆盖 SecretStorage，空/缺省保持现状）。 */
+export interface ModelSettingsInput {
+	/** 待编辑模型 ID；缺省时新增模型。 */
+	readonly id?: string;
+	/** Provider ID（如 "openai"） */
+	readonly provider: string;
+	/** 模型名称（必填） */
+	readonly model: string;
+	/** API 地址 */
+	readonly baseURL: string;
+	/** 温度参数 */
+	readonly temperature: number;
+	/** 最大输出 token 数 */
+	readonly maxTokens: number;
+	/** 模型运行时选择 */
+	readonly runtime?: 'ai-sdk' | 'legacy';
+	/** 可选的新 API Key（非空才更新） */
+	readonly apiKey?: string;
+}
+
+/** 设置页 Skill 快照条目。 */
+export interface SkillInfo {
+	/** Skill 名称（唯一标识） */
+	readonly name: string;
+	/** 描述何时使用此 Skill */
+	readonly description: string;
+	/** 来源文件路径（目录加载时填充） */
+	readonly sourcePath?: string;
+}
+
 /** 单个斜杠命令（与 src/chat/slashCommands.ts 的 SlashCommand 结构一致）。 */
 export interface SlashCommand {
 	/** 唯一标识（如 basic.new-session / skill.<name>） */
@@ -307,6 +386,36 @@ export interface CurrentSessionDeletedMessage {
 	readonly command: 'currentSessionDeleted';
 }
 
+/** 设置页模型配置快照（响应 requestModelSettings / 保存成功推送）。 */
+export interface ModelSettingsMessage {
+	readonly command: 'modelSettings';
+	readonly model: ModelSettingsView;
+}
+
+/** 设置页模型配置保存成功（携带保存后的最新快照）。 */
+export interface ModelSettingsSavedMessage {
+	readonly command: 'modelSettingsSaved';
+	readonly model: ModelSettingsView;
+}
+
+/** 设置页 Skill 列表快照（响应 requestSkills / 来源切换或安装成功后推送）。 */
+export interface SkillsListMessage {
+	readonly command: 'skillsList';
+	readonly skills: SkillInfo[];
+	/** 当前配置来源（none/claude/trae） */
+	readonly source: SyncSource;
+	/** 用户配置的 Skill 加载目录（均相对工作区根） */
+	readonly directories: string[];
+	/** 项目 Skill 安装目标提示（未打开工作区时缺省） */
+	readonly installTarget?: string;
+}
+
+/** 设置页操作错误（校验失败 / 安装失败 / 无工作区等，消息可直接展示）。 */
+export interface SettingsErrorMessage {
+	readonly command: 'settingsError';
+	readonly message: string;
+}
+
 /** Host → Webview 判别联合。 */
 export type HostToWebviewMessage =
 	| ModelInfoMessage
@@ -331,7 +440,11 @@ export type HostToWebviewMessage =
 	| ApprovalRequestMessage
 	| WorkspaceFilesMessage
 	| SessionListMessage
-	| CurrentSessionDeletedMessage;
+	| CurrentSessionDeletedMessage
+	| ModelSettingsMessage
+	| ModelSettingsSavedMessage
+	| SkillsListMessage
+	| SettingsErrorMessage;
 
 // ── Webview → Host 消息 ──
 
@@ -423,6 +536,67 @@ export interface OpenSettingsMessage {
 	readonly command: 'openSettings';
 }
 
+/** 设置页请求模型配置快照（挂载时发送）。 */
+export interface RequestModelSettingsMessage {
+	readonly command: 'requestModelSettings';
+}
+
+/** 设置页提交模型配置（含可选的新 API Key）。 */
+export interface SaveModelSettingsMessage {
+	readonly command: 'saveModelSettings';
+	readonly model: ModelSettingsInput;
+}
+
+/** 设置指定模型为默认模型。 */
+export interface SetDefaultModelMessage {
+	/** 命令名。 */
+	readonly command: 'setDefaultModel';
+	/** 模型 ID。 */
+	readonly modelId: string;
+}
+
+/** 更新指定模型的启用状态。 */
+export interface SetModelEnabledMessage {
+	/** 命令名。 */
+	readonly command: 'setModelEnabled';
+	/** 模型 ID。 */
+	readonly modelId: string;
+	/** 是否启用。 */
+	readonly enabled: boolean;
+}
+
+/** 删除指定模型。 */
+export interface DeleteModelMessage {
+	/** 命令名。 */
+	readonly command: 'deleteModel';
+	/** 模型 ID。 */
+	readonly modelId: string;
+}
+
+/** 设置页请求当前已加载 Skill 快照。 */
+export interface RequestSkillsMessage {
+	readonly command: 'requestSkills';
+}
+
+/** 设置页切换配置来源（none/claude/trae，三值互斥）。 */
+export interface SetSyncSourceMessage {
+	readonly command: 'setSyncSource';
+	readonly source: SyncSource;
+}
+
+/** 设置页保存 Skill 加载目录并请求重新加载。 */
+export interface SetSkillDirectoriesMessage {
+	readonly command: 'setSkillDirectories';
+	/** 相对工作区根的 Skill 目录列表 */
+	readonly directories: string[];
+}
+
+/** 设置页请求选择 ZIP 并自动解析安装项目 Skill。 */
+export interface UploadSkillArchiveMessage {
+	/** 命令名。 */
+	readonly command: 'uploadSkillArchive';
+}
+
 /** Webview → Host 判别联合。 */
 export type WebviewToHostMessage =
 	| WebviewReadyMessage
@@ -439,7 +613,16 @@ export type WebviewToHostMessage =
 	| RequestSessionsMessage
 	| OpenSessionRequestMessage
 	| DeleteSessionMessage
-	| OpenSettingsMessage;
+	| OpenSettingsMessage
+	| RequestModelSettingsMessage
+	| SaveModelSettingsMessage
+	| SetDefaultModelMessage
+	| SetModelEnabledMessage
+	| DeleteModelMessage
+	| RequestSkillsMessage
+	| SetSyncSourceMessage
+	| SetSkillDirectoriesMessage
+	| UploadSkillArchiveMessage;
 
 /** 任一方向消息的命令名（用于日志与调试）。 */
 export type MessageCommand = HostToWebviewMessage['command'] | WebviewToHostMessage['command'];

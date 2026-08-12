@@ -63,56 +63,6 @@
     "configuration": {
       "title": "云效 Agent",
       "properties": {
-        "yunxiaoAgent.model.provider": {
-          "type": "string",
-          "default": "openai",
-          "description": "LLM Provider ID（如 openai，兼容 DeepSeek/通义千问等 OpenAI 兼容服务）",
-          "scope": "window"
-        },
-        "yunxiaoAgent.model.model": {
-          "type": "string",
-          "default": "",
-          "description": "模型名称（如 gpt-4o-mini、deepseek-chat）",
-          "scope": "window"
-        },
-        "yunxiaoAgent.model.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "LLM API Key（Bearer Token）",
-          "scope": "window"
-        },
-        "yunxiaoAgent.model.baseURL": {
-          "type": "string",
-          "default": "https://api.openai.com/v1",
-          "description": "LLM API 地址（OpenAI 兼容的 /v1/chat/completions 端点）",
-          "scope": "window"
-        },
-        "yunxiaoAgent.model.temperature": {
-          "type": "number",
-          "default": 0.7,
-          "description": "LLM 生成温度参数",
-          "scope": "window"
-        },
-        "yunxiaoAgent.model.maxTokens": {
-          "type": "number",
-          "default": 4096,
-          "description": "LLM 最大输出 token 数",
-          "scope": "window"
-        },
-        "yunxiaoAgent.model.runtime": {
-          "type": "string",
-          "enum": [
-            "ai-sdk",
-            "legacy"
-          ],
-          "enumDescriptions": [
-            "默认：使用 Vercel AI SDK 6.x 模型协议层（OpenAI-compatible Provider）",
-            "迁移期回退：使用原手写 OpenAI fetch + SSE parser 实现"
-          ],
-          "default": "ai-sdk",
-          "description": "迁移期模型运行时选择：默认 ai-sdk，仅在出现兼容问题时显式设为 legacy 回退。稳定后将移除该选项。",
-          "scope": "window"
-        },
         "yunxiaoAgent.maxFileSize": {
           "type": "number",
           "default": 1048576,
@@ -270,33 +220,6 @@
           "description": "排除这些域名（空数组表示不排除）",
           "scope": "window"
         },
-        "yunxiaoAgent.skills.directories": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "default": [
-            ".vscode/skills"
-          ],
-          "description": "Skill 搜索目录列表（相对工作区根的路径），插件将从这些目录加载 Markdown 格式的 Skill",
-          "scope": "window"
-        },
-        "yunxiaoAgent.sync.source": {
-          "type": "string",
-          "enum": [
-            "none",
-            "claude",
-            "trae"
-          ],
-          "enumDescriptions": [
-            "不加载任何生态配置（默认）",
-            "加载 Claude 目录 SKILL（~/.claude/skills、项目 .claude/skills）并注入项目 CLAUDE.md/AGENTS.md 规范",
-            "加载 Trae 目录 SKILL（~/.trae/skills、~/.trae-cn/skills 与项目对应目录）并注入项目 .trae/rules 规则"
-          ],
-          "default": "none",
-          "description": "配置来源（二选一）：Claude 与 Trae 的 SKILL 同步与项目规则注入共用此单选，避免重复加载两套约束",
-          "scope": "window"
-        },
         "yunxiaoAgent.agent.maxSteps": {
           "type": "number",
           "default": 50,
@@ -353,6 +276,7 @@
   "devDependencies": {
     "@testing-library/jest-dom": "^6.0.0",
     "@testing-library/react": "^16.0.0",
+    "@types/adm-zip": "^0.5.7",
     "@types/marked": "^5.0.2",
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
@@ -377,6 +301,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "2.0.66",
+    "adm-zip": "^0.5.16",
     "ai": "6.0.248",
     "diff": "^8.0.4",
     "marked": "^18.0.7",

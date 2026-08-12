@@ -36,8 +36,16 @@ import { getWorkspaceRoots } from './tools/fs/pathGuard';
 import { SkillRegistry } from './skill/skillRegistry';
 import { loadSkillsFromDirectory } from './skill/skillLoader';
 import { SkillTool } from './skill/skillTool';
-import { getModelConfig } from './config/modelConfig';
-import { getSyncSource, onSyncConfigChange } from './config/syncConfig';
+import { installSkillArchive, type SkillInstallResult } from './skill/skillInstaller';
+import { ModelConfigStore } from './config/modelConfigStore';
+import type { ModelConfig } from './config/modelConfig';
+import {
+	getSkillDirectories,
+	getSyncSource,
+	setSkillDirectories,
+	setSyncSource,
+	type SyncSource,
+} from './config/syncConfig';
 import { createProvider } from './llm/provider';
 import { MessageStore } from './memory/messageStore';
 import { SessionFileStore } from './memory/sessionFileStore';
@@ -172,28 +180,18 @@ async function _activate(context: vscode.ExtensionContext) {
 	registry.register(new GitBranchTool());
 	registry.register(new GitStashTool());
 
-	// Skill 系统：扫描配置目录并注册，注册 skill 工具
+	// Skill 系统：默认项目 Skill 目录为 .claude/skills，按「配置来源」同步生态 Skill（默认 claude）。
+	// 不再读取 yunxiaoAgent.skills.directories / yunxiaoAgent.sync.source VS Code 配置。
 	const skillRegistry = new SkillRegistry();
-	const skillDirs = config.get<string[]>('skills.directories', ['.vscode/skills']);
-	for (const dir of skillDirs) {
-		const absDir = path.isAbsolute(dir) ? dir : path.join(workspaceRoots[0] ?? process.cwd(), dir);
-		const loaded = await loadSkillsFromDirectory(absDir);
-		for (const skill of loaded) {
-			skillRegistry.register(skill);
-		}
-		if (loaded.length > 0) {
-			logger.log(`[Extension] 从 ${absDir} 加载了 ${loaded.length} 个 Skill`);
-		}
-	}
 	registry.register(new SkillTool(skillRegistry));
 
 	// 将 skillRegistry 注入 provider，供斜杠命令数据组装
 	provider.setSkillRegistry(skillRegistry);
 
 	// 生态配置同步（Claude / Trae 二选一）：按「配置来源」读取对应目录的 SKILL 并注册进 Skill 系统
-	// （claude → ~/.claude/skills 与项目 .claude/skills；trae → ~/.trae(s) 与项目 .trae(s)/skills）。
-	// 记录本次同步注册的 skill 名，切换来源或关闭时据此卸载，避免两套生态配置叠加。
-	// 同步走串行链：配置快速切换时按顺序执行，避免并发卸载/注册导致 skill 注册状态错乱。
+	// （claude → 项目 .claude/skills（先加载，优先）与 ~/.claude/skills（后加载，同名跳过）；trae → ~/.trae(s) 与项目 .trae(s)/skills；none → 不加载）。
+	// 记录本次同步注册的 skill 名，切换来源或安装刷新时据此卸载，避免多套生态配置叠加。
+	// 同步走串行链：来源快速切换/安装刷新时按顺序执行，避免并发卸载/注册导致 skill 注册状态错乱。
 	let syncedSkillNames: string[] = [];
 	let syncChain: Promise<void> = Promise.resolve();
 	const syncSkills = (): Promise<void> => {
@@ -203,13 +201,16 @@ async function _activate(context: vscode.ExtensionContext) {
 				logger.log(`[Extension] 卸载生态配置 Skill name=${name}`);
 			}
 			syncedSkillNames = [];
-			const source = getSyncSource();
-			const workspaceRoot = workspaceRoots[0] ?? process.cwd();
-			const syncDirs =
+			const source = getSyncSource(context.globalState);
+			// 实时获取工作区根（激活后新打开文件夹也能立即生效）
+			const workspaceRoot = getWorkspaceRoots()[0] ?? process.cwd();
+			const configuredDirs = getSkillDirectories(context.globalState)
+				.map((dir) => path.join(workspaceRoot, dir));
+			const sourceDirs =
 				source === 'claude'
 					? [
-						path.join(os.homedir(), '.claude', 'skills'),
 						path.join(workspaceRoot, '.claude', 'skills'),
+						path.join(os.homedir(), '.claude', 'skills'),
 					]
 					: source === 'trae'
 						? [
@@ -218,13 +219,14 @@ async function _activate(context: vscode.ExtensionContext) {
 							path.join(workspaceRoot, '.trae', 'skills'),
 							path.join(workspaceRoot, '.trae-cn', 'skills'),
 						]
-						: [];
+					: [];
+			const syncDirs = [...configuredDirs, ...sourceDirs];
 			for (const dir of syncDirs) {
 				const loaded = await loadSkillsFromDirectory(dir);
 				for (const skill of loaded) {
-					// 去重：显式配置目录优先，生态目录同名不覆盖（仅补缺）
+					// 去重：先加载的目录优先（项目 .claude/skills 先于用户级），后续目录同名不覆盖（仅补缺）
 					if (skillRegistry.get(skill.name)) {
-						logger.log(`[Extension] 跳过同名 Skill（显式目录优先） name=${skill.name} 目录=${dir}`);
+						logger.log(`[Extension] 跳过同名 Skill（先加载目录优先） name=${skill.name} 目录=${dir}`);
 						continue;
 					}
 					skillRegistry.register(skill);
@@ -240,27 +242,22 @@ async function _activate(context: vscode.ExtensionContext) {
 		return syncChain;
 	};
 	await syncSkills();
-	// 配置变更热生效：切换来源时重新同步并刷新斜杠命令数据
-	context.subscriptions.push(
-		onSyncConfigChange(() => {
-			void syncSkills();
-		})
-	);
 
 	// 工具路由
 	const metrics = new ReliabilityMetrics();
 	const journal = new ToolExecutionJournal(context.workspaceState);
 	const router = new ToolRouter(registry, approval, new SecurityAudit(metrics), journal);
 
-	// 模型配置与 LLM Provider
-	const modelConfig = getModelConfig();
+	// 模型配置与 LLM Provider（非敏感字段按工作区保存在 .yunForce/modelConfig，密钥仅存 SecretStorage）
+	const modelStore = new ModelConfigStore(context, workspaceRoot);
+	let modelConfig = await modelStore.getModelConfig();
 	if (!modelConfig.apiKey) {
-		logger.log('[Extension] 警告: 未配置 API Key，请在设置中配置 yunxiaoAgent.model.apiKey');
+		logger.log('[Extension] 警告: 未配置 API Key，请在设置页配置模型 API Key');
 	}
 	if (!modelConfig.model) {
-		logger.log('[Extension] 警告: 未配置模型名称，请在设置中配置 yunxiaoAgent.model.model');
+		logger.log('[Extension] 警告: 未配置模型名称，请在设置页配置模型名称');
 	}
-	const llmProvider = createProvider(modelConfig);
+	let llmProvider = createProvider(modelConfig);
 
 	// 上下文压缩配置（参考 opencode: keepTokens=8000, buffer=20000, 但调大以避免频繁压缩）
 	const compactionConfig: CompactionConfig = {
@@ -296,7 +293,7 @@ async function _activate(context: vscode.ExtensionContext) {
 			toolResultLimit: config.get<number>('toolResultLimit', 10_000),
 			agentPrompt: config.get<string>('agent.systemPrompt', '') || undefined,
 			skillRegistry,
-			syncSource: () => getSyncSource(),
+			syncSource: () => getSyncSource(context.globalState),
 			compaction: compactionConfig,
 		}
 	);
@@ -306,6 +303,75 @@ async function _activate(context: vscode.ExtensionContext) {
 
 	// 回填 provider 的依赖（解决循环依赖：provider -> approval -> provider）
 	(provider as unknown as { _sessionManager: LocalSessionManager })._sessionManager = sessionManager;
+
+	// 模型配置保存后的安全更新时机：重建 provider 并更新 AgentLoop 配置，
+	// 仅影响保存完成后启动的新运行（AgentLoop 对进行中的 run 持有 provider 快照，不中途切换）
+	const applyModelConfig = (config: ModelConfig): void => {
+		modelConfig = config;
+		llmProvider = createProvider(config);
+		agentLoop.updateProvider(llmProvider);
+		agentLoop.updateModelConfig({
+			model: config.model,
+			providerId: config.provider,
+			temperature: config.temperature,
+			maxTokens: config.maxTokens,
+		});
+		provider.refreshModelInfo();
+		logger.log('[Extension] 模型配置已保存并更新后续运行（进行中的会话不受影响）');
+	};
+
+	// 设置面板依赖注入：模型存储、配置来源读写、Skill 安装（成功后重新同步并刷新斜杠菜单）
+	provider.setSettingsDeps({
+		modelStore,
+		getSyncSource: () => getSyncSource(context.globalState),
+		getSkillDirectories: () => getSkillDirectories(context.globalState),
+		setSyncSource: async (source: SyncSource): Promise<SyncSource> => {
+			const previous = getSyncSource(context.globalState);
+			const effective = setSyncSource(context.globalState, source);
+			try {
+				await syncSkills();
+			} catch (err) {
+				// 同步失败时回滚存储，避免"存储声称新来源但注册表未同步"的不一致
+				setSyncSource(context.globalState, previous);
+				logger.error(`[Extension] 配置来源切换同步失败，已回滚 source=${previous}: ${err instanceof Error ? err.message : String(err)}`);
+				throw err;
+			}
+			return effective;
+		},
+		setSkillDirectories: async (directories: readonly string[]): Promise<string[]> => {
+			const previous = getSkillDirectories(context.globalState);
+			const effective = setSkillDirectories(context.globalState, directories);
+			try {
+				await syncSkills();
+			} catch (err) {
+				setSkillDirectories(context.globalState, previous);
+				logger.error(`[Extension] Skill 目录重新加载失败，已回滚: ${err instanceof Error ? err.message : String(err)}`);
+				throw err;
+			}
+			return effective;
+		},
+		getModelName: () => modelConfig.model,
+		uploadSkillArchive: async (): Promise<SkillInstallResult> => {
+			const selected = await vscode.window.showOpenDialog({
+				canSelectFiles: true,
+				canSelectFolders: false,
+				canSelectMany: false,
+				filters: { 'Skill ZIP 包': ['zip'] },
+				openLabel: '上传并安装 Skill',
+			});
+			if (!selected?.[0]) {
+				return { ok: false, reason: '未选择 ZIP 文件' };
+			}
+			// 实时获取工作区根（激活后新打开文件夹也能安装）
+			const result = await installSkillArchive(selected[0].fsPath, getWorkspaceRoots());
+			if (result.ok) {
+				// 重新同步生态 Skill（含新安装的项目 .claude/skills）并刷新斜杠菜单与设置页列表
+				await syncSkills();
+			}
+			return result;
+		},
+		onModelConfigSaved: applyModelConfig,
+	});
 
 	// 侧边栏 activity bar 图标入口：点击展开容器时 provider 会在编辑区打开对话面板（见 ChatViewProvider.resolveWebviewView）
 	context.subscriptions.push(

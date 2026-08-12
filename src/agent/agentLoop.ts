@@ -100,19 +100,49 @@ const MAX_PARALLEL_TOOLS = 3;
 export class AgentLoop {
 	private abortController: AbortController | null = null;
 
+	private provider: LLMProvider;
+	private config: AgentLoopConfig;
+
 	constructor(
-		private readonly provider: LLMProvider,
+		provider: LLMProvider,
 		private readonly messageStore: MessageStore,
 		private readonly toolRouter: ToolRouter,
 		private readonly toolRegistry: ToolRegistry,
 		private readonly eventBus: EventBus,
-		private readonly config: AgentLoopConfig,
-	) { }
+		config: AgentLoopConfig,
+	) {
+		this.provider = provider;
+		this.config = config;
+	}
+
+	/**
+	 * 更新后续运行使用的模型连接参数（模型配置保存后调用）。
+	 * 进行中的 run 使用启动时的 provider 快照，不受本次更新影响；保存完成后启动的新运行使用新配置。
+	 *
+	 * @param partial 需要更新的模型相关配置字段
+	 */
+	updateModelConfig(partial: Pick<AgentLoopConfig, 'model' | 'providerId' | 'temperature' | 'maxTokens'>): void {
+		this.config = { ...this.config, ...partial };
+		logger.log(`[AgentLoop] 模型配置已更新（后续运行生效）model=${partial.model}`);
+	}
+
+	/**
+	 * 替换 LLM Provider 实例（模型配置保存后使用新连接参数）。
+	 * 进行中的 run 继续使用启动时的 provider 快照，不被中途切换。
+	 *
+	 * @param provider 新的 LLM Provider
+	 */
+	updateProvider(provider: LLMProvider): void {
+		this.provider = provider;
+		logger.log('[AgentLoop] LLM Provider 已替换（后续运行生效）');
+	}
 
 	/** 主循环入口：追加用户消息，进入 Agent Loop。 */
 	async run(sessionId: string, userText: string): Promise<void> {
 		this.abortController = new AbortController();
 		const { signal } = this.abortController;
+		// 本次运行固定使用启动时的 provider 快照：保存模型配置仅影响后续新运行，不中途切换进行中的流
+		const runProvider = this.provider;
 
 		const userMessage = this.messageStore.append(sessionId, { role: 'user', content: userText });
 		const userMsgSeq = userMessage.seq;
@@ -139,7 +169,7 @@ export class AgentLoop {
 				if (this.config.compaction?.enabled) {
 					const allMessages = this.messageStore.loadHistory(sessionId);
 					await compactIfNeeded(
-						sessionId, allMessages, this.provider, this.config.model,
+						sessionId, allMessages, runProvider, this.config.model,
 						this.config.compaction, this.messageStore, this.eventBus,
 					);
 				}
@@ -203,7 +233,7 @@ export class AgentLoop {
 
 				// ── 8. 消费流式事件 ──
 				const streamResult = await this.consumeStream(
-					this.provider.chatCompletion(request),
+					runProvider.chatCompletion(request),
 					sessionId,
 					signal,
 				);
@@ -265,7 +295,7 @@ export class AgentLoop {
 						logger.log('[AgentLoop] 检测到上下文溢出，尝试压缩后重试');
 						const allMessages = this.messageStore.loadHistory(sessionId);
 						const compacted = await compactIfNeeded(
-							sessionId, allMessages, this.provider, this.config.model,
+							sessionId, allMessages, runProvider, this.config.model,
 							this.config.compaction, this.messageStore, this.eventBus,
 						);
 						if (compacted) {
@@ -349,7 +379,7 @@ export class AgentLoop {
 				if (this.config.compaction?.enabled) {
 					const postToolMessages = this.messageStore.loadHistory(sessionId);
 					await compactIfNeeded(
-						sessionId, postToolMessages, this.provider, this.config.model,
+						sessionId, postToolMessages, runProvider, this.config.model,
 						this.config.compaction, this.messageStore, this.eventBus,
 					);
 				}

@@ -4,15 +4,11 @@
 TBD - created by archiving change slash-menu-and-claude-integration. Update Purpose after archive.
 ## Requirements
 ### Requirement: 来源为 claude 时同步
-系统 SHALL 在配置来源为 `claude` 时同步 Claude 目录中的 SKILL；来源为 `none` 或 `trae` 时 SHALL 不加载任何 Claude 目录内容。来源切换为 `claude` 时加载，切换离开 `claude` 时卸载本次注册的 Claude skill。
+系统 SHALL 在配置来源为 `claude` 时同步 Claude 目录中的 SKILL；来源为 `none` 或 `trae` 时 SHALL 不加载任何 Claude 目录内容。默认配置来源 MUST 为 `claude`。来源切换为 `claude` 时加载，切换离开 `claude` 时卸载本次注册的 Claude skill。
 
-#### Scenario: 默认不加载
-- **WHEN** 配置来源为 `none`（默认）
-- **THEN** 系统不加载任何 `~/.claude` 或 `.claude` 目录内容
-
-#### Scenario: 开启后同步 SKILL
-- **WHEN** 配置来源为 `claude` 且 `~/.claude/skills` 或项目 `.claude/skills` 中存在 skill 文件
-- **THEN** 这些 SKILL 被注册进 skill 注册表，并出现在斜杠菜单「SKILL与命令」分组
+#### Scenario: 默认加载 Claude Skill
+- **WHEN** 用户未显式修改配置来源
+- **THEN** 系统以 `claude` 作为来源并加载可用的 `~/.claude/skills` 和项目 `.claude/skills`
 
 #### Scenario: 切换离开 claude 时卸载
 - **WHEN** 配置来源从 `claude` 改为 `trae` 或 `none`
@@ -30,11 +26,11 @@ TBD - created by archiving change slash-menu-and-claude-integration. Update Purp
 - **THEN** 两处 SKILL 均被注册进 skill 注册表
 
 ### Requirement: 去重与优先级
-显式配置的 skill 目录（`yunxiaoAgent.skills.directories`）SHALL 先于 Claude 目录加载；当 Claude 目录中的 skill 与已注册 skill 同名时，SHALL 不覆盖已有注册（显式配置优先，Claude 目录仅补缺）。
+项目 `.claude/skills` SHALL 作为默认项目 Skill 目录并先于用户级 Claude 目录加载；当后续目录中的 skill 与已注册 skill 同名时，SHALL 不覆盖已有注册。旧的显式 `yunxiaoAgent.skills.directories` 配置 SHALL 不再参与默认加载。
 
-#### Scenario: 同名 skill 不覆盖
-- **WHEN** `.vscode/skills/plan.md` 与 `.claude/skills/plan.md` 均存在，且来源为 `claude`
-- **THEN** 注册表中 `plan` 为 `.vscode/skills` 版本，Claude 版本被跳过
+#### Scenario: 项目 Skill 优先
+- **WHEN** 项目 `.claude/skills/plan/SKILL.md` 与 `~/.claude/skills/plan/SKILL.md` 均存在
+- **THEN** 注册表中 `plan` 为项目 `.claude/skills` 版本，用户级版本被跳过
 
 ### Requirement: 本期同步范围限制
 系统 SHALL 仅同步 Claude 目录中的 SKILL（`skills/` 子目录下的 `*.md`）。SHALL NOT 读取或同步 `commands`、`settings.json`、MCP 配置、会话历史等其他 Claude 目录内容。

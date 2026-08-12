@@ -1,7 +1,9 @@
 /**
- * 模型配置管理 - 从 VSCode 配置读取模型连接参数。
+ * 模型配置类型与默认值 - 定义模型连接参数的共享契约。
+ *
+ * 配置的读取、保存与校验由 `modelConfigStore.ts`（插件私有存储：globalState + SecretStorage）承担，
+ * 本文件不再从 VS Code 配置 API 读取 `yunxiaoAgent.model.*`。
  */
-import * as vscode from 'vscode';
 import * as logger from '../logger';
 
 /**
@@ -11,7 +13,7 @@ import * as logger from '../logger';
  */
 export type ModelRuntime = 'ai-sdk' | 'legacy';
 
-/** 模型配置 */
+/** 模型配置（含 API Key，仅扩展宿主内部持有，不回传 Webview） */
 export interface ModelConfig {
 	/** Provider ID（如 "openai"） */
 	readonly provider: string;
@@ -29,9 +31,8 @@ export interface ModelConfig {
 	readonly runtime?: ModelRuntime;
 }
 
-const CONFIG_SECTION = 'yunxiaoAgent.model';
-
-const DEFAULTS: ModelConfig = {
+/** 模型配置安全默认值（无已保存配置时使用，供存储服务合并）。 */
+export const DEFAULT_MODEL_CONFIG: ModelConfig = {
 	provider: 'openai',
 	model: '',
 	apiKey: '',
@@ -59,32 +60,4 @@ export function normalizeRuntime(raw: unknown): ModelRuntime {
 		logger.log(`[ModelConfig] model.runtime 配置值非法 raw=${String(raw)}，降级为默认 ai-sdk`);
 	}
 	return 'ai-sdk';
-}
-
-/** 从 VSCode 配置读取模型设置 */
-export function getModelConfig(): ModelConfig {
-	const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
-	const modelConfig: ModelConfig = {
-		provider: config.get<string>('provider', DEFAULTS.provider),
-		model: config.get<string>('model', DEFAULTS.model),
-		apiKey: config.get<string>('apiKey', DEFAULTS.apiKey),
-		baseURL: config.get<string>('baseURL', DEFAULTS.baseURL),
-		temperature: config.get<number>('temperature', DEFAULTS.temperature),
-		maxTokens: config.get<number>('maxTokens', DEFAULTS.maxTokens),
-		runtime: normalizeRuntime(config.get<unknown>('runtime')),
-	};
-	logger.log(`[ModelConfig] 读取配置完成 provider=${modelConfig.provider} model=${modelConfig.model || '(未配置)'} apiKey=${modelConfig.apiKey ? '已配置' : '未配置'} runtime=${modelConfig.runtime}`);
-	return modelConfig;
-}
-
-/**
- * 监听模型配置变更，返回可释放的订阅。
- * 仅当 `yunxiaoAgent.model.*` 配置变化时触发回调。
- */
-export function onModelConfigChange(callback: (config: ModelConfig) => void): vscode.Disposable {
-	return vscode.workspace.onDidChangeConfiguration((e) => {
-		if (e.affectsConfiguration(CONFIG_SECTION)) {
-			callback(getModelConfig());
-		}
-	});
 }

@@ -28,13 +28,7 @@ export function App(): JSX.Element {
 		if (isSettingsView) {
 			return;
 		}
-		// 挂载完成握手：宿主收到 webviewReady 后推送模型名与斜杠命令初始数据
-		post({ command: 'webviewReady' });
-		post({ command: 'requestSlashCommands' });
-		// 自动创建首个会话（与迁移前行为一致）
-		post({ command: 'createSession' });
-
-		return subscribe((msg: HostToWebviewMessage) => {
+		const dispose = subscribe((msg: HostToWebviewMessage) => {
 			const action = hostToAction(msg);
 			if (action) {
 				dispatchRef.current(action);
@@ -47,6 +41,13 @@ export function App(): JSX.Element {
 				post({ command: 'createSession' });
 			}
 		});
+		// 先订阅再握手，确保宿主同步推送的 modelInfo 不会丢失。
+		post({ command: 'webviewReady' });
+		post({ command: 'requestSlashCommands' });
+		// 自动创建首个会话（与迁移前行为一致）
+		post({ command: 'createSession' });
+
+		return dispose;
 	}, []);
 
 	if (isSettingsView) {

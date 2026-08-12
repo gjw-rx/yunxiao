@@ -5,6 +5,10 @@ import type { ToolRegistry } from './core/toolRegistry';
 import type { EventBus, AgentEvent } from './core/eventBus';
 import type { LocalSessionManager } from './core/localSessionManager';
 import type { SkillRegistry } from './skill/skillRegistry';
+import type { ModelConfigStore, ModelSettingsInput } from './config/modelConfigStore';
+import type { ModelConfig } from './config/modelConfig';
+import type { SyncSource } from './config/syncConfig';
+import type { SkillInstallResult } from './skill/skillInstaller';
 import { buildSlashCommandGroups } from './chat/slashCommands';
 import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
 import * as logger from './logger';
@@ -13,6 +17,26 @@ interface ChatViewDeps {
   readonly sessionManager: LocalSessionManager;
   readonly registry: ToolRegistry;
   readonly eventBus: EventBus;
+}
+
+/** 设置面板依赖：模型存储、配置来源、Skill 安装与模型保存回调。 */
+interface SettingsPanelDeps {
+  /** 插件私有模型配置存储 */
+  readonly modelStore: ModelConfigStore;
+  /** 读取配置来源（none/claude/trae） */
+  readonly getSyncSource: () => SyncSource;
+  /** 读取用户配置的 Skill 加载目录 */
+  readonly getSkillDirectories: () => string[];
+  /** 保存配置来源（保存后由扩展侧完成 Skill 重新同步后再返回） */
+  readonly setSyncSource: (source: SyncSource) => Promise<SyncSource>;
+  /** 保存 Skill 加载目录并完成重新加载 */
+  readonly setSkillDirectories: (directories: readonly string[]) => Promise<string[]>;
+  /** 当前生效的模型名称（对话/设置面板头部展示） */
+  readonly getModelName: () => string;
+  /** 选择并安装项目 Skill ZIP（完成后由扩展侧刷新注册表与斜杠菜单） */
+  readonly uploadSkillArchive: () => Promise<SkillInstallResult>;
+  /** 模型配置保存成功回调（扩展侧重建 provider 并更新 AgentLoop） */
+  readonly onModelConfigSaved?: (config: ModelConfig) => void;
 }
 
 /** 待处理的审批请求：call_id -> resolve 回调 */
@@ -28,6 +52,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _createSessionRequest = 0;
   private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
   private _skillRegistry?: SkillRegistry;
+  private _settingsDeps?: SettingsPanelDeps;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -45,6 +70,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   setSkillRegistry(skillRegistry: SkillRegistry): void {
     this._skillRegistry = skillRegistry;
+  }
+
+  /**
+   * 注入设置面板依赖（模型存储、配置来源、Skill 安装与模型保存回调）。
+   *
+   * @param deps 设置面板依赖
+   */
+  setSettingsDeps(deps: SettingsPanelDeps): void {
+    this._settingsDeps = deps;
   }
 
   /**
@@ -143,8 +177,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
 
     // 发送当前模型名称到 webview
-    const modelConfig = vscode.workspace.getConfiguration('yunxiaoAgent.model');
-    const modelName = modelConfig.get<string>('model', '');
+    const modelName = this._settingsDeps?.getModelName() ?? '';
     if (modelName) {
       panel.webview.postMessage({ command: 'modelInfo', model: modelName });
     }
@@ -154,6 +187,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     logger.log('[ChatPanel] 编辑区对话面板已打开');
     return panel;
+  }
+
+  /**
+   * 将当前生效模型名称推送到已打开的对话面板。
+   *
+   * @returns void
+   */
+  refreshModelInfo(): void {
+    const modelName = this._settingsDeps?.getModelName() ?? '';
+    if (!this._panel || !modelName) {
+      return;
+    }
+    this._panel.webview.postMessage({ command: 'modelInfo', model: modelName });
+    logger.log(`[ChatPanel] 已刷新对话模型信息 model=${modelName}`);
   }
 
   /**
@@ -187,6 +234,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
     panel.iconPath = vscode.Uri.file(path.join(this._context.extensionPath, 'media', 'icon.png'));
     panel.webview.html = this._getHtml(panel.webview, 'settings');
+
+    // 设置面板消息路由：模型配置读取/保存、Skill 列表读取、来源切换与安装请求
+    panel.webview.onDidReceiveMessage(
+      async (msg: { command: string; [key: string]: unknown }) => {
+        await this._handleSettingsMessage(panel, msg);
+      },
+      undefined,
+      this._context.subscriptions
+    );
+
     panel.onDidDispose(
       () => {
         logger.log('[ChatPanel] 编辑区设置面板已关闭');
@@ -353,6 +410,142 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  /**
+   * 组装设置页 Skill 快照：当前注册表 Skill 列表、配置来源与安装目标提示。
+   *
+   * @param deps 设置面板依赖（读取配置来源）
+   * @returns 设置页 Skill 列表 payload
+   */
+  private _buildSkillsPayload(deps: SettingsPanelDeps): {
+    skills: { name: string; description: string; sourcePath?: string }[];
+    source: SyncSource;
+    directories: string[];
+    installTarget?: string;
+  } {
+    const skills = (this._skillRegistry?.list() ?? []).map((s) => ({
+      name: s.name,
+      description: s.description,
+      sourcePath: s.sourcePath,
+    }));
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    const installTarget = folders.length > 0
+      ? `.claude/skills/<skill-name>/SKILL.md`
+      : undefined;
+    return { skills, source: deps.getSyncSource(), directories: deps.getSkillDirectories(), installTarget };
+  }
+
+  /**
+   * 处理设置面板消息：模型配置读取/保存、Skill 列表读取、来源切换与安装。
+   * 密钥永不回传；校验失败返回可显示的 settingsError。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息
+   */
+  private async _handleSettingsMessage(
+    panel: vscode.WebviewPanel,
+    msg: { command: string; [key: string]: unknown }
+  ): Promise<void> {
+    const deps = this._settingsDeps;
+    logger.log(`[ChatPanel] 收到设置面板消息: ${msg.command}`);
+    if (!deps) {
+      panel.webview.postMessage({ command: 'settingsError', message: '设置面板依赖未就绪' });
+      return;
+    }
+
+    switch (msg.command) {
+      case 'requestModelSettings': {
+        const view = await deps.modelStore.getSettingsView();
+        panel.webview.postMessage({ command: 'modelSettings', model: view });
+        break;
+      }
+      case 'saveModelSettings': {
+        try {
+          const config = await deps.modelStore.save(msg.model as ModelSettingsInput);
+          deps.onModelConfigSaved?.(config);
+          panel.webview.postMessage({
+            command: 'modelSettingsSaved',
+            model: await deps.modelStore.getSettingsView(),
+          });
+        } catch (err) {
+          panel.webview.postMessage({
+            command: 'settingsError',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+      case 'setDefaultModel': {
+        try {
+          deps.onModelConfigSaved?.(await deps.modelStore.setDefaultModel(msg.modelId as string));
+          panel.webview.postMessage({ command: 'modelSettingsSaved', model: await deps.modelStore.getSettingsView() });
+        } catch (err) {
+          panel.webview.postMessage({ command: 'settingsError', message: err instanceof Error ? err.message : String(err) });
+        }
+        break;
+      }
+      case 'setModelEnabled': {
+        try {
+          await deps.modelStore.setModelEnabled(msg.modelId as string, msg.enabled === true);
+          panel.webview.postMessage({ command: 'modelSettingsSaved', model: await deps.modelStore.getSettingsView() });
+        } catch (err) {
+          panel.webview.postMessage({ command: 'settingsError', message: err instanceof Error ? err.message : String(err) });
+        }
+        break;
+      }
+      case 'deleteModel': {
+        try {
+          await deps.modelStore.deleteModel(msg.modelId as string);
+          panel.webview.postMessage({ command: 'modelSettingsSaved', model: await deps.modelStore.getSettingsView() });
+        } catch (err) {
+          panel.webview.postMessage({ command: 'settingsError', message: err instanceof Error ? err.message : String(err) });
+        }
+        break;
+      }
+      case 'requestSkills': {
+        panel.webview.postMessage({ command: 'skillsList', ...this._buildSkillsPayload(deps) });
+        break;
+      }
+      case 'setSyncSource': {
+        try {
+          await deps.setSyncSource(msg.source as SyncSource);
+          // 扩展侧已完成 Skill 重新同步，推送最新快照
+          panel.webview.postMessage({ command: 'skillsList', ...this._buildSkillsPayload(deps) });
+        } catch (err) {
+          panel.webview.postMessage({
+            command: 'settingsError',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+      case 'setSkillDirectories': {
+        try {
+          const directories = Array.isArray(msg.directories)
+            ? msg.directories.filter((entry): entry is string => typeof entry === 'string')
+            : [];
+          await deps.setSkillDirectories(directories);
+          panel.webview.postMessage({ command: 'skillsList', ...this._buildSkillsPayload(deps) });
+        } catch (err) {
+          panel.webview.postMessage({
+            command: 'settingsError',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+      case 'uploadSkillArchive': {
+        const result = await deps.uploadSkillArchive();
+        if (result.ok) {
+          // 安装成功后扩展侧已重新同步并刷新斜杠菜单，推送最新快照
+          panel.webview.postMessage({ command: 'skillsList', ...this._buildSkillsPayload(deps) });
+        } else {
+          panel.webview.postMessage({ command: 'settingsError', message: result.reason });
+        }
+        break;
+      }
+    }
+  }
+
   private async _handleMessage(msg: { command: string;[key: string]: unknown }): Promise<void> {
     const panel = this._panel;
     if (!panel) { return; }
@@ -362,8 +555,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     switch (msg.command) {
       case 'webviewReady': {
         // 握手：UI 挂载完成后推送模型名与斜杠命令初始数据（应对 webview 重建后的数据丢失）
-        const modelConfig = vscode.workspace.getConfiguration('yunxiaoAgent.model');
-        const modelName = modelConfig.get<string>('model', '');
+        const modelName = this._settingsDeps?.getModelName() ?? '';
         if (modelName) {
           panel.webview.postMessage({ command: 'modelInfo', model: modelName });
         }
