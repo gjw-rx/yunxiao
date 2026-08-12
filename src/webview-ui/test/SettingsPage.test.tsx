@@ -4,6 +4,8 @@
  * 职责：通过 mock 宿主协议验证加载、保存成功、校验失败、Skill 空状态与安装反馈。
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HostToWebviewMessage } from '../protocol';
 
@@ -106,6 +108,8 @@ describe('SettingsPage', () => {
 		});
 
 		await waitFor(() => expect(screen.getByRole('table', { name: '模型列表' })).toBeTruthy());
+		const desktopStyles = readFileSync(resolve(process.cwd(), 'src/webview-ui/styles/chat.css'), 'utf8').split('@media', 1)[0];
+		expect(desktopStyles).toMatch(/\.settings-model-table\s*\{[^}]*overflow-x:\s*auto;/);
 		expect(screen.getByText('deepseek-chat')).toBeTruthy();
 		fireEvent.click(screen.getByRole('button', { name: '设为默认' }));
 		expect(bridge.post).toHaveBeenCalledWith({ command: 'setDefaultModel', modelId: 'model-b' });

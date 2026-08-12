@@ -1416,7 +1416,7 @@
 .settings-model-actions button:hover:not(:disabled) { border-color: var(--focus); background: var(--hover-bg); }
 .settings-model-actions button:disabled,
 .settings-add-model-btn:disabled { cursor: not-allowed; opacity: .45; }
-.settings-model-table { overflow: hidden; border-top: 1px solid var(--border-light); }
+.settings-model-table { overflow-x: auto; overflow-y: hidden; border-top: 1px solid var(--border-light); }
 .settings-model-table-head,
 .settings-model-table-row { display: grid; grid-template-columns: minmax(150px, 1.35fr) minmax(120px, 1fr) 70px minmax(220px, 1.65fr); align-items: center; gap: 14px; padding: 0 20px; }
 .settings-model-table-head { min-height: 32px; color: var(--muted); background: color-mix(in srgb, var(--fg) 2%, transparent); font-size: 10px; font-weight: 600; }
