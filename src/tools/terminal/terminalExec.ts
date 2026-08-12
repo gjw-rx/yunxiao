@@ -6,7 +6,7 @@
  *   whitelisted -> 直接执行
  *   unknown -> ApprovalGateway 审批 -> 允许则执行，拒绝则 cancelled
  *
- * 执行：child_process.spawn(shell, [flag, command], { cwd })，捕获 stdout/stderr/exitCode。
+ * 执行：child_process.spawn(shell, [flag, command], { cwd })，Windows 下先切换 UTF-8 代码页，捕获 stdout/stderr/exitCode。
  * 超时：setTimeout -> SIGTERM -> 2s 宽限 -> SIGKILL。
  * 取消：监听 context.abortSignal -> proc.kill()。
  * 输出截断：stdout/stderr 各截断至 terminalOutputLimit（保留尾部）。
@@ -240,17 +240,19 @@ export class TerminalExecTool extends BaseTool {
 	}> {
 		return new Promise((resolve) => {
 			const { shell, flag } = getShell();
-			const proc = this.spawnFn(shell, [flag, command], { cwd });
+			const shellCommand = withUtf8ShellEncoding(command);
+			logger.log(`[Terminal] 使用 UTF-8 编码启动进程 - cwd=${cwd}`);
+			const proc = this.spawnFn(shell, [flag, shellCommand], { cwd });
 
 			let stdout = '';
 			let stderr = '';
 			let terminated: 'normal' | 'timeout' | 'cancelled' = 'normal';
 
 			proc.stdout?.on('data', (d: Buffer) => {
-				stdout += d.toString();
+				stdout += d.toString('utf8');
 			});
 			proc.stderr?.on('data', (d: Buffer) => {
-				stderr += d.toString();
+				stderr += d.toString('utf8');
 			});
 
 			const cleanup = () => {
@@ -308,6 +310,19 @@ function getShell(): { shell: string; flag: string } {
 		return { shell: process.env.ComSpec ?? 'cmd.exe', flag: '/c' };
 	}
 	return { shell: process.env.SHELL ?? '/bin/sh', flag: '-c' };
+}
+
+/**
+ * 为当前平台的 shell 命令启用 UTF-8 输出。
+ *
+ * @param command 原始 shell 命令。
+ * @returns 已附加 UTF-8 配置的 shell 命令。
+ */
+function withUtf8ShellEncoding(command: string): string {
+	if (process.platform === 'win32') {
+		return `chcp 65001 > nul & ${command}`;
+	}
+	return command;
 }
 
 /** 优雅杀进程：先 SIGTERM，宽限期后 SIGKILL。 */

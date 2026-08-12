@@ -124,6 +124,28 @@ describe('TerminalExecTool', () => {
 		assert.strictEqual(result.metadata?.exitCode, 0);
 	});
 
+	it('Windows 下通过 UTF-8 代码页执行命令', async function () {
+		if (process.platform !== 'win32') {
+			this.skip();
+		}
+
+		let capturedCommand = '';
+		const tool = new TerminalExecTool({
+			approval: makeMockApproval('allow'),
+			shellWhitelist: new ShellWhitelist(['npm test']),
+		});
+		tool._setSpawnFn((_shell, args) => {
+			capturedCommand = args[1] ?? '';
+			const proc = new MockChildProcess({ exitCode: 0 });
+			proc.start();
+			return proc as unknown as ChildProcess;
+		});
+
+		await tool.execute({ command: 'npm test' }, await makeContext());
+
+		assert.strictEqual(capturedCommand, 'chcp 65001 > nul & npm test');
+	});
+
 	it('exitCode 非 0 仍为 success', async () => {
 		// Arrange
 		const tool = new TerminalExecTool({

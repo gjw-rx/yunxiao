@@ -168,8 +168,8 @@ export class SearchFilesTool extends BaseTool {
 			const proc = spawn('rg', args, { cwd: process.cwd() });
 			let stdout = '';
 			let stderr = '';
-			proc.stdout.on('data', (d) => (stdout += d.toString()));
-			proc.stderr.on('data', (d) => (stderr += d.toString()));
+			proc.stdout.on('data', (d: Buffer) => (stdout += d.toString('utf8')));
+			proc.stderr.on('data', (d: Buffer) => (stderr += d.toString('utf8')));
 			proc.on('error', (err) => {
 				// ENOENT: rg 不在 PATH
 				(err as NodeJS.ErrnoException).code = (err as NodeJS.ErrnoException).code ?? 'ENOENT';
