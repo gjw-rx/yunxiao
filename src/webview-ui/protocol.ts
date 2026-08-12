@@ -58,6 +58,18 @@ export interface ModelProfileView {
 	readonly apiKeyConfigured: boolean;
 }
 
+/** 对话输入框模型弹窗中的单个候选项。 */
+export interface ModelPickerItem {
+	/** 模型配置唯一 ID。 */
+	readonly id: string;
+	/** 模型名称。 */
+	readonly model: string;
+	/** Provider ID。 */
+	readonly provider: string;
+	/** 是否为当前默认模型。 */
+	readonly isDefault: boolean;
+}
+
 /** 设置页提交的模型配置（API Key 可选：非空时覆盖 SecretStorage，空/缺省保持现状）。 */
 export interface ModelSettingsInput {
 	/** 待编辑模型 ID；缺省时新增模型。 */
@@ -238,6 +250,12 @@ export interface DiffEntry {
 export interface ModelInfoMessage {
 	readonly command: 'modelInfo';
 	readonly model: string;
+}
+
+/** 宿主返回对话输入框可切换的已启用模型列表。 */
+export interface ModelPickerMessage {
+	readonly command: 'modelPicker';
+	readonly models: readonly ModelPickerItem[];
 }
 
 /** 宿主推送斜杠命令分组。 */
@@ -430,6 +448,7 @@ export interface RuntimeStateMessage {
 export type HostToWebviewMessage =
 	| RuntimeStateMessage
 	| ModelInfoMessage
+	| ModelPickerMessage
 	| SlashCommandsMessage
 	| OpenSessionMessage
 	| SessionCreatedMessage
@@ -552,6 +571,17 @@ export interface SwitchModelMessage {
 	readonly command: 'switchModel';
 }
 
+/** 请求已启用模型列表，以展示对话输入框的模型选择弹窗。 */
+export interface RequestModelPickerMessage {
+	readonly command: 'requestModelPicker';
+}
+
+/** 从对话输入框模型选择弹窗提交目标模型。 */
+export interface SelectModelMessage {
+	readonly command: 'selectModel';
+	readonly modelId: string;
+}
+
 /** 设置页请求模型配置快照（挂载时发送）。 */
 export interface RequestModelSettingsMessage {
 	readonly command: 'requestModelSettings';
@@ -631,6 +661,8 @@ export type WebviewToHostMessage =
 	| DeleteSessionMessage
 	| OpenSettingsMessage
 	| SwitchModelMessage
+	| RequestModelPickerMessage
+	| SelectModelMessage
 	| RequestModelSettingsMessage
 	| SaveModelSettingsMessage
 	| SetDefaultModelMessage

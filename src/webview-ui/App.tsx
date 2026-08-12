@@ -133,6 +133,7 @@ export function App(): JSX.Element {
 				currentSessionId={state.currentSessionId}
 				isStreaming={state.isStreaming}
 				modelName={state.modelName}
+				modelProfiles={state.modelProfiles}
 				selectedFiles={state.selectedFiles}
 				selectedSkills={state.selectedSkills}
 				slashCommandGroups={state.slashCommandGroups}

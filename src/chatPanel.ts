@@ -698,6 +698,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
+      case 'requestModelPicker': {
+        const deps = this._settingsDeps;
+        if (!deps) {
+          break;
+        }
+        try {
+          const view = await deps.modelStore.getSettingsView();
+          const models = (view.models ?? [])
+            .filter((model) => model.enabled)
+            .map((model) => ({ id: model.id, model: model.model, provider: model.provider, isDefault: model.isDefault }));
+          webview.postMessage({ command: 'modelPicker', models });
+          logger.log(`[ChatPanel] 已返回模型弹窗候选项 count=${models.length}`);
+        } catch (err) {
+          logger.error(`[ChatPanel] 获取模型弹窗候选项失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+      case 'selectModel': {
+        const deps = this._settingsDeps;
+        const modelId = typeof msg.modelId === 'string' ? msg.modelId : '';
+        if (!deps || !modelId) {
+          logger.error(`[ChatPanel] 拒绝无效模型切换请求 modelId=${modelId || '空'}`);
+          break;
+        }
+        try {
+          const view = await deps.modelStore.getSettingsView();
+          const selected = (view.models ?? []).find((model) => model.id === modelId && model.enabled);
+          if (!selected) {
+            throw new Error('未找到可用的目标模型');
+          }
+          const config = await deps.modelStore.setDefaultModel(modelId);
+          deps.onModelConfigSaved?.(config);
+          logger.log(`[ChatPanel] 模型弹窗已切换默认模型 id=${modelId} model=${selected.model}`);
+        } catch (err) {
+          logger.error(`[ChatPanel] 模型弹窗切换失败: ${err instanceof Error ? err.message : String(err)}`);
+          vscode.window.showErrorMessage(`切换模型失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
       case 'loadHistory': {
         const history = this._sessionManager.loadHistory(msg.sessionId as string);
         webview.postMessage({ command: 'historyLoaded', messages: history });

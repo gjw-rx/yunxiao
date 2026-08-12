@@ -2,7 +2,7 @@
  * 消息输入组件测试。
  * 职责：验证输入工具栏的模型切换入口会向扩展宿主发送正确的协议消息。
  */
-import { fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const bridge = vi.hoisted(() => ({
@@ -16,17 +16,25 @@ import { MessageInput } from '../components/chat/MessageInput';
 
 /** 清理每个用例产生的消息记录。 */
 afterEach(() => {
+	cleanup();
 	bridge.post.mockClear();
 });
 
 describe('MessageInput', () => {
-	/** 点击当前模型名称时，请求宿主打开已启用模型的选择器。 */
-	it('点击当前模型名称时请求切换模型', () => {
+	/** 当前模型的切换候选项。 */
+	const modelProfiles = [
+		{ id: 'model-a', model: 'deepseek-v4-flash', provider: 'openai', isDefault: true },
+		{ id: 'model-b', model: 'gpt-4o', provider: 'openai', isDefault: false },
+	];
+
+	/** 创建带有模型列表的消息输入组件。 */
+	const renderMessageInput = (): void => {
 		render(
 			<MessageInput
 				currentSessionId="session-1"
 				isStreaming={false}
 				modelName="deepseek-v4-flash"
+				modelProfiles={modelProfiles}
 				selectedFiles={[]}
 				selectedSkills={[]}
 				slashCommandGroups={[]}
@@ -38,9 +46,25 @@ describe('MessageInput', () => {
 				onSend={vi.fn()}
 			/>,
 		);
+	};
+
+	/** 点击当前模型名称时，在输入框内打开模型选择弹窗。 */
+	it('点击当前模型名称时打开模型选择弹窗', () => {
+		renderMessageInput();
 
 		fireEvent.click(screen.getByRole('button', { name: '切换模型 deepseek-v4-flash' }));
 
-		expect(bridge.post).toHaveBeenCalledWith({ command: 'switchModel' });
+		expect(bridge.post).toHaveBeenCalledWith({ command: 'requestModelPicker' });
+		expect(screen.getByRole('menu', { name: '选择模型' })).toBeTruthy();
+		expect(screen.getByRole('menuitem', { name: 'gpt-4o' })).toBeTruthy();
+	});
+
+	/** 在模型选择弹窗中点击候选项时，向宿主提交目标模型 ID。 */
+	it('点击模型候选项时请求切换为该模型', () => {
+		renderMessageInput();
+		fireEvent.click(screen.getByRole('button', { name: '切换模型 deepseek-v4-flash' }));
+		fireEvent.click(screen.getByRole('menuitem', { name: 'gpt-4o' }));
+
+		expect(bridge.post).toHaveBeenCalledWith({ command: 'selectModel', modelId: 'model-b' });
 	});
 });

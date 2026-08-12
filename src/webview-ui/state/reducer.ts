@@ -9,6 +9,7 @@ import type {
 	ApprovalEntry,
 	DiffEntry,
 	HistoryEntry,
+	ModelPickerItem,
 	RuntimeStatus,
 	SessionMeta,
 	SessionTokenPayload,
@@ -45,6 +46,8 @@ export interface ChatState {
 	isStreaming: boolean;
 	/** 模型名称 */
 	modelName: string;
+	/** 已启用模型的选择弹窗候选项 */
+	modelProfiles: ModelPickerItem[];
 	/** 斜杠命令分组 */
 	slashCommandGroups: SlashCommandGroup[];
 	/** 历史会话列表 */
@@ -83,6 +86,7 @@ export const initialState: ChatState = {
 	sessionTitle: '',
 	isStreaming: false,
 	modelName: '',
+	modelProfiles: [],
 	slashCommandGroups: [],
 	sessions: [],
 	workspaceFiles: [],
@@ -162,6 +166,7 @@ export type ChatAction =
 	| { type: 'historyLoaded'; messages: HistoryEntry[] }
 	| { type: 'workspaceFiles'; files: WorkspaceFile[] }
 	| { type: 'modelInfo'; model: string }
+	| { type: 'modelPicker'; models: readonly ModelPickerItem[] }
 	| { type: 'slashCommands'; groups: SlashCommandGroup[] }
 	| { type: 'sessionList'; sessions: SessionMeta[] }
 	| { type: 'currentSessionDeleted' }
@@ -504,6 +509,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 			return { ...state, workspaceFiles: action.files };
 		case 'modelInfo':
 			return { ...state, modelName: action.model };
+		case 'modelPicker':
+			return { ...state, modelProfiles: [...action.models] };
 		case 'slashCommands':
 			return { ...state, slashCommandGroups: action.groups };
 		case 'sessionList':

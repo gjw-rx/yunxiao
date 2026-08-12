@@ -92,6 +92,33 @@ async function setup() {
 }
 
 describe('ChatViewProvider /model 切换模型宿主处理', () => {
+	it('返回已启用模型列表供对话面板的模型弹窗展示', async () => {
+		const { internals, messages, modelA, modelB } = await setup();
+		assert.ok(modelA);
+		assert.ok(modelB);
+
+		await internals._handleMessage({ command: 'requestModelPicker' });
+
+		assert.deepStrictEqual(messages, [{
+			command: 'modelPicker',
+			models: [
+				{ id: modelA!.id, model: 'gpt-4o', provider: 'openai', isDefault: true },
+				{ id: modelB!.id, model: 'deepseek-chat', provider: 'openai', isDefault: false },
+			],
+		}]);
+	});
+
+	it('从对话面板模型弹窗选择模型后切换默认模型', async () => {
+		const { internals, modelStore, savedConfigs, modelB } = await setup();
+		assert.ok(modelB);
+
+		await internals._handleMessage({ command: 'selectModel', modelId: modelB!.id });
+
+		const view = await modelStore.getSettingsView();
+		assert.strictEqual(view.defaultModelId, modelB!.id);
+		assert.strictEqual(savedConfigs.length, 1);
+	});
+
 	it('选择模型后切换默认模型、触发 onModelConfigSaved 并携带密钥配置', async () => {
 		const { internals, modelStore, savedConfigs, modelB } = await setup();
 		assert.ok(modelB, '预置模型 model-b 应存在');

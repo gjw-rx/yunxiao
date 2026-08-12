@@ -19,6 +19,8 @@ export function hostToAction(msg: HostToWebviewMessage): ChatAction | null {
 			return { type: 'runtimeState', status: msg.status, message: msg.message };
 		case 'modelInfo':
 			return { type: 'modelInfo', model: msg.model };
+		case 'modelPicker':
+			return { type: 'modelPicker', models: msg.models };
 		case 'slashCommands':
 			return { type: 'slashCommands', groups: msg.groups };
 		case 'openSession':

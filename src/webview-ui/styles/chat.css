@@ -96,6 +96,7 @@
 
 /* ── Model info display ── */
 .model-info {
+	position: relative;
 	flex: 1;
 	min-width: 0;
 	min-height: 28px;
@@ -146,6 +147,60 @@
 	width: 12px;
 	height: 12px;
 	flex: 0 0 auto;
+}
+.model-picker {
+	position: absolute;
+	right: 0;
+	bottom: calc(100% + 6px);
+	z-index: 60;
+	width: min(280px, calc(100vw - 32px));
+	padding: 4px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	background: var(--vscode-editorWidget-background, var(--bg));
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+.model-picker-item {
+	display: grid;
+	width: 100%;
+	grid-template-columns: minmax(0, 1fr) auto auto;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 9px;
+	border: 0;
+	border-radius: var(--radius);
+	background: transparent;
+	color: var(--fg);
+	cursor: pointer;
+	font-family: var(--font);
+	text-align: left;
+}
+.model-picker-item:hover,
+.model-picker-item:focus-visible {
+	background: var(--hover-bg);
+	outline: 0;
+}
+.model-picker-name {
+	min-width: 0;
+	overflow: hidden;
+	font-size: 12px;
+	font-weight: 500;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.model-picker-provider {
+	color: var(--muted);
+	font-size: 10px;
+}
+.model-picker-check {
+	color: var(--fg);
+	font-size: 15px;
+	line-height: 1;
+}
+.model-picker-empty {
+	padding: 9px;
+	color: var(--muted);
+	font-size: 11px;
 }
 
 /* ── Buttons ── */

@@ -5,9 +5,9 @@
  * 已引用文件与已选 Skill 的 chip 展示与移除，以及 `/` 斜杠命令与 `@` 文件
  * 选择器的触发、过滤与键盘导航（与迁移前行为一致）。
  */
-import { useEffect, useRef, useState, type JSX, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type JSX, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { post } from '../../bridge/vscode';
-import type { SlashCommand, SlashCommandGroup, WorkspaceFile } from '../../protocol';
+import type { ModelPickerItem, SlashCommand, SlashCommandGroup, WorkspaceFile } from '../../protocol';
 import { findSlashCommandToken, type SlashCommandToken } from '../../utils/chatBehavior';
 import { SlashCommandPicker, type FilteredSlashCommand } from '../commands/SlashCommandPicker';
 import { FilePicker } from '../files/FilePicker';
@@ -20,6 +20,8 @@ export interface MessageInputProps {
 	isStreaming: boolean;
 	/** 模型名称 */
 	modelName: string;
+	/** 已启用模型的选择弹窗候选项 */
+	modelProfiles: readonly ModelPickerItem[];
 	/** 已引用文件 */
 	selectedFiles: WorkspaceFile[];
 	/** 已选 Skill */
@@ -45,6 +47,7 @@ export function MessageInput({
 	currentSessionId,
 	isStreaming,
 	modelName,
+	modelProfiles,
 	selectedFiles,
 	selectedSkills,
 	slashCommandGroups,
@@ -57,6 +60,7 @@ export function MessageInput({
 }: MessageInputProps): JSX.Element {
 	const [text, setText] = useState('');
 	const inputRef = useRef<HTMLTextAreaElement>(null);
+	const modelPickerRef = useRef<HTMLDivElement>(null);
 
 	// ── 选择器状态 ──
 	const [slashOpen, setSlashOpen] = useState(false);
@@ -67,6 +71,7 @@ export function MessageInput({
 	const [fileIndex, setFileIndex] = useState(0);
 	const [fileAtStart, setFileAtStart] = useState(-1);
 	const [filteredFiles, setFilteredFiles] = useState<WorkspaceFile[]>([]);
+	const [modelPickerOpen, setModelPickerOpen] = useState(false);
 
 	// 输入框自动增高（上限 160px）
 	useEffect(() => {
@@ -75,6 +80,43 @@ export function MessageInput({
 		el.style.height = 'auto';
 		el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
 	}, [text]);
+
+	// 模型选择弹窗打开时，点击外部或按 Esc 关闭弹窗
+	useEffect(() => {
+		if (!modelPickerOpen) return;
+		const closeOnOutsideClick = (event: MouseEvent): void => {
+			if (!modelPickerRef.current?.contains(event.target as Node)) {
+				setModelPickerOpen(false);
+			}
+		};
+		const closeOnEscape = (event: globalThis.KeyboardEvent): void => {
+			if (event.key === 'Escape') {
+				setModelPickerOpen(false);
+			}
+		};
+		document.addEventListener('mousedown', closeOnOutsideClick);
+		document.addEventListener('keydown', closeOnEscape);
+		return () => {
+			document.removeEventListener('mousedown', closeOnOutsideClick);
+			document.removeEventListener('keydown', closeOnEscape);
+		};
+	}, [modelPickerOpen]);
+
+	/** 切换模型选择弹窗并在打开时请求最新已启用模型列表。 */
+	const toggleModelPicker = (): void => {
+		if (modelPickerOpen) {
+			setModelPickerOpen(false);
+			return;
+		}
+		setModelPickerOpen(true);
+		post({ command: 'requestModelPicker' });
+	};
+
+	/** 提交选中的模型 ID，并关闭模型选择弹窗。 */
+	const selectModel = (modelId: string): void => {
+		setModelPickerOpen(false);
+		post({ command: 'selectModel', modelId });
+	};
 
 	/** 关闭两个选择器。 */
 	const closePickers = (): void => {
@@ -203,7 +245,7 @@ export function MessageInput({
 	};
 
 	/** 键盘处理：优先响应选择器（上下/Enter/Esc），其次 Enter 发送。 */
-	const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
+	const handleKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>): void => {
 		if (slashOpen) {
 			if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
 				e.preventDefault();
@@ -337,7 +379,7 @@ export function MessageInput({
 						</button>
 					</div>
 					<div className="toolbar-right">
-						<div className="model-info">
+						<div className="model-info" ref={modelPickerRef}>
 							<button
 								type="button"
 								id="modelName"
@@ -345,13 +387,37 @@ export function MessageInput({
 								disabled={isStreaming || !modelName}
 								title="切换模型"
 								aria-label={`切换模型 ${modelName || '--'}`}
-								onClick={() => post({ command: 'switchModel' })}
+								aria-haspopup="menu"
+								aria-expanded={modelPickerOpen}
+								onClick={toggleModelPicker}
 							>
 								<span>{modelName || '--'}</span>
 								<svg viewBox="0 0 12 12" aria-hidden="true">
 									<path d="M3 4.5 6 7.5l3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
 								</svg>
 							</button>
+							{modelPickerOpen && (
+								<div className="model-picker" role="menu" aria-label="选择模型">
+									{modelProfiles.length === 0 ? (
+										<div className="model-picker-empty" role="status">正在加载模型…</div>
+									) : (
+										modelProfiles.map((profile) => (
+											<button
+												type="button"
+												key={profile.id}
+												className={`model-picker-item${profile.isDefault ? ' selected' : ''}`}
+												role="menuitem"
+												aria-label={profile.model}
+												onClick={() => selectModel(profile.id)}
+											>
+												<span className="model-picker-name">{profile.model}</span>
+												<span className="model-picker-provider">{profile.provider}</span>
+												{profile.isDefault && <span className="model-picker-check" aria-label="当前模型">✓</span>}
+											</button>
+										))
+									)}
+								</div>
+							)}
 						</div>
 						{!isStreaming ? (
 							<button
