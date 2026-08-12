@@ -96,6 +96,8 @@ const LEGACY_API_KEY_SECRET_KEY = 'yunxiaoAgent.model.apiKey';
 const API_KEY_SECRET_PREFIX = 'yunxiaoAgent.model.apiKey.';
 /** 配置文件相对全局 `.yunForce` 配置目录的路径。 */
 const MODEL_CONFIG_RELATIVE_PATH = path.join('modelConfig', 'models.json');
+/** 旧版配置文件相对工作区根目录的路径。 */
+const LEGACY_WORKSPACE_MODEL_CONFIG_RELATIVE_PATH = path.join('.yunForce', 'modelConfig', 'models.json');
 const TEMPERATURE_MIN = 0;
 const TEMPERATURE_MAX = 2;
 const MAX_TOKENS_MIN = 1;
@@ -164,15 +166,21 @@ export function validateModelSettings(input: ModelSettingsInput): string | null 
 export class ModelConfigStore {
 	/** 配置文件绝对路径。 */
 	private readonly _filePath: string;
+	/** 旧版工作区配置文件绝对路径。 */
+	private readonly _legacyWorkspaceFilePath?: string;
 
 	/**
 	 * 创建存储服务。
 	 *
 	 * @param context VS Code 扩展上下文（用于迁移与 SecretStorage）
 	 * @param globalConfigRoot 全局 `.yunForce` 配置目录；缺省时使用用户主目录下的 `.yunForce`
+	 * @param legacyWorkspaceRoot 当前工作区根目录；仅用于首次迁移旧版模型档案
 	 */
-	constructor(private readonly context: vscode.ExtensionContext, globalConfigRoot = path.join(os.homedir(), '.yunForce')) {
+	constructor(private readonly context: vscode.ExtensionContext, globalConfigRoot = path.join(os.homedir(), '.yunForce'), legacyWorkspaceRoot?: string) {
 		this._filePath = path.join(globalConfigRoot, MODEL_CONFIG_RELATIVE_PATH);
+		this._legacyWorkspaceFilePath = legacyWorkspaceRoot
+			? path.join(legacyWorkspaceRoot, LEGACY_WORKSPACE_MODEL_CONFIG_RELATIVE_PATH)
+			: undefined;
 	}
 
 	/**
@@ -325,8 +333,37 @@ export class ModelConfigStore {
 			}
 			throw new Error('格式不受支持');
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {logger.error(`[ModelConfigStore] 读取模型配置失败 path=${this._filePath}: ${error instanceof Error ? error.message : String(error)}`);}
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+				const migrated = await this._migrateWorkspaceConfig();
+				if (migrated) {return migrated;}
+			} else {
+				logger.error(`[ModelConfigStore] 读取模型配置失败 path=${this._filePath}: ${error instanceof Error ? error.message : String(error)}`);
+			}
 			return this._migrateLegacyConfig();
+		}
+	}
+
+	/**
+	 * 首次读取全局配置时迁移当前工作区的旧版模型档案。
+	 *
+	 * @returns 成功迁移时返回模型文档；没有可迁移文件时返回 undefined
+	 */
+	private async _migrateWorkspaceConfig(): Promise<StoredModelDocument | undefined> {
+		if (!this._legacyWorkspaceFilePath) {return undefined;}
+		try {
+			const raw = await fs.readFile(this._legacyWorkspaceFilePath, 'utf8');
+			const document = JSON.parse(raw) as StoredModelDocument;
+			if (document.version !== 1 || !Array.isArray(document.models)) {
+				throw new Error('格式不受支持');
+			}
+			await this._writeDocument(document);
+			logger.log(`[ModelConfigStore] 已迁移工作区模型配置 source=${this._legacyWorkspaceFilePath} target=${this._filePath} models=${document.models.length}`);
+			return document;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+				logger.error(`[ModelConfigStore] 迁移工作区模型配置失败 source=${this._legacyWorkspaceFilePath}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			return undefined;
 		}
 	}
 

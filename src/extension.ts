@@ -268,7 +268,7 @@ async function _activate(context: vscode.ExtensionContext) {
 	const router = new ToolRouter(registry, approval, new SecurityAudit(metrics), journal);
 
 	// 模型配置与 LLM Provider（非敏感字段保存在用户全局 .yunForce/modelConfig，密钥仅存 SecretStorage）
-	const modelStore = new ModelConfigStore(context);
+	const modelStore = new ModelConfigStore(context, undefined, workspaceRoot);
 	let modelConfig = await modelStore.getModelConfig();
 	if (!modelConfig.apiKey) {
 		logger.log('[Extension] 警告: 未配置 API Key，请在设置页配置模型 API Key');
