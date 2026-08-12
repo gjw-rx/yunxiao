@@ -69,6 +69,24 @@ describe('ChatViewProvider HTML rendering', () => {
 		assert.match(html, /class="model-info"/);
 	});
 
+	it('在首个思考或回复片段到达前展示思考动画', () => {
+		const { internals } = setup();
+		const html = internals._getHtml({
+			asWebviewUri: (uri: vscode.Uri) => uri,
+			cspSource: 'vscode-webview:',
+		} as unknown as vscode.Webview);
+
+		assert.match(html, /\.message\.assistant\.thinking/);
+		assert.match(html, /@keyframes thinking-dot/);
+		assert.match(html, /function showThinkingIndicator\(\)/);
+		assert.match(html, /function removeThinkingIndicator\(\)/);
+		assert.match(html, /setStreaming\(true\);[\s\S]*?showThinkingIndicator\(\);/);
+		assert.match(html, /case 'replyChunk':[\s\S]*?removeThinkingIndicator\(\);[\s\S]*?updateAssistantMsg/);
+		assert.match(html, /case 'thought':[\s\S]*?removeThinkingIndicator\(\);[\s\S]*?showThought/);
+		assert.match(html, /case 'replyEnd':[\s\S]*?removeThinkingIndicator\(\);/);
+		assert.match(html, /case 'error':[\s\S]*?removeThinkingIndicator\(\);/);
+	});
+
 	it('reuses one thought step and merges incremental or cumulative stream text', () => {
 		const { internals } = setup();
 		const html = internals._getHtml({

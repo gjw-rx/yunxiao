@@ -812,6 +812,34 @@ ${this._getJs()}
       padding-left: 1px;
     }
 
+    /* 首个模型片段到达前的回复占位：用低干扰动效提示仍在生成。 */
+    .message.assistant.thinking {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 22px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .thinking-dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .thinking-dots i {
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: thinking-dot 1.1s ease-in-out infinite;
+    }
+    .thinking-dots i:nth-child(2) { animation-delay: 0.15s; }
+    .thinking-dots i:nth-child(3) { animation-delay: 0.3s; }
+    @keyframes thinking-dot {
+      0%, 60%, 100% { opacity: 0.28; transform: translateY(0); }
+      30% { opacity: 1; transform: translateY(-2px); }
+    }
+
     /* Markdown styling */
     .message.assistant p { margin: 0 0 8px; }
     .message.assistant p:last-child { margin-bottom: 0; }
@@ -1910,6 +1938,7 @@ ${this._getJs()}
     let currentAssistantEl = null; // 当前流式回复气泡
     let currentAssistantRow = null; // 当前流式回复消息行（包含操作栏）
     let currentAssistantTxt = '';
+    let thinkingIndicatorEl = null; // 首个模型片段到达前的回复加载提示
     let currentThoughtEl = null;
     let currentThoughtTxt = '';
     const toolEntries = new Map();   // call_id -> { stepEl, detailEl, state, tool }
@@ -2626,6 +2655,7 @@ ${this._getJs()}
       currentAssistantTxt = '';
       currentAssistantEl = null;
       currentAssistantRow = null;
+      showThinkingIndicator();
 
       // 文件引用与 Skill 作为独立字段传递，由扩展主进程拼装上下文注入
       vscode.postMessage({
@@ -2657,6 +2687,7 @@ ${this._getJs()}
       currentAssistantEl = null;
       currentAssistantRow = null;
       currentAssistantTxt = '';
+      thinkingIndicatorEl = null;
       currentThoughtEl = null;
       userTurnCount = 0;
       currentThoughtTxt = '';
@@ -2897,6 +2928,32 @@ ${this._getJs()}
       currentAssistantRow = row;
       smartScrollToBottom();
       return bubble;
+    }
+
+    /**
+     * 在当前回复位置展示模型等待首个思考或正文片段时的加载动画。
+     * @returns {void} 无返回值。
+     */
+    function showThinkingIndicator() {
+      if (thinkingIndicatorEl) return;
+      const bubble = appendAssistantBubble(false);
+      bubble.classList.add('thinking');
+      bubble.setAttribute('role', 'status');
+      bubble.setAttribute('aria-live', 'polite');
+      bubble.innerHTML = '<span>正在思考</span><span class="thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span>';
+      thinkingIndicatorEl = bubble;
+    }
+
+    /**
+     * 移除已被首个思考或正文片段替代的加载动画及其空回复行。
+     * @returns {void} 无返回值。
+     */
+    function removeThinkingIndicator() {
+      if (!thinkingIndicatorEl) return;
+      const row = thinkingIndicatorEl.closest('.msg-row');
+      if (currentAssistantRow === row) currentAssistantRow = null;
+      if (row) row.remove();
+      thinkingIndicatorEl = null;
     }
 
     /** 流式文本轻量追加（纯文本，避免逐 chunk 全量 markdown 重渲染）。 */
@@ -3155,10 +3212,12 @@ ${this._getJs()}
           break;
         }
         case 'replyChunk':
+          removeThinkingIndicator();
           updateAssistantMsg(msg.text);
           break;
         case 'replyEnd':
           setStreaming(false);
+          removeThinkingIndicator();
           finalizeStepText();
           // currentAssistantRow 由 token_usage 事件更新后清理
           finishTurn();
@@ -3176,6 +3235,7 @@ ${this._getJs()}
           // tool_result 仅作补充数据，不单独渲染（tool_state_change 已覆盖）
           break;
         case 'thought':
+          removeThinkingIndicator();
           showThought(msg.text);
           break;
         case 'progress':
@@ -3242,6 +3302,7 @@ ${this._getJs()}
           showError(msg.message);
           if (isStreaming) {
             setStreaming(false);
+            removeThinkingIndicator();
             finalizeStepText();
             finishTurn();
           }
