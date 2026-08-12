@@ -27,7 +27,6 @@ async function main() {
 	const ctx = await esbuild.context({
 		entryPoints: [
 			'src/extension.ts',
-			'src/webview/marked.js',
 		],
 		bundle: true,
 		format: 'cjs',

@@ -1,0 +1,1522 @@
+/**
+ * Webview 聊天界面功能样式（从旧 chatPanel.ts `_getCss()` 迁移）。
+ *
+ * 职责：承载聊天面板的布局与组件视觉（头部、消息流、时间线、审批/Diff、
+ * 输入区、历史下拉、选择器）。颜色/字体/边框等仅引用 `tokens.css` 的
+ * 语义 token，随 VS Code 主题自适应。
+ */
+
+/* ── 应用布局 ── */
+.app {
+	display: flex;
+	flex-direction: column;
+	height: 100vh;
+	width: 100vw;
+	overflow: hidden;
+}
+
+/* ── Header ── */
+#header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 10px;
+	border-bottom: 1px solid var(--border);
+	flex-shrink: 0;
+	position: relative;
+}
+
+/* ── Session name input ── */
+.session-name-input {
+	flex: 1;
+	min-width: 0;
+	background: transparent;
+	color: var(--fg);
+	border: 1px solid transparent;
+	border-radius: var(--radius);
+	padding: 4px 8px;
+	font-family: var(--font);
+	font-size: 13px;
+	font-weight: 500;
+	outline: none;
+	transition: border-color 0.15s, background 0.15s;
+}
+.session-name-input:hover {
+	border-color: var(--border-light);
+}
+.session-name-input:focus {
+	border-color: var(--focus);
+	background: var(--input-bg);
+}
+
+/* ── Model info display ── */
+.model-info {
+	flex: 1;
+	min-width: 0;
+	padding: 4px 8px;
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* ── Buttons ── */
+.btn {
+	background: var(--btn-bg);
+	color: var(--btn-fg);
+	border: none;
+	padding: 5px 10px;
+	border-radius: var(--radius);
+	cursor: pointer;
+	font-family: var(--font);
+	font-size: 12px;
+	font-weight: 500;
+	white-space: nowrap;
+	transition: background 0.12s, opacity 0.12s;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+}
+.btn:hover:not(:disabled) {
+	background: var(--btn-hover);
+}
+.btn:active:not(:disabled) {
+	transform: scale(0.97);
+}
+.btn:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
+.btn-icon {
+	padding: 5px;
+	background: transparent;
+	color: var(--fg);
+	border-radius: var(--radius);
+}
+.btn-icon:hover:not(:disabled) {
+	background: var(--hover-bg);
+}
+
+.btn-stop {
+	padding: 4px 8px;
+	background: var(--vscode-inputValidation-errorBackground, #c72e2e);
+	color: #fff;
+}
+.btn-stop:hover:not(:disabled) {
+	opacity: 0.85;
+}
+
+/* ── Spinner ── */
+.spinner {
+	width: 11px;
+	height: 11px;
+	border: 1.5px solid transparent;
+	border-top-color: currentColor;
+	border-right-color: currentColor;
+	border-radius: 50%;
+	animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+/* ── Messages area ── */
+#messages {
+	flex: 1;
+	overflow-y: auto;
+	padding: 14px 12px 8px;
+	display: flex;
+	flex-direction: column;
+	scroll-behavior: smooth;
+}
+
+.placeholder {
+	text-align: center;
+	color: var(--muted);
+	margin: auto;
+	font-size: 12px;
+	line-height: 1.7;
+	padding: 30px 14px;
+	animation: rise 0.35s ease both;
+}
+.placeholder svg {
+	opacity: 0.28;
+	margin-bottom: 12px;
+	display: block;
+	margin-left: auto;
+	margin-right: auto;
+}
+.placeholder-title {
+	font-size: 13px;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+	margin-bottom: 5px;
+	color: var(--fg);
+	opacity: 0.75;
+}
+
+.msg-row {
+	display: flex;
+	flex-direction: column;
+	max-width: 100%;
+	margin-bottom: 18px;
+	animation: rise 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes rise {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.msg-label {
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: var(--label-tracking);
+	text-transform: uppercase;
+	color: var(--muted);
+	margin-bottom: 6px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.message {
+	line-height: 1.65;
+	font-size: 13px;
+	word-break: break-word;
+}
+
+/* 用户消息：靠右，内敛的实心块 */
+.msg-row.user-row {
+	align-items: flex-end;
+}
+.message.user {
+	background: var(--step-bg);
+	border: 1px solid var(--border);
+	color: var(--fg);
+	padding: 8px 12px;
+	border-radius: 10px 10px 3px 10px;
+	white-space: pre-wrap;
+	max-width: 90%;
+}
+
+/* 助手最终回复：全宽正文，不用气泡 */
+.message.assistant {
+	max-width: 100%;
+	padding-left: 1px;
+}
+
+/* 首个模型片段到达前的回复占位：用低干扰动效提示仍在生成。 */
+.message.assistant.thinking {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	min-height: 22px;
+	color: var(--muted);
+	font-size: 12px;
+}
+.thinking-dots {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+}
+.thinking-dots i {
+	width: 4px;
+	height: 4px;
+	border-radius: 50%;
+	background: currentColor;
+	animation: thinking-dot 1.1s ease-in-out infinite;
+}
+.thinking-dots i:nth-child(2) {
+	animation-delay: 0.15s;
+}
+.thinking-dots i:nth-child(3) {
+	animation-delay: 0.3s;
+}
+@keyframes thinking-dot {
+	0%,
+	60%,
+	100% {
+		opacity: 0.28;
+		transform: translateY(0);
+	}
+	30% {
+		opacity: 1;
+		transform: translateY(-2px);
+	}
+}
+
+/* Markdown styling */
+.message.assistant p {
+	margin: 0 0 8px;
+}
+.message.assistant p:last-child {
+	margin-bottom: 0;
+}
+.message.assistant pre {
+	background: var(--code-bg);
+	padding: 10px 12px;
+	border-radius: 6px;
+	overflow-x: auto;
+	margin: 6px 0;
+	font-family: var(--mono);
+	font-size: 12px;
+	line-height: 1.5;
+	border: 1px solid var(--border-light);
+}
+.message.assistant code {
+	font-family: var(--mono);
+	font-size: 0.88em;
+	background: var(--code-bg);
+	padding: 1px 5px;
+	border-radius: 3px;
+}
+.message.assistant pre code {
+	background: none;
+	padding: 0;
+}
+.message.assistant ul,
+.message.assistant ol {
+	padding-left: 20px;
+	margin: 6px 0;
+}
+.message.assistant li {
+	margin: 2px 0;
+}
+.message.assistant a {
+	color: var(--accent);
+	text-decoration: none;
+}
+.message.assistant a:hover {
+	text-decoration: underline;
+}
+.message.assistant blockquote {
+	border-left: 3px solid var(--vscode-textBlockQuote-border, rgba(128, 128, 128, 0.4));
+	padding-left: 12px;
+	margin: 6px 0;
+	opacity: 0.8;
+}
+.message.assistant h1,
+.message.assistant h2,
+.message.assistant h3 {
+	margin: 10px 0 6px;
+	font-size: 1em;
+	font-weight: 600;
+}
+.message.assistant h1 {
+	font-size: 1.2em;
+}
+.message.assistant h2 {
+	font-size: 1.1em;
+}
+.message.assistant table {
+	border-collapse: collapse;
+	margin: 8px 0;
+	font-size: 12px;
+	width: 100%;
+}
+.message.assistant th,
+.message.assistant td {
+	border: 1px solid var(--border);
+	padding: 5px 10px;
+}
+.message.assistant th {
+	background: var(--code-bg);
+	font-weight: 600;
+}
+
+/* streaming cursor */
+.cursor::after {
+	content: '▋';
+	animation: blink 0.9s step-start infinite;
+	opacity: 0.7;
+	margin-left: 1px;
+}
+@keyframes blink {
+	50% {
+		opacity: 0;
+	}
+}
+
+/* ══ 回合（turn）容器 ══
+   一个 turn = 思考/工具步骤与回复气泡按发生顺序交错的消息流。 */
+.turn {
+	display: flex;
+	flex-direction: column;
+	margin-bottom: 18px;
+}
+
+/* ── 时间线步骤（思考 / 工具 / 计划共用，内联于消息流） ── */
+.step {
+	position: relative;
+	padding-left: 22px;
+	margin-bottom: 10px;
+	animation: rise 0.2s ease both;
+}
+
+/* 节点圆点，压在轨道上 */
+.step-dot {
+	position: absolute;
+	left: 3px;
+	top: 6px;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	background: var(--bg);
+	border: 1.5px solid var(--rail);
+	box-sizing: border-box;
+	z-index: 1;
+}
+.step.running .step-dot {
+	border-color: var(--rail-active);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.step.success .step-dot {
+	border-color: var(--success);
+	background: var(--success);
+}
+.step.error .step-dot {
+	border-color: var(--error);
+	background: var(--error);
+}
+
+.step-head {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	padding: 4px 6px 4px 0;
+	border-radius: var(--radius);
+	font-size: 12px;
+	min-height: 22px;
+}
+.step.clickable > .step-head {
+	cursor: pointer;
+}
+.step.clickable > .step-head:hover {
+	background: var(--step-bg-hover);
+}
+
+.step-icon {
+	width: 14px;
+	height: 14px;
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--muted);
+}
+.step-icon svg {
+	width: 13px;
+	height: 13px;
+}
+.step.running .step-icon {
+	color: var(--accent);
+}
+
+/* 工具名用等宽字体，与散文正文形成对照 */
+.step-name {
+	font-family: var(--mono);
+	font-size: 11.5px;
+	color: var(--fg);
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+/* 主要参数就地预览，省去展开动作 */
+.step-arg {
+	font-family: var(--mono);
+	font-size: 11px;
+	color: var(--muted);
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	direction: rtl;
+	text-align: left;
+}
+
+.step-status {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	color: var(--muted);
+	width: 13px;
+	height: 13px;
+}
+.step-status .step-status-icon {
+	width: 12px;
+	height: 12px;
+}
+.step-status .step-status-icon.is-pending {
+	opacity: 0.5;
+}
+.step.running .step-status {
+	color: var(--accent);
+}
+.step.success .step-status {
+	color: var(--success);
+}
+.step.error .step-status {
+	color: var(--error);
+}
+
+.step-chevron {
+	width: 9px;
+	height: 9px;
+	flex-shrink: 0;
+	color: var(--muted);
+	opacity: 0;
+	transition: transform 0.2s, opacity 0.15s;
+}
+.step.clickable:hover .step-chevron,
+.step.clickable:focus-within .step-chevron {
+	opacity: 0.7;
+}
+.step.expanded .step-chevron {
+	opacity: 0.7;
+	transform: rotate(180deg);
+}
+
+/* 步骤详情 */
+.step-detail {
+	display: none;
+	margin: 2px 0 6px;
+	border-left: 1px solid var(--border);
+	padding-left: 10px;
+}
+.step.expanded .step-detail {
+	display: block;
+}
+
+.detail-label {
+	font-size: 9px;
+	font-weight: 600;
+	letter-spacing: var(--label-tracking);
+	text-transform: uppercase;
+	color: var(--muted);
+	margin-bottom: 3px;
+}
+.detail-block {
+	font-family: var(--mono);
+	font-size: 11px;
+	line-height: 1.55;
+	white-space: pre-wrap;
+	word-break: break-word;
+	background: var(--step-bg);
+	border-radius: 4px;
+	padding: 6px 8px;
+	max-height: 200px;
+	overflow: auto;
+	margin-bottom: 7px;
+}
+.detail-block:last-child {
+	margin-bottom: 0;
+}
+.detail-block.is-error {
+	color: var(--error);
+}
+
+/* ── 思考步骤 ── */
+.step.thought .step-body {
+	width: 100%;
+	min-width: 0;
+	font-size: 12px;
+	line-height: 1.6;
+	color: var(--muted);
+	padding: 1px 0 5px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	word-break: break-word;
+}
+
+/* ── 计划步骤 ── */
+.step.plan ol {
+	margin: 2px 0 6px;
+	padding-left: 18px;
+	font-size: 12px;
+	color: var(--fg);
+}
+.step.plan li {
+	margin: 2px 0;
+	line-height: 1.55;
+}
+
+/* ── Approval card ── */
+.approval-card {
+	background: var(--vscode-inputValidation-warningBackground, rgba(210, 153, 34, 0.08));
+	border: 1px solid var(--warning);
+	border-left-width: 3px;
+	border-radius: var(--radius-lg);
+	padding: 11px 12px;
+	margin: 4px 0 10px;
+	animation: rise 0.2s ease both;
+}
+.approval-card.resolving {
+	animation: fold 0.22s ease forwards;
+	pointer-events: none;
+	overflow: hidden;
+}
+@keyframes fold {
+	from {
+		opacity: 1;
+		transform: none;
+	}
+	to {
+		opacity: 0;
+		transform: translateY(-3px);
+	}
+}
+
+.approval-header {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	margin-bottom: 10px;
+}
+
+.approval-icon {
+	width: 20px;
+	height: 20px;
+	flex-shrink: 0;
+	color: var(--warning);
+	margin-top: 1px;
+}
+
+.approval-content {
+	flex: 1;
+	min-width: 0;
+}
+
+.approval-tool-name {
+	font-weight: 600;
+	font-size: 12px;
+	font-family: var(--mono);
+	margin-bottom: 5px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.approval-tool-name .step-icon {
+	color: var(--warning);
+}
+
+.approval-kicker {
+	font-family: var(--font);
+	font-size: 9px;
+	font-weight: 600;
+	letter-spacing: var(--label-tracking);
+	text-transform: uppercase;
+	color: var(--warning);
+	margin-left: auto;
+	flex-shrink: 0;
+}
+
+.approval-summary {
+	font-family: var(--mono);
+	font-size: 11px;
+	color: var(--fg);
+	line-height: 1.5;
+	margin-bottom: 6px;
+	white-space: pre-wrap;
+	word-break: break-word;
+	max-height: 96px;
+	overflow: hidden;
+	position: relative;
+}
+.approval-summary.clipped::after {
+	content: '';
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	height: 28px;
+	background: linear-gradient(transparent, var(--bg));
+}
+.approval-summary.open {
+	max-height: 340px;
+	overflow: auto;
+}
+.approval-summary.open::after {
+	display: none;
+}
+
+.approval-more {
+	font-size: 11px;
+	color: var(--accent);
+	cursor: pointer;
+	margin-bottom: 8px;
+	display: inline-block;
+	user-select: none;
+}
+.approval-more:hover {
+	text-decoration: underline;
+}
+
+.approval-file-path {
+	font-family: var(--mono);
+	font-size: 11px;
+	color: var(--accent);
+	background: var(--code-bg);
+	padding: 3px 6px;
+	border-radius: 3px;
+	display: inline-block;
+	word-break: break-all;
+}
+
+.approval-actions {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+
+.approval-btn {
+	padding: 5px 12px;
+	border-radius: var(--radius);
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+	border: 1px solid transparent;
+	font-family: var(--font);
+	transition: background 0.12s, border-color 0.12s, transform 0.1s;
+}
+.approval-btn:active {
+	transform: scale(0.97);
+}
+.approval-btn:focus-visible {
+	outline: 1px solid var(--focus);
+	outline-offset: 1px;
+}
+
+.approval-btn.allow {
+	background: var(--btn-bg);
+	color: var(--btn-fg);
+	border-color: var(--btn-bg);
+}
+.approval-btn.allow:hover {
+	background: var(--btn-hover);
+}
+
+.approval-btn.always {
+	background: transparent;
+	color: var(--btn-bg);
+	border-color: var(--btn-bg);
+}
+.approval-btn.always:hover {
+	background: color-mix(in srgb, var(--btn-bg) 10%, transparent);
+}
+
+.approval-btn.deny {
+	background: transparent;
+	color: var(--error);
+	border-color: var(--error);
+}
+.approval-btn.deny:hover {
+	background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+
+/* ── Diff card ── */
+.diff-card {
+	background: var(--code-bg);
+	border: 1px solid var(--border-light);
+	border-radius: var(--radius-lg);
+	margin: 8px 0;
+	overflow: hidden;
+}
+
+.diff-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	cursor: pointer;
+	user-select: none;
+	transition: background 0.12s;
+	background: var(--vscode-editor-background, #1e1e1e);
+}
+.diff-header:hover {
+	background: var(--hover-bg);
+}
+
+.diff-icon {
+	width: 16px;
+	height: 16px;
+	flex-shrink: 0;
+	color: var(--accent);
+}
+
+.diff-filename {
+	flex: 1;
+	font-family: var(--mono);
+	font-size: 12px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.diff-stats {
+	display: flex;
+	gap: 8px;
+	font-size: 11px;
+	font-family: var(--mono);
+	flex-shrink: 0;
+}
+.diff-additions {
+	color: var(--success);
+}
+.diff-deletions {
+	color: var(--error);
+}
+
+.diff-chevron {
+	width: 12px;
+	height: 12px;
+	flex-shrink: 0;
+	transition: transform 0.2s;
+	color: var(--muted);
+}
+.diff-card.expanded .diff-chevron {
+	transform: rotate(180deg);
+}
+
+.diff-body {
+	max-height: 0;
+	overflow: hidden;
+	transition: max-height 0.3s ease;
+}
+.diff-card.expanded .diff-body {
+	max-height: 500px;
+}
+
+.diff-content {
+	padding: 0;
+	overflow-x: auto;
+	font-family: var(--mono);
+	font-size: 11px;
+	line-height: 1.5;
+	border-top: 1px solid var(--border-light);
+}
+
+.diff-table {
+	width: 100%;
+	border-collapse: collapse;
+}
+.diff-table td {
+	padding: 1px 8px;
+	white-space: pre;
+	vertical-align: top;
+}
+.diff-line-num {
+	width: 36px;
+	text-align: right;
+	color: var(--muted);
+	user-select: none;
+	background: var(--vscode-editorGutter-background, transparent);
+	font-size: 10px;
+}
+.diff-line-content {
+	padding-left: 8px;
+}
+
+.diff-add {
+	background: var(--diff-add-line);
+}
+.diff-add .diff-line-content {
+	background: var(--diff-add-bg);
+}
+.diff-del {
+	background: var(--diff-del-line);
+}
+.diff-del .diff-line-content {
+	background: var(--diff-del-bg);
+}
+.diff-ctx {
+	color: var(--muted);
+}
+
+.diff-footer {
+	padding: 6px 10px;
+	border-top: 1px solid var(--border-light);
+	background: var(--vscode-editor-background, #1e1e1e);
+}
+.diff-footer a {
+	color: var(--accent);
+	font-size: 11px;
+	text-decoration: none;
+	cursor: pointer;
+}
+.diff-footer a:hover {
+	text-decoration: underline;
+}
+
+/* ── Error bar ── */
+#error {
+	padding: 6px 10px;
+	color: var(--error);
+	font-size: 11px;
+	flex-shrink: 0;
+	border-top: 1px solid transparent;
+	background: var(--vscode-inputValidation-errorBackground, transparent);
+}
+#error:not(:empty) {
+	border-color: var(--border);
+}
+#error:empty {
+	display: none;
+}
+
+/* ── Input area ── */
+#inputArea {
+	position: relative;
+	padding: 8px 10px 10px;
+	border-top: 1px solid var(--border);
+	flex-shrink: 0;
+	background: var(--bg);
+}
+
+#filePicker,
+#slashCommandPicker {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: calc(100% + 8px);
+	display: none;
+	overflow: hidden;
+	background: var(--vscode-quickInput-background, var(--vscode-editor-background, #252526));
+	border: 1px solid var(--vscode-widget-border, var(--border));
+	border-radius: 8px;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+	z-index: 110;
+	animation: picker-rise 0.12s ease-out both;
+}
+#filePicker.show,
+#slashCommandPicker.show {
+	display: block;
+}
+.file-picker-heading {
+	display: flex;
+	justify-content: space-between;
+	padding: 8px 10px 6px;
+	color: var(--muted);
+	font-size: 10px;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+.file-picker-hint {
+	opacity: 0.7;
+	text-transform: none;
+	letter-spacing: 0;
+}
+#filePickerList {
+	max-height: 220px;
+	overflow-y: auto;
+	padding: 0 4px 4px;
+}
+.file-option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	padding: 7px 8px;
+	border: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--fg);
+	cursor: pointer;
+	text-align: left;
+	font: inherit;
+	user-select: none;
+}
+.file-option:hover {
+	background: color-mix(in srgb, var(--vscode-list-activeSelectionBackground, var(--hover-bg)) 45%, transparent);
+}
+.file-option.active {
+	background: var(--vscode-list-activeSelectionBackground, var(--hover-bg));
+	color: var(--vscode-list-activeSelectionForeground, var(--fg));
+}
+.file-option-icon {
+	color: var(--muted);
+	flex: 0 0 auto;
+}
+.file-option-path {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12px;
+}
+.file-picker-empty {
+	padding: 12px 10px;
+	color: var(--muted);
+	font-size: 12px;
+}
+#slashCommandList {
+	max-height: 264px;
+	overflow-y: auto;
+	padding: 4px 4px 6px;
+}
+.slash-command-group-label {
+	padding: 7px 10px 3px;
+	color: var(--vscode-descriptionForeground, var(--muted));
+	font-size: 9px;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+.slash-command-option {
+	position: relative;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	min-height: 30px;
+	padding: 4px 10px;
+	border: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--fg);
+	cursor: pointer;
+	text-align: left;
+	font: inherit;
+	user-select: none;
+	transition: background 0.1s ease;
+}
+.slash-command-option:hover {
+	background: color-mix(in srgb, var(--vscode-quickInputList-focusBackground, var(--hover-bg)) 45%, transparent);
+}
+.slash-command-option.active {
+	color: var(--vscode-quickInputList-focusForeground, var(--fg));
+	background: var(--vscode-quickInputList-focusBackground, var(--hover-bg));
+}
+.slash-command-option.active::before {
+	content: '';
+	position: absolute;
+	left: 0;
+	top: 5px;
+	bottom: 5px;
+	width: 2px;
+	border-radius: 1px;
+	background: var(--accent);
+}
+.slash-command-icon {
+	display: grid;
+	place-items: center;
+	flex: 0 0 auto;
+	width: 18px;
+	height: 18px;
+	border-radius: 4px;
+	color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 10%, transparent);
+	font-family: var(--mono);
+	font-size: 11px;
+	font-weight: 700;
+}
+.slash-command-copy {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	min-width: 0;
+	flex: 1;
+}
+.slash-command-name {
+	font-family: var(--mono);
+	font-size: 12px;
+	font-weight: 600;
+	white-space: nowrap;
+}
+.slash-command-description {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--muted);
+	font-size: 11px;
+}
+.slash-command-key {
+	flex: 0 0 auto;
+	color: var(--muted);
+	font-size: 9px;
+}
+@keyframes picker-rise {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+#inputWrapper {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 8px;
+	background: var(--input-bg);
+	border: 1px solid var(--input-border);
+	border-radius: 10px;
+	padding: 8px 10px;
+	transition: border-color 0.15s, box-shadow 0.15s;
+}
+#inputWrapper:focus-within {
+	border-color: var(--focus);
+	box-shadow: 0 0 0 1px var(--focus);
+}
+
+.file-reference-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 5px;
+}
+.file-reference-list:empty {
+	display: none;
+}
+.file-reference-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	max-width: 100%;
+	height: 24px;
+	padding: 0 3px 0 5px;
+	border: 1px solid var(--border-light);
+	border-radius: 5px;
+	color: var(--input-fg);
+	background: var(--vscode-editor-background, #ffffff);
+	font: inherit;
+	transition: border-color 0.15s, background 0.15s;
+}
+.file-reference-chip:hover {
+	border-color: var(--input-border);
+	background: var(--hover-bg);
+}
+.file-reference-extension {
+	display: grid;
+	place-items: center;
+	flex: 0 0 auto;
+	min-width: 17px;
+	height: 16px;
+	padding: 0 2px;
+	border-radius: 3px;
+	color: var(--vscode-editor-background, #ffffff);
+	background: var(--accent);
+	font-family: var(--mono);
+	font-size: 8px;
+	font-weight: 700;
+	line-height: 1;
+	text-transform: uppercase;
+}
+.file-reference-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 11px;
+	line-height: 1;
+}
+.file-reference-remove {
+	display: grid;
+	place-items: center;
+	flex: 0 0 auto;
+	width: 16px;
+	height: 16px;
+	margin-left: 1px;
+	padding: 0;
+	border: 0;
+	border-radius: 3px;
+	color: var(--muted);
+	background: transparent;
+	cursor: pointer;
+	font-family: var(--font);
+	font-size: 14px;
+	line-height: 1;
+	transition: color 0.15s, background 0.15s;
+}
+.file-reference-remove:hover {
+	color: var(--error);
+	background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+.file-reference-remove:focus-visible {
+	outline: 1px solid var(--focus);
+	outline-offset: 1px;
+}
+
+/* Skill 引用块：选中 skill 命令后在对话框生成，带入场动画 */
+.skill-reference-list {
+	margin-bottom: 2px;
+}
+.skill-reference-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	max-width: 100%;
+	height: 24px;
+	padding: 0 3px 0 5px;
+	border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+	border-radius: 5px;
+	color: var(--input-fg);
+	background: color-mix(in srgb, var(--accent) 8%, var(--vscode-editor-background, #ffffff));
+	font: inherit;
+	animation: chip-pop 0.18s ease-out;
+	transition: border-color 0.15s, background 0.15s;
+}
+.skill-reference-chip:hover {
+	border-color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 14%, var(--vscode-editor-background, #ffffff));
+}
+.skill-reference-prefix {
+	display: grid;
+	place-items: center;
+	flex: 0 0 auto;
+	min-width: 17px;
+	height: 16px;
+	padding: 0 2px;
+	border-radius: 3px;
+	color: #ffffff;
+	background: var(--accent);
+	font-family: var(--mono);
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1;
+}
+.skill-reference-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--mono);
+	font-size: 11px;
+	line-height: 1;
+}
+@keyframes chip-pop {
+	from {
+		opacity: 0;
+		transform: scale(0.85) translateY(2px);
+	}
+	to {
+		opacity: 1;
+		transform: scale(1) translateY(0);
+	}
+}
+
+#input {
+	flex: 1;
+	width: 100%;
+	background: transparent;
+	color: var(--input-fg);
+	border: none;
+	padding: 3px 0;
+	font-family: var(--font);
+	font-size: 13px;
+	line-height: 1.5;
+	resize: none;
+	min-height: 22px;
+	max-height: 120px;
+	outline: none;
+}
+#input::placeholder {
+	color: var(--input-placeholder);
+}
+#input:disabled {
+	cursor: not-allowed;
+	opacity: 0.5;
+}
+
+/* ── Input toolbar ── */
+.input-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 8px 2px 0;
+	gap: 6px;
+}
+.toolbar-left,
+.toolbar-right {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.open-file-btn {
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	border: 1px solid transparent;
+	color: var(--muted);
+	transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s;
+}
+.open-file-btn:hover:not(:disabled) {
+	color: var(--fg);
+	background: var(--hover-bg);
+	border-color: var(--border-light);
+}
+.open-file-btn:active:not(:disabled) {
+	transform: scale(0.92);
+}
+.open-file-btn:focus-visible {
+	outline: 1px solid var(--focus);
+	outline-offset: 1px;
+}
+.open-file-btn svg {
+	width: 15px;
+	height: 15px;
+}
+
+.chevron {
+	width: 12px;
+	height: 12px;
+	flex-shrink: 0;
+	transition: transform 0.2s;
+	color: var(--muted);
+}
+
+#sendBtn,
+#stopBtn {
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	border-radius: 6px;
+	flex-shrink: 0;
+}
+
+.session-actions {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	flex-shrink: 0;
+}
+.session-actions .btn-icon {
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	color: var(--muted);
+}
+.session-actions .btn-icon:hover:not(:disabled) {
+	color: var(--fg);
+}
+
+/* ── History dropdown ── */
+.history-dropdown {
+	position: absolute;
+	top: calc(100% - 4px);
+	right: 8px;
+	width: 320px;
+	max-width: calc(100vw - 20px);
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+	z-index: 50;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+.history-dropdown[hidden] {
+	display: none;
+}
+.history-dropdown-header {
+	padding: 8px 12px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--muted);
+	border-bottom: 1px solid var(--border);
+	flex-shrink: 0;
+}
+.history-list {
+	overflow-y: auto;
+	max-height: 55vh;
+}
+.history-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	cursor: pointer;
+}
+.history-item:hover {
+	background: var(--hover-bg);
+}
+.history-item.active .history-item-title {
+	color: var(--accent);
+}
+.history-item-main {
+	flex: 1;
+	min-width: 0;
+}
+.history-item-title {
+	font-size: 13px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.history-item-meta {
+	font-size: 11px;
+	color: var(--muted);
+}
+.history-item-del {
+	flex-shrink: 0;
+	width: 22px;
+	height: 22px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: transparent;
+	border: none;
+	border-radius: 4px;
+	color: var(--muted);
+	cursor: pointer;
+	padding: 0;
+}
+.history-item-del:hover {
+	color: var(--error);
+	background: var(--hover-bg);
+}
+.history-empty {
+	padding: 16px 12px;
+	text-align: center;
+	color: var(--muted);
+	font-size: 12px;
+}
+
+#hint {
+	text-align: center;
+	font-size: 10px;
+	color: var(--muted);
+	margin-top: 5px;
+	opacity: 0.7;
+}
+
+/* ── Message action bar ── */
+.msg-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 2px;
+	margin-top: 6px;
+	opacity: 0;
+	transition: opacity 0.15s ease;
+}
+.msg-row:hover .msg-actions,
+.msg-row:focus-within .msg-actions {
+	opacity: 1;
+}
+
+.msg-action-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	height: 26px;
+	padding: 0 8px;
+	border: none;
+	background: transparent;
+	color: var(--muted);
+	border-radius: 6px;
+	cursor: pointer;
+	font-family: var(--font);
+	font-size: 11px;
+	transition: all 0.12s ease;
+}
+.msg-action-btn:hover:not(:disabled) {
+	background: var(--hover-bg);
+	color: var(--fg);
+}
+.msg-action-btn:active:not(:disabled) {
+	transform: scale(0.95);
+}
+.msg-action-btn:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+.msg-action-btn svg {
+	width: 14px;
+	height: 14px;
+	flex-shrink: 0;
+}
+.msg-action-btn.liked {
+	color: var(--accent);
+}
+.msg-action-btn.liked svg {
+	fill: currentColor;
+}
+
+/* ── User message hover state ── */
+.msg-row.user-row .message.user {
+	transition: border-color 0.15s, background 0.15s;
+}
+.msg-row.user-row:hover .message.user {
+	border-color: var(--input-border);
+	background: var(--hover-bg);
+}
+
+/* ── Delete action button ── */
+.msg-action-btn.delete-btn:hover:not(:disabled) {
+	color: var(--error);
+	background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+
+.token-usage {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 0 8px;
+	font-family: var(--mono);
+	font-size: 10px;
+	color: var(--muted);
+	user-select: none;
+}
+.token-usage svg {
+	width: 12px;
+	height: 12px;
+	opacity: 0.7;
+	flex-shrink: 0;
+}
+
+/* ── Session-level token usage bar ── */
+#sessionTokenBar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 12px;
+	padding: 6px 14px;
+	font-size: 11px;
+	color: var(--muted);
+	border-bottom: 1px solid var(--border, rgba(128, 128, 128, 0.15));
+	background: color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 97%, var(--accent) 3%);
+	user-select: none;
+}
+#sessionTokenBar .stb-total {
+	font-family: var(--mono);
+	font-weight: 600;
+	color: var(--accent);
+}
+#sessionTokenBar .stb-items {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 10px;
+	font-family: var(--mono);
+	font-size: 10px;
+}
+#sessionTokenBar .stb-item .stb-label {
+	opacity: 0.75;
+}
+#sessionTokenBar .stb-item .stb-val {
+	color: var(--fg, inherit);
+}
+#sessionTokenBar .stb-item .stb-approx {
+	opacity: 0.55;
+}

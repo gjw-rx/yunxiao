@@ -27,6 +27,7 @@
         "docs",
         "node_modules",
         "out",
-        "vsix"
+        "vsix",
+        "src/webview-ui"
     ]
 }

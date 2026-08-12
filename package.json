@@ -332,30 +332,44 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "compile": "npm run check-types && npm run check-types:webview && npm run lint && npm run build:host && npm run build:webview",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "package": "npm run check-types && npm run check-types:webview && npm run lint && node esbuild.js --production && vite build --config src/webview-ui/vite.config.ts",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "check-types:webview": "tsc --noEmit -p src/webview-ui/tsconfig.json",
+    "build:host": "node esbuild.js",
+    "build:webview": "vite build --config src/webview-ui/vite.config.ts",
+    "watch:webview": "vite build --watch --config src/webview-ui/vite.config.ts",
+    "watch:webview-tsc": "tsc --noEmit --watch -p src/webview-ui/tsconfig.json",
+    "test:webview": "vitest run --config src/webview-ui/vite.config.ts"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.0.0",
+    "@testing-library/react": "^16.0.0",
     "@types/marked": "^5.0.2",
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
     "@types/vscode": "^1.99.0",
+    "@vitejs/plugin-react": "^5.0.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
     "esbuild": "^0.28.1",
     "eslint": "^10.5.0",
+    "jsdom": "^26.0.0",
     "npm-run-all": "^4.1.5",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.61.1"
+    "typescript-eslint": "^8.61.1",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.0"
   },
   "overrides": {
     "diff": "^8.0.4",
@@ -366,6 +380,8 @@
     "ai": "6.0.248",
     "diff": "^8.0.4",
     "marked": "^18.0.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "simple-git": "^3.27.0",
     "zod": "4.4.3"
   }
