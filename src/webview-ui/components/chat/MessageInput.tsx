@@ -205,6 +205,10 @@ export function MessageInput({
 			post({ command: 'switchModel' });
 			return;
 		}
+		if (command.action === 'compactContext') {
+			if (currentSessionId) post({ command: 'compactContext', sessionId: currentSessionId });
+			return;
+		}
 		// skill 命令：加入对话框引用块（chip），由用户确认后发送
 		if (command.id && command.id.indexOf('skill.') === 0) {
 			if (token) {

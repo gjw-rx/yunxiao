@@ -22,7 +22,7 @@ import { buildSystemPrompt } from './systemPrompt';
 import { loadProjectRules } from './projectRules';
 import { loadTraeRules } from './traeRules';
 import type { SyncSource } from '../config/syncConfig';
-import type { CompactionConfig } from './compaction';
+import type { CompactionConfig, CompactionResult } from './compaction';
 import { compactIfNeeded } from './compaction';
 import { estimateText, estimateRequest } from './tokenEstimator';
 import type { TokenUsageSnapshot } from '../memory/types';
@@ -102,6 +102,7 @@ const MAX_PARALLEL_TOOLS = 3;
 
 export class AgentLoop {
 	private abortController: AbortController | null = null;
+	private activeSessionId: string | null = null;
 
 	private provider: LLMProvider;
 	private config: AgentLoopConfig;
@@ -124,8 +125,14 @@ export class AgentLoop {
 	 *
 	 * @param partial 需要更新的模型相关配置字段
 	 */
-	updateModelConfig(partial: Pick<AgentLoopConfig, 'model' | 'providerId' | 'temperature' | 'maxTokens'>): void {
-		this.config = { ...this.config, ...partial };
+	updateModelConfig(partial: Pick<AgentLoopConfig, 'model' | 'providerId' | 'temperature' | 'maxTokens'> & { readonly maxContextTokens?: number }): void {
+		this.config = {
+			...this.config,
+			...partial,
+			...(partial.maxContextTokens !== undefined && this.config.compaction
+				? { compaction: { ...this.config.compaction, maxContextTokens: partial.maxContextTokens, maxOutputTokens: partial.maxTokens } }
+				: {}),
+		};
 		logger.log(`[AgentLoop] 模型配置已更新（后续运行生效）model=${partial.model}`);
 	}
 
@@ -143,6 +150,7 @@ export class AgentLoop {
 	/** 主循环入口：追加用户消息，进入 Agent Loop。 */
 	async run(sessionId: string, userText: string): Promise<void> {
 		this.abortController = new AbortController();
+		this.activeSessionId = sessionId;
 		const { signal } = this.abortController;
 		// 本次运行固定使用启动时的 provider 快照：保存模型配置仅影响后续新运行，不中途切换进行中的流
 		const runProvider = this.provider;
@@ -169,14 +177,6 @@ export class AgentLoop {
 				}
 
 				// ── 1. 上下文压缩检查（每轮开始前）──
-				if (this.config.compaction?.enabled) {
-					const allMessages = this.messageStore.loadHistory(sessionId);
-					await compactIfNeeded(
-						sessionId, allMessages, runProvider, this.config.model,
-						this.config.compaction, this.messageStore, this.eventBus,
-					);
-				}
-
 				// ── 2. 加载完整历史（每轮重新加载，确保模型看到完整上下文）──
 				const history = loadHistoryForLLM(sessionId, this.messageStore);
 
@@ -219,6 +219,25 @@ export class AgentLoop {
 
 				// ── 6. 物化工具定义 ──
 				const tools = toolSchemasToDefinitions(this.toolRegistry.list());
+				if (this.config.compaction) {
+					const requestTokens = estimateRequest(
+						systemPrompt,
+						messages,
+						toolChoice === 'none' ? undefined : tools,
+					);
+					const compaction = await compactIfNeeded(
+						sessionId,
+						runProvider,
+						this.config.model,
+						this.config.compaction,
+						this.messageStore,
+						this.eventBus,
+						{ reason: 'automatic', requestTokens },
+					);
+					if (compaction.status === 'compacted') {
+						continue;
+					}
+				}
 
 				// ── 7. 构建 LLM 请求并调用 ──
 				const request: LLMRequest = {
@@ -296,14 +315,18 @@ export class AgentLoop {
 					logger.notifyError('[AgentLoop] LLM 返回错误', { step, errorMessage: streamResult.errorMessage, sessionId });
 					// Context overflow 恢复
 					const isOverflow = /context_length|maximum context|too many tokens|token limit/i.test(streamResult.errorMessage);
-					if (isOverflow && !streamResult.textContent && this.config.compaction?.enabled) {
+					if (isOverflow && !streamResult.textContent && this.config.compaction) {
 						logger.log('[AgentLoop] 检测到上下文溢出，尝试压缩后重试');
-						const allMessages = this.messageStore.loadHistory(sessionId);
 						const compacted = await compactIfNeeded(
-							sessionId, allMessages, runProvider, this.config.model,
-							this.config.compaction, this.messageStore, this.eventBus,
+							sessionId,
+							runProvider,
+							this.config.model,
+							this.config.compaction,
+							this.messageStore,
+							this.eventBus,
+							{ reason: 'overflow', requestTokens: estimateRequest(systemPrompt, messages, tools) },
 						);
-						if (compacted) {
+						if (compacted.status === 'compacted') {
 							continue;
 						}
 					}
@@ -381,14 +404,6 @@ export class AgentLoop {
 				}
 
 				// ── 12. 工具执行后额外检查 compaction ──
-				if (this.config.compaction?.enabled) {
-					const postToolMessages = this.messageStore.loadHistory(sessionId);
-					await compactIfNeeded(
-						sessionId, postToolMessages, runProvider, this.config.model,
-						this.config.compaction, this.messageStore, this.eventBus,
-					);
-				}
-
 				step++;
 			}
 
@@ -408,7 +423,55 @@ export class AgentLoop {
 			this.emitSessionTokenUsage(sessionId, baseTotal);
 			this.emitRunStateChange(sessionId, 'failed', msg);
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
+		} finally {
+			if (this.activeSessionId === sessionId) {
+				this.activeSessionId = null;
+				this.abortController = null;
+			}
 		}
+	}
+
+	/**
+	 * 判断指定会话是否正在执行 AgentLoop。
+	 * @param sessionId 会话 ID。
+	 * @returns 是否正在运行。
+	 */
+	isRunning(sessionId: string): boolean {
+		return this.activeSessionId === sessionId;
+	}
+
+	/**
+	 * 手动压缩空闲会话的上下文。
+	 * @param sessionId 会话 ID。
+	 * @returns 压缩执行结果。
+	 */
+	async compactContext(sessionId: string): Promise<CompactionResult> {
+		if (this.isRunning(sessionId)) {
+			logger.log(`[AgentLoop] 拒绝手动压缩 sessionId=${sessionId} 原因=会话正在运行`);
+			throw new Error('当前会话正在生成，暂不能压缩上下文');
+		}
+		if (!this.config.compaction) {
+			throw new Error('上下文压缩未配置');
+		}
+		return compactIfNeeded(
+			sessionId,
+			this.provider,
+			this.config.model,
+			this.config.compaction,
+			this.messageStore,
+			this.eventBus,
+			{ reason: 'manual', requestTokens: 0 },
+		);
+	}
+
+	/**
+	 * 更新后续请求使用的自动压缩策略。
+	 * @param compaction 压缩策略配置。
+	 * @returns 无返回值。
+	 */
+	updateCompactionConfig(compaction: CompactionConfig): void {
+		this.config = { ...this.config, compaction };
+		logger.log(`[AgentLoop] 上下文压缩配置已更新 autoEnabled=${compaction.autoEnabled} triggerPercent=${compaction.triggerPercent} tailPercent=${compaction.tailPercent}`);
 	}
 
 	/** 中断当前正在执行的 Agent Loop。 */

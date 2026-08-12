@@ -17,6 +17,14 @@ export interface WorkspaceState {
 const STATE_KEY = 'yunxiaoAgent.messages';
 const MAX_MESSAGES = 1000;
 
+/** 最新压缩检查点表示的有效会话上下文。 */
+export interface EffectiveHistory {
+	/** 最新检查点摘要；未压缩时为 null。 */
+	readonly summary: string | null;
+	/** 应参与下一次请求或下一次压缩的原始消息。 */
+	readonly messages: Message[];
+}
+
 export class MessageStore {
 	private readonly store = new Map<string, Message[]>();
 	private readonly state?: WorkspaceState;
@@ -95,6 +103,25 @@ export class MessageStore {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * 从最新压缩检查点恢复有效历史，不改写 append-only 的物理消息记录。
+	 * @param sessionId 会话 ID。
+	 * @returns 当前生效的摘要和原始消息。
+	 */
+	getEffectiveHistory(sessionId: string): EffectiveHistory {
+		const checkpoint = this.getCompactionPoint(sessionId);
+		const allMessages = this.loadHistory(sessionId);
+		if (!checkpoint) {
+			return { summary: null, messages: allMessages };
+		}
+		const messages = [
+			...checkpoint.recentContext,
+			...allMessages.filter((message) => message.seq > checkpoint.seq),
+		];
+		logger.log(`[MessageStore] 加载有效历史 sessionId=${sessionId} checkpointSeq=${checkpoint.seq} 消息数=${messages.length}`);
+		return { summary: checkpoint.summary, messages };
 	}
 
 	/** 清空 session 消息并持久化。 */

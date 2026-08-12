@@ -29,6 +29,8 @@ export interface ModelSettingsInput {
 	readonly temperature: number;
 	/** 最大输出 token 数（>=1）。 */
 	readonly maxTokens: number;
+	/** 模型最大上下文 token 数。 */
+	readonly maxContextTokens?: number;
 	/** 模型运行时选择。 */
 	readonly runtime?: ModelRuntime;
 	/** 可选的新 API Key：非空才更新 SecretStorage。 */
@@ -49,6 +51,8 @@ export interface ModelProfileView {
 	readonly temperature: number;
 	/** 最大输出 token 数。 */
 	readonly maxTokens: number;
+	/** 模型最大上下文 token 数。 */
+	readonly maxContextTokens: number;
 	/** 模型运行时选择。 */
 	readonly runtime: ModelRuntime;
 	/** 是否可作为默认模型使用。 */
@@ -75,6 +79,8 @@ export interface ModelSettingsView {
 	readonly temperature: number;
 	/** 最大输出 token 数。 */
 	readonly maxTokens: number;
+	/** 模型最大上下文 token 数。 */
+	readonly maxContextTokens: number;
 	/** 模型运行时选择。 */
 	readonly runtime?: ModelRuntime;
 	/** API Key 是否已配置（不含密钥明文）。 */
@@ -93,6 +99,8 @@ const TEMPERATURE_MIN = 0;
 const TEMPERATURE_MAX = 2;
 const MAX_TOKENS_MIN = 1;
 const MAX_TOKENS_MAX = 128_000;
+const MAX_CONTEXT_TOKENS_MIN = 1_024;
+const MAX_CONTEXT_TOKENS_MAX = 10_000_000;
 const SUPPORTED_PROVIDERS: readonly string[] = ['openai'];
 
 /** 旧版 globalState 持久化结构。 */
@@ -102,6 +110,7 @@ interface LegacyStoredModelFields {
 	readonly baseURL?: string;
 	readonly temperature?: number;
 	readonly maxTokens?: number;
+	readonly maxContextTokens?: number;
 	readonly runtime?: unknown;
 }
 
@@ -113,6 +122,7 @@ interface StoredModelProfile extends LegacyStoredModelFields {
 	readonly baseURL: string;
 	readonly temperature: number;
 	readonly maxTokens: number;
+	readonly maxContextTokens: number;
 	readonly runtime: ModelRuntime;
 	readonly enabled: boolean;
 }
@@ -143,6 +153,9 @@ export function validateModelSettings(input: ModelSettingsInput): string | null 
 	}
 	if (typeof input.temperature !== 'number' || Number.isNaN(input.temperature) || input.temperature < TEMPERATURE_MIN || input.temperature > TEMPERATURE_MAX) {return `温度参数需在 ${TEMPERATURE_MIN}-${TEMPERATURE_MAX} 之间`;}
 	if (typeof input.maxTokens !== 'number' || Number.isNaN(input.maxTokens) || input.maxTokens < MAX_TOKENS_MIN || input.maxTokens > MAX_TOKENS_MAX) {return `最大输出 token 数需在 ${MAX_TOKENS_MIN}-${MAX_TOKENS_MAX} 之间`;}
+	const maxContextTokens = input.maxContextTokens ?? DEFAULT_MODEL_CONFIG.maxContextTokens;
+	if (typeof maxContextTokens !== 'number' || Number.isNaN(maxContextTokens) || maxContextTokens < MAX_CONTEXT_TOKENS_MIN || maxContextTokens > MAX_CONTEXT_TOKENS_MAX) {return `最大上下文 token 数需在 ${MAX_CONTEXT_TOKENS_MIN}-${MAX_CONTEXT_TOKENS_MAX} 之间`;}
+	if (input.maxTokens >= maxContextTokens) {return '最大输出 token 数必须小于最大上下文 token 数';}
 	return null;
 }
 
@@ -197,6 +210,7 @@ export class ModelConfigStore {
 			baseURL: selected?.baseURL ?? DEFAULT_MODEL_CONFIG.baseURL,
 			temperature: selected?.temperature ?? DEFAULT_MODEL_CONFIG.temperature,
 			maxTokens: selected?.maxTokens ?? DEFAULT_MODEL_CONFIG.maxTokens,
+			maxContextTokens: selected?.maxContextTokens ?? DEFAULT_MODEL_CONFIG.maxContextTokens,
 			runtime: selected?.runtime ?? DEFAULT_MODEL_CONFIG.runtime,
 			apiKeyConfigured: selected ? Boolean(await this.context.secrets.get(this._apiKeySecretKey(selected.id))) : false,
 		};
@@ -225,6 +239,7 @@ export class ModelConfigStore {
 			baseURL: input.baseURL || DEFAULT_MODEL_CONFIG.baseURL,
 			temperature: input.temperature,
 			maxTokens: input.maxTokens,
+			maxContextTokens: input.maxContextTokens ?? DEFAULT_MODEL_CONFIG.maxContextTokens ?? 262144,
 			runtime: normalizeRuntime(input.runtime),
 			enabled: existing?.enabled ?? true,
 		};
@@ -296,7 +311,17 @@ export class ModelConfigStore {
 		try {
 			const raw = await fs.readFile(this._filePath, 'utf8');
 			const parsed = JSON.parse(raw) as StoredModelDocument;
-			if (parsed.version === 1 && Array.isArray(parsed.models)) {return parsed;}
+			if (parsed.version === 1 && Array.isArray(parsed.models)) {
+				return {
+					...parsed,
+					models: parsed.models.map((profile) => ({
+						...profile,
+						maxContextTokens: typeof profile.maxContextTokens === 'number'
+							? profile.maxContextTokens
+							: DEFAULT_MODEL_CONFIG.maxContextTokens,
+					})),
+				};
+			}
 			throw new Error('格式不受支持');
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {logger.error(`[ModelConfigStore] 读取模型配置失败 path=${this._filePath}: ${error instanceof Error ? error.message : String(error)}`);}
@@ -317,6 +342,7 @@ export class ModelConfigStore {
 			id, provider: legacy.provider || DEFAULT_MODEL_CONFIG.provider, model: legacy.model.trim(), baseURL: legacy.baseURL || DEFAULT_MODEL_CONFIG.baseURL,
 			temperature: typeof legacy.temperature === 'number' ? legacy.temperature : DEFAULT_MODEL_CONFIG.temperature,
 			maxTokens: typeof legacy.maxTokens === 'number' ? legacy.maxTokens : DEFAULT_MODEL_CONFIG.maxTokens,
+			maxContextTokens: typeof legacy.maxContextTokens === 'number' ? legacy.maxContextTokens : DEFAULT_MODEL_CONFIG.maxContextTokens ?? 262144,
 			runtime: normalizeRuntime(legacy.runtime), enabled: true,
 		};
 		const document: StoredModelDocument = { version: 1, defaultModelId: id, models: [profile] };
@@ -367,6 +393,6 @@ export class ModelConfigStore {
 	 * @returns 完整模型配置
 	 */
 	private _toModelConfig(profile: StoredModelProfile, apiKey: string): ModelConfig {
-		return { provider: profile.provider, model: profile.model, apiKey, baseURL: profile.baseURL, temperature: profile.temperature, maxTokens: profile.maxTokens, runtime: profile.runtime };
+		return { provider: profile.provider, model: profile.model, apiKey, baseURL: profile.baseURL, temperature: profile.temperature, maxTokens: profile.maxTokens, maxContextTokens: profile.maxContextTokens ?? DEFAULT_MODEL_CONFIG.maxContextTokens, runtime: profile.runtime };
 	}
 }

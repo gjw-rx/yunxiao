@@ -9,6 +9,7 @@ import type { AgentLoop } from '../agent/agentLoop';
 import type { MessageStore } from '../memory/messageStore';
 import type { SessionMeta } from '../memory/sessionFileStore';
 import type { Message } from '../memory/types';
+import type { CompactionResult } from '../agent/compaction';
 import * as logger from '../logger';
 
 /** 前端期望的历史消息格式。 */
@@ -56,6 +57,16 @@ export class LocalSessionManager {
 	cancel(sessionId: string): void {
 		logger.log(`[SessionManager] 取消会话 sessionId=${sessionId}`);
 		this.agentLoop.cancel();
+	}
+
+	/**
+	 * 手动压缩指定会话的上下文。
+	 * @param sessionId 会话 ID。
+	 * @returns 压缩执行结果。
+	 */
+	async compactContext(sessionId: string): Promise<CompactionResult> {
+		logger.log(`[SessionManager] 请求手动压缩 sessionId=${sessionId}`);
+		return this.agentLoop.compactContext(sessionId);
 	}
 
 	/** 加载会话历史，从 MessageStore 读取并转换为前端格式。 */

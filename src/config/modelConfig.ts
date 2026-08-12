@@ -27,6 +27,8 @@ export interface ModelConfig {
 	readonly temperature: number;
 	/** 最大输出 token 数 */
 	readonly maxTokens: number;
+	/** 模型最大上下文 token 数。 */
+	readonly maxContextTokens?: number;
 	/** 模型运行时选择（迁移期开关，缺省为 ai-sdk） */
 	readonly runtime?: ModelRuntime;
 }
@@ -39,6 +41,7 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
 	baseURL: 'https://api.openai.com/v1',
 	temperature: 0.7,
 	maxTokens: 4096,
+	maxContextTokens: 262144,
 	runtime: 'ai-sdk',
 };
 

@@ -35,7 +35,10 @@ export function estimateRequest(
 	messages: LLMMessage[],
 	tools?: ToolDefinition[],
 ): number {
-	let total = estimateText(systemPrompt);
+	const systemPromptAlreadyIncluded = messages.some(
+		(message) => message.role === 'system' && message.content === systemPrompt,
+	);
+	let total = systemPromptAlreadyIncluded ? 0 : estimateText(systemPrompt);
 	for (const msg of messages) {
 		total += estimateText(getLLMMessageText(msg));
 	}

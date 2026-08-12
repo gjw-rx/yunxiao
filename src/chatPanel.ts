@@ -649,6 +649,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const skills = Array.isArray(msg.skills)
           ? (msg.skills as string[])
           : [];
+		if (userText.trim() === '/compact' && files.length === 0 && skills.length === 0) {
+			try {
+				const result = await this._sessionManager.compactContext(sessionId);
+				const message = result.status === 'compacted'
+					? '上下文压缩完成'
+					: result.status === 'skipped'
+						? '当前没有可压缩的上下文'
+						: `上下文压缩失败：${result.error ?? '未知错误'}`;
+				logger.log(`[ChatPanel] /compact 完成 sessionId=${sessionId} status=${result.status}`);
+				void vscode.window.showInformationMessage(message);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				logger.error(`[ChatPanel] /compact 失败 sessionId=${sessionId} error=${message}`);
+				void vscode.window.showWarningMessage(message);
+			}
+			break;
+		}
         let text = userText;
         // 已选 Skill 引用块转成斜杠命令文本（如 /plan），前置到用户消息
         if (skills.length > 0) {
@@ -669,6 +686,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._sessionManager.cancel(sessionId);
         break;
       }
+		case 'compactContext': {
+			try {
+				const result = await this._sessionManager.compactContext(msg.sessionId as string);
+				const message = result.status === 'compacted'
+					? '上下文压缩完成'
+					: result.status === 'skipped'
+						? '当前没有可压缩的上下文'
+						: `上下文压缩失败：${result.error ?? '未知错误'}`;
+				logger.log(`[ChatPanel] 手动压缩完成 sessionId=${msg.sessionId} status=${result.status}`);
+				void vscode.window.showInformationMessage(message);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				logger.error(`[ChatPanel] 手动压缩失败 sessionId=${msg.sessionId} error=${message}`);
+				void vscode.window.showWarningMessage(message);
+			}
+			break;
+		}
       case 'switchModel': {
         // /model 命令：QuickPick 选择已启用模型并切换当前默认模型（复用设置页「设为默认」链路：持久化 + 重建 Provider）
         const deps = this._settingsDeps;

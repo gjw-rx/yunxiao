@@ -232,22 +232,26 @@
           "description": "自定义 Agent 系统提示词（留空使用默认）",
           "scope": "window"
         },
-        "yunxiaoAgent.compaction.enabled": {
+        "yunxiaoAgent.compaction.autoEnabled": {
           "type": "boolean",
           "default": true,
           "description": "是否启用上下文自动压缩",
           "scope": "window"
         },
-        "yunxiaoAgent.compaction.keepTokens": {
+        "yunxiaoAgent.compaction.triggerPercent": {
           "type": "number",
-          "default": 8000,
-          "description": "压缩时保留的近期 token 数",
+          "default": 75,
+          "minimum": 1,
+          "maximum": 99,
+          "description": "完整请求达到模型可用上下文的该比例时自动压缩",
           "scope": "window"
         },
-        "yunxiaoAgent.compaction.buffer": {
+        "yunxiaoAgent.compaction.tailPercent": {
           "type": "number",
-          "default": 20000,
-          "description": "触发压缩的 buffer token 数",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 99,
+          "description": "压缩后以原文保留的近期上下文比例",
           "scope": "window"
         }
       }

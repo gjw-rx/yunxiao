@@ -278,14 +278,16 @@ async function _activate(context: vscode.ExtensionContext) {
 	}
 	let llmProvider = createProvider(modelConfig);
 
-	// 上下文压缩配置（参考 opencode: keepTokens=8000, buffer=20000, 但调大以避免频繁压缩）
-	const compactionConfig: CompactionConfig = {
-		enabled: config.get<boolean>('compaction.enabled', true),
-		keepTokens: config.get<number>('compaction.keepTokens', 24000),
-		buffer: config.get<number>('compaction.buffer', 30000),
-		contextWindow: 128000,
-		messageThreshold: config.get<number>('compaction.messageThreshold', 40),
-	};
+	// 上下文压缩配置：模型能力来自模型档案，自动策略来自原生 VSCode Settings。
+	/** 根据当前模型和原生 VSCode Settings 读取压缩配置。 @param currentModel 当前模型配置。 @returns 压缩配置。 */
+	const createCompactionConfig = (currentModel: ModelConfig): CompactionConfig => ({
+		autoEnabled: config.get<boolean>('compaction.autoEnabled', true),
+		triggerPercent: config.get<number>('compaction.triggerPercent', 75),
+		tailPercent: config.get<number>('compaction.tailPercent', 20),
+		maxContextTokens: currentModel.maxContextTokens ?? 262144,
+		maxOutputTokens: currentModel.maxTokens,
+	});
+	const compactionConfig = createCompactionConfig(modelConfig);
 
 	// Agent Loop
 	const agentLoop = new AgentLoop(
@@ -335,10 +337,19 @@ async function _activate(context: vscode.ExtensionContext) {
 			providerId: config.provider,
 			temperature: config.temperature,
 			maxTokens: config.maxTokens,
+			maxContextTokens: config.maxContextTokens ?? 262144,
 		});
 		provider.refreshModelInfo();
 		logger.log('[Extension] 模型配置已保存并更新后续运行（进行中的会话不受影响）');
 	};
+
+	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
+		if (!event.affectsConfiguration('yunxiaoAgent.compaction')) {
+			return;
+		}
+		agentLoop.updateCompactionConfig(createCompactionConfig(modelConfig));
+		logger.log('[Extension] 已应用 VSCode 原生上下文压缩设置变更');
+	}));
 
 	// 设置面板依赖注入：模型存储、配置来源读写、Skill 安装（成功后重新同步并刷新斜杠菜单）
 	provider.setSettingsDeps({

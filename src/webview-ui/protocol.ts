@@ -28,6 +28,8 @@ export interface ModelSettingsView {
 	readonly temperature: number;
 	/** 最大输出 token 数 */
 	readonly maxTokens: number;
+	/** 模型最大上下文 token 数。 */
+	readonly maxContextTokens?: number;
 	/** 模型运行时选择（迁移期开关） */
 	readonly runtime?: 'ai-sdk' | 'legacy';
 	/** API Key 是否已配置（不含密钥明文） */
@@ -48,6 +50,8 @@ export interface ModelProfileView {
 	readonly temperature: number;
 	/** 最大输出 token 数。 */
 	readonly maxTokens: number;
+	/** 模型最大上下文 token 数。 */
+	readonly maxContextTokens?: number;
 	/** 模型运行时选择。 */
 	readonly runtime: 'ai-sdk' | 'legacy';
 	/** 是否启用。 */
@@ -84,6 +88,8 @@ export interface ModelSettingsInput {
 	readonly temperature: number;
 	/** 最大输出 token 数 */
 	readonly maxTokens: number;
+	/** 模型最大上下文 token 数。 */
+	readonly maxContextTokens: number;
 	/** 模型运行时选择 */
 	readonly runtime?: 'ai-sdk' | 'legacy';
 	/** 可选的新 API Key（非空才更新） */
@@ -113,7 +119,7 @@ export interface SlashCommand {
 	/** true=选中即发送；false=回填输入框由用户编辑后发送 */
 	readonly send: boolean;
 	/** 可选特殊动作：直接触发扩展侧命令而非发消息 */
-	readonly action?: 'newSession' | 'stopStream' | 'switchModel';
+	readonly action?: 'newSession' | 'stopStream' | 'switchModel' | 'compactContext';
 }
 
 /** 斜杠命令分组。 */
@@ -615,6 +621,12 @@ export interface SwitchModelMessage {
 	readonly command: 'switchModel';
 }
 
+/** 请求手动压缩当前会话上下文。 */
+export interface CompactContextMessage {
+	readonly command: 'compactContext';
+	readonly sessionId: string;
+}
+
 /** 请求已启用模型列表，以展示对话输入框的模型选择弹窗。 */
 export interface RequestModelPickerMessage {
 	readonly command: 'requestModelPicker';
@@ -705,6 +717,7 @@ export type WebviewToHostMessage =
 	| DeleteSessionMessage
 	| OpenSettingsMessage
 	| SwitchModelMessage
+	| CompactContextMessage
 	| RequestModelPickerMessage
 	| SelectModelMessage
 	| RequestModelSettingsMessage

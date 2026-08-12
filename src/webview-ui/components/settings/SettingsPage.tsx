@@ -81,6 +81,7 @@ function ModelSettings({
 	const [baseURL, setBaseURL] = useState('');
 	const [temperature, setTemperature] = useState('0.7');
 	const [maxTokens, setMaxTokens] = useState('4096');
+	const [maxContextTokens, setMaxContextTokens] = useState('262144');
 	const [runtime, setRuntime] = useState<'' | 'ai-sdk' | 'legacy'>('');
 	const [apiKey, setApiKey] = useState('');
 
@@ -102,6 +103,7 @@ function ModelSettings({
 		setBaseURL(current.baseURL);
 		setTemperature(String(current.temperature));
 		setMaxTokens(String(current.maxTokens));
+		setMaxContextTokens(String(current.maxContextTokens ?? 262144));
 		setRuntime(current.runtime ?? 'ai-sdk');
 		setApiKey('');
 	}, [model, profiles, editingModelId, isCreating]);
@@ -115,6 +117,7 @@ function ModelSettings({
 		setBaseURL('');
 		setTemperature('');
 		setMaxTokens('');
+		setMaxContextTokens('262144');
 		setRuntime('');
 		setApiKey('');
 	};
@@ -134,6 +137,7 @@ function ModelSettings({
 			baseURL,
 			temperature: Number(temperature),
 			maxTokens: Number(maxTokens),
+			maxContextTokens: Number(maxContextTokens),
 			runtime: runtime || undefined,
 			// 仅在用户输入新 Key 时提交；空输入表示保持现状
 			apiKey: apiKey.trim() ? apiKey.trim() : undefined,
@@ -229,6 +233,11 @@ function ModelSettings({
 							<span className="settings-field-label">最大输出 Token</span>
 							<input value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} type="number" min="1" aria-label="最大输出 token" />
 							<span className="settings-field-help">限制单次回复的最大长度。</span>
+						</label>
+						<label className="settings-field">
+							<span className="settings-field-label">最大上下文 Token</span>
+							<input value={maxContextTokens} onChange={(e) => setMaxContextTokens(e.target.value)} type="number" min="1024" aria-label="最大上下文 token" />
+							<span className="settings-field-help">按模型实际上下文长度填写，默认 262144（256K）。</span>
 						</label>
 						<label className="settings-field">
 							<span className="settings-field-label">模型运行时</span>

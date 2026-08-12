@@ -68,4 +68,13 @@ describe('buildSlashCommandGroups', () => {
 		assert.strictEqual(cmd.action, 'switchModel');
 		assert.strictEqual(cmd.label, '切换模型');
 	});
+
+	it('压缩命令：命令词 compact、动作 compactContext、不进入会话文本', () => {
+		const groups = buildSlashCommandGroups(undefined);
+		const basic = groups.find((group) => group.id === 'basic');
+		const command = basic?.commands.find((item) => item.command === 'compact');
+		assert.ok(command, '基础功能分组应包含 /compact 命令');
+		assert.strictEqual(command.id, 'basic.compact');
+		assert.strictEqual(command.action, 'compactContext');
+	});
 });

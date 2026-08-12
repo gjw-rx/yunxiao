@@ -81,6 +81,7 @@ describe('ModelConfigStore', () => {
 			assert.strictEqual(config.baseURL, 'https://api.openai.com/v1');
 			assert.strictEqual(config.temperature, 0.7);
 			assert.strictEqual(config.maxTokens, 4096);
+			assert.strictEqual(config.maxContextTokens, 262144);
 			assert.strictEqual(config.runtime, 'ai-sdk');
 		});
 
@@ -139,6 +140,16 @@ describe('ModelConfigStore', () => {
 	});
 
 	describe('校验', () => {
+		it('允许保存手动填写的最大上下文 token', async () => {
+			const { store } = setup();
+			const saved = await store.save(validInput({ maxContextTokens: 1000000 }));
+			assert.strictEqual(saved.maxContextTokens, 1000000);
+		});
+
+		it('最大上下文 token 小于最大输出时被拒绝', () => {
+			assert.ok(validateModelSettings(validInput({ maxTokens: 4096, maxContextTokens: 4096 })));
+		});
+
 		it('缺失模型名被拒绝', () => {
 			const error = validateModelSettings(validInput({ model: '' }));
 			assert.ok(error && error.includes('模型名称'));
