@@ -5,9 +5,10 @@
  * 步骤与助手回复按发生顺序交错在回合容器内；处理流式追加、思考占位、
  * 复制/点赞/删除操作与 token 用量展示。
  */
-import { useRef, useState, type JSX } from 'react';
+import { useLayoutEffect, useRef, useState, type JSX, type UIEvent } from 'react';
 import type { ApprovalEntry, DiffEntry, TokenUsageDetail, ToolEntry } from '../../protocol';
 import type { ChatState, MessageItem } from '../../state/reducer';
+import { isNearScrollBottom } from '../../utils/chatBehavior';
 import { formatTokenUsage } from '../../utils/format';
 import { ApprovalCard } from '../approval/ApprovalCard';
 import { DiffCard } from '../diff/DiffCard';
@@ -211,6 +212,31 @@ export interface MessageListProps {
 /** 消息流列表：按回合分组渲染。 */
 export function MessageList({ state, onDeleteUser, onDeleteAssistant, onToggleTool, onToggleDiff, onResolveApproval }: MessageListProps): JSX.Element {
 	const { messages, toolEntries, approvals, diffs } = state;
+	const messagesRef = useRef<HTMLDivElement>(null);
+	const shouldFollowRef = useRef(true);
+
+	/**
+	 * 在用户仍停留在底部时，随流式消息与工具状态更新保持底部可见。
+	 *
+	 * @returns 无返回值
+	 */
+	useLayoutEffect(() => {
+		const container = messagesRef.current;
+		if (container && shouldFollowRef.current) {
+			container.scrollTop = container.scrollHeight;
+		}
+	}, [messages, toolEntries, approvals, diffs]);
+
+	/**
+	 * 记录用户是否主动离开底部；离开后不再强制滚动。
+	 *
+	 * @param event 消息列表滚动事件
+	 * @returns 无返回值
+	 */
+	const handleScroll = (event: UIEvent<HTMLDivElement>): void => {
+		const { scrollTop, clientHeight, scrollHeight } = event.currentTarget;
+		shouldFollowRef.current = isNearScrollBottom({ scrollTop, clientHeight, scrollHeight });
+	};
 
 	const groups: JSX.Element[] = [];
 	let turnItems: JSX.Element[] = [];
@@ -293,7 +319,7 @@ export function MessageList({ state, onDeleteUser, onDeleteAssistant, onToggleTo
 	) : null;
 
 	return (
-		<div id="messages" aria-live="polite">
+		<div id="messages" ref={messagesRef} aria-live="polite" onScroll={handleScroll}>
 			{placeholder}
 			{groups}
 		</div>

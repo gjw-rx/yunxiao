@@ -2,7 +2,7 @@
  * 审批卡片组件。
  *
  * 职责：展示工具审批请求（工具名、摘要、文件路径），提供允许一次/始终允许/拒绝
- * 按钮；决定作出后回传宿主并标记 `resolved` 退场（不留在时间线）。
+ * 按钮；决定作出后回传宿主并由 reducer 移除，避免在时间线中留下占位。
  */
 import { useCallback, useState, type JSX } from 'react';
 import { post } from '../../bridge/vscode';
@@ -13,7 +13,7 @@ import { ApprovalIcon, ToolIcon } from '../shared/icons';
 export interface ApprovalCardProps {
 	/** 审批条目 */
 	entry: ApprovalEntry;
-	/** 决定已作出（宿主回传 approvalDecision 后由 reducer 标记退场） */
+/** 决定已作出后由 reducer 移除卡片 */
 	onResolve: () => void;
 }
 
@@ -36,7 +36,7 @@ export function ApprovalCard({ entry, onResolve }: ApprovalCardProps): JSX.Eleme
 	}, []);
 
 	return (
-		<div className={`approval-card${entry.resolved ? ' resolving' : ''}`} role="alert">
+		<div className="approval-card" role="alert">
 			<div className="approval-header">
 				<span className="approval-icon">
 					<ApprovalIcon />

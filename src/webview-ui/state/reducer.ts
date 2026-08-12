@@ -382,10 +382,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 		}
 		case 'approvalResolved': {
 			const approvals = { ...state.approvals };
-			if (approvals[action.callId]) {
-				approvals[action.callId] = { ...approvals[action.callId], resolved: true };
-			}
-			return { ...state, approvals };
+			delete approvals[action.callId];
+			const messages = state.messages.filter((message) => message.kind !== 'approval' || message.callId !== action.callId);
+			return { ...state, approvals, messages };
 		}
 		case 'error': {
 			// 停止流式并收尾当前文本步（与迁移前 finalizeStepText + finishTurn 行为一致）

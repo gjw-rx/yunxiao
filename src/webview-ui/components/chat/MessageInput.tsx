@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState, type JSX, type KeyboardEvent } from 'react';
 import { post } from '../../bridge/vscode';
 import type { SlashCommand, SlashCommandGroup, WorkspaceFile } from '../../protocol';
+import { findSlashCommandToken, type SlashCommandToken } from '../../utils/chatBehavior';
 import { SlashCommandPicker, type FilteredSlashCommand } from '../commands/SlashCommandPicker';
 import { FilePicker } from '../files/FilePicker';
 
@@ -61,17 +62,18 @@ export function MessageInput({
 	const [slashOpen, setSlashOpen] = useState(false);
 	const [slashIndex, setSlashIndex] = useState(0);
 	const [filteredSlash, setFilteredSlash] = useState<FilteredSlashCommand[]>([]);
+	const [slashToken, setSlashToken] = useState<SlashCommandToken | null>(null);
 	const [fileOpen, setFileOpen] = useState(false);
 	const [fileIndex, setFileIndex] = useState(0);
 	const [fileAtStart, setFileAtStart] = useState(-1);
 	const [filteredFiles, setFilteredFiles] = useState<WorkspaceFile[]>([]);
 
-	// 输入框自动增高（上限 120px）
+	// 输入框自动增高（上限 160px）
 	useEffect(() => {
 		const el = inputRef.current;
 		if (!el) return;
 		el.style.height = 'auto';
-		el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+		el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
 	}, [text]);
 
 	/** 关闭两个选择器。 */
@@ -79,6 +81,7 @@ export function MessageInput({
 		setSlashOpen(false);
 		setFilteredSlash([]);
 		setSlashIndex(0);
+		setSlashToken(null);
 		setFileOpen(false);
 		setFileAtStart(-1);
 		setFilteredFiles([]);
@@ -88,10 +91,10 @@ export function MessageInput({
 	// ── / 命令触发 ──
 	/** 输入变化时检测 / 与 @ 触发。 */
 	const handleInputChange = (value: string, cursorPos: number): void => {
-		// Slash 命令：光标在末尾且输入以 / 开头且无空格
-		const commandText = value.substring(0, cursorPos);
-		if (cursorPos === value.length && commandText.startsWith('/') && !/\s/.test(commandText)) {
-			const query = commandText.slice(1).toLowerCase();
+		// Slash 命令：支持出现在任意词间，且替换时覆盖完整命令片段
+		const commandToken = findSlashCommandToken(value, cursorPos);
+		if (commandToken) {
+			const query = commandToken.query.toLowerCase();
 			const flat: FilteredSlashCommand[] = [];
 			for (const group of slashCommandGroups) {
 				for (const cmd of group.commands || []) {
@@ -101,7 +104,8 @@ export function MessageInput({
 				}
 			}
 			setFilteredSlash(flat);
-			setSlashIndex(Math.min(slashIndex, Math.max(flat.length - 1, 0)));
+			setSlashIndex(0);
+			setSlashToken(commandToken);
 			setSlashOpen(flat.length > 0);
 			setFileOpen(false);
 			return;
@@ -144,6 +148,7 @@ export function MessageInput({
 
 	/** 选择斜杠命令。 */
 	const selectSlashCommand = (command: FilteredSlashCommand): void => {
+		const token = slashToken;
 		closePickers();
 		// 特殊动作：直接触发扩展侧命令
 		if (command.action === 'newSession') {
@@ -156,15 +161,27 @@ export function MessageInput({
 		}
 		// skill 命令：加入对话框引用块（chip），由用户确认后发送
 		if (command.id && command.id.indexOf('skill.') === 0) {
+			if (token) {
+				const nextText = text.slice(0, token.start) + text.slice(token.end);
+				setText(nextText);
+				requestAnimationFrame(() => inputRef.current?.setSelectionRange(token.start, token.start));
+			}
 			onAddSkill(command);
 			return;
 		}
-		// 回填命令文本
-		setText(`/${command.command}`);
+		// 回填命令文本，并保留命令前后的普通输入
+		const nextText = token
+			? `${text.slice(0, token.start)}/${command.command}${text.slice(token.end)}`
+			: `/${command.command}`;
+		setText(nextText);
 		if (command.send) {
-			handleSend(`/${command.command}`);
+			handleSend(nextText);
 		} else {
-			inputRef.current?.focus();
+			requestAnimationFrame(() => {
+				inputRef.current?.focus();
+				const position = token ? token.start + command.command.length + 1 : nextText.length;
+				inputRef.current?.setSelectionRange(position, position);
+			});
 		}
 	};
 
@@ -296,6 +313,7 @@ export function MessageInput({
 						setText(e.target.value);
 						handleInputChange(e.target.value, e.target.selectionStart ?? e.target.value.length);
 					}}
+					onSelect={(e) => handleInputChange(e.currentTarget.value, e.currentTarget.selectionStart ?? e.currentTarget.value.length)}
 					onKeyDown={handleKeyDown}
 				/>
 			</div>

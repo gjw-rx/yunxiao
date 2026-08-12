@@ -138,12 +138,13 @@ describe('reducer 状态转换', () => {
 		expect(state.messages.filter((m) => m.kind === 'diff' && m.callId === 'c2')).toHaveLength(1);
 	});
 
-	it('approvalRequest 添加审批卡，approvalResolved 标记为已决（UI 退场）', () => {
+	it('审批决定后移除卡片与消息条目，不保留不可见占位', () => {
 		let state = activeState();
 		state = chatReducer(state, { type: 'approvalRequest', callId: 'c3', toolName: 'fs_write_file', summary: '写入', filePath: 'b.ts' });
 		expect(state.approvals['c3']).toMatchObject({ resolved: false, tool_name: 'fs_write_file' });
 		state = chatReducer(state, { type: 'approvalResolved', callId: 'c3' });
-		expect(state.approvals['c3'].resolved).toBe(true);
+		expect(state.approvals['c3']).toBeUndefined();
+		expect(state.messages.some((message) => message.kind === 'approval' && message.callId === 'c3')).toBe(false);
 	});
 
 	it('historyLoaded 重建消息并恢复工具步骤与 token 聚合', () => {
