@@ -338,7 +338,20 @@ export function MessageInput({
 					</div>
 					<div className="toolbar-right">
 						<div className="model-info">
-							<span id="modelName">{modelName || '--'}</span>
+							<button
+								type="button"
+								id="modelName"
+								className="model-switch-button"
+								disabled={isStreaming || !modelName}
+								title="切换模型"
+								aria-label={`切换模型 ${modelName || '--'}`}
+								onClick={() => post({ command: 'switchModel' })}
+							>
+								<span>{modelName || '--'}</span>
+								<svg viewBox="0 0 12 12" aria-hidden="true">
+									<path d="M3 4.5 6 7.5l3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+								</svg>
+							</button>
 						</div>
 						{!isStreaming ? (
 							<button
