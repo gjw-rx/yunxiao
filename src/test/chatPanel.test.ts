@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { ChatViewProvider } from '../chatPanel';
@@ -7,10 +8,16 @@ import type { ToolRegistry } from '../core/toolRegistry';
 import type { EventBus } from '../core/eventBus';
 
 interface PanelInternals {
-	_panel?: vscode.WebviewPanel;
+	_chatView?: vscode.WebviewView;
+	_chatWebview?: vscode.Webview;
 	_settingsPanel?: vscode.WebviewPanel;
 	_currentSessionId?: string;
 	show(): void;
+	resolveWebviewView(
+		webviewView: vscode.WebviewView,
+		context: vscode.WebviewViewResolveContext,
+		token: vscode.CancellationToken
+	): void;
 	_getHtml(webview: vscode.Webview, page?: 'chat' | 'settings'): string;
 	_handleMessage(msg: { command: string; [key: string]: unknown }): Promise<void>;
 }
@@ -52,9 +59,9 @@ function setup() {
 		}
 	);
 	const internals = provider as unknown as PanelInternals;
-	internals._panel = {
-		webview: { postMessage: (message: Record<string, unknown>) => messages.push(message) },
-	} as unknown as vscode.WebviewPanel;
+	internals._chatWebview = {
+		postMessage: (message: Record<string, unknown>) => messages.push(message),
+	} as unknown as vscode.Webview;
 	internals._currentSessionId = 'old-session';
 	return { messages, internals };
 }
@@ -71,6 +78,20 @@ function createFakeWebview(calledUris: string[] = []): vscode.Webview {
 }
 
 describe('ChatViewProvider HTML shell 与资源加载', () => {
+	it('扩展将聊天容器直接贡献到次级侧边栏', () => {
+		const manifestPath = path.join(__dirname, '..', '..', 'package.json');
+		const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+			engines: { vscode: string };
+			contributes: { viewsContainers: { secondarySidebar?: { id: string }[]; activitybar?: unknown[] } };
+		};
+
+		assert.strictEqual(manifest.engines.vscode, '^1.106.0');
+		assert.deepStrictEqual(manifest.contributes.viewsContainers.secondarySidebar, [
+			{ id: 'yunxiaoAgentContainer', title: '云效 Agent', icon: 'media/icon-view.svg' },
+		]);
+		assert.strictEqual(manifest.contributes.viewsContainers.activitybar, undefined);
+	});
+
 	it('_getHtml 输出最小 shell：根挂载节点 + 外部样式/脚本链接', () => {
 		const { internals } = setup();
 		const html = internals._getHtml(createFakeWebview());
@@ -115,55 +136,58 @@ describe('ChatViewProvider HTML shell 与资源加载', () => {
 		assert.doesNotMatch(html, /<script[^>]*nonce=/);
 	});
 
-	it('localResourceRoots 覆盖 dist 产物目录', () => {
-		const orig = vscode.window.createWebviewPanel;
-		let capturedRoots: readonly vscode.Uri[] | undefined;
-		vscode.window.createWebviewPanel = ((_viewType: string, _title: string, _column: vscode.ViewColumn, options: vscode.WebviewPanelOptions & vscode.WebviewOptions) => {
-			capturedRoots = options.localResourceRoots;
-			return createFakePanel([]);
-		}) as unknown as typeof vscode.window.createWebviewPanel;
-		try {
-			const { internals } = setup();
-			internals._panel = undefined;
-			internals.show();
-			assert.ok(capturedRoots, 'createWebviewPanel 应传入 localResourceRoots');
-			assert.ok(
-				capturedRoots!.some((r) => r.fsPath.endsWith('dist')),
-				'localResourceRoots 应覆盖 dist 目录（含 dist/webview-ui 产物）'
-			);
-		} finally {
-			vscode.window.createWebviewPanel = orig;
-		}
+	it('侧栏聊天视图配置 localResourceRoots 并加载正式聊天页面', () => {
+		const disposeHandlers: (() => void)[] = [];
+		const webview = createFakeWebview() as vscode.Webview & { options?: vscode.WebviewOptions; html: string; postMessage: () => void; onDidReceiveMessage: () => vscode.Disposable };
+		webview.html = '';
+		webview.postMessage = async () => true;
+		webview.onDidReceiveMessage = () => ({ dispose: () => {} });
+		const view = {
+			webview,
+			onDidDispose: (handler: () => void) => {
+				disposeHandlers.push(handler);
+				return { dispose: () => {} };
+			},
+		} as unknown as vscode.WebviewView;
+
+		const { internals } = setup();
+		internals.resolveWebviewView(view, {} as vscode.WebviewViewResolveContext, {} as vscode.CancellationToken);
+
+		assert.strictEqual(internals._chatView, view);
+		assert.strictEqual(internals._chatWebview, webview);
+		assert.match(webview.html, /<body data-view="chat">/);
+		assert.ok(webview.options?.localResourceRoots?.some((root) => root.fsPath.endsWith('dist')));
+		disposeHandlers.forEach((handler) => handler());
+		assert.strictEqual(internals._chatWebview, undefined);
 	});
 });
 
-describe('ChatViewProvider 编辑区面板（show 单例与关闭清理）', () => {
-	it('show() 打开面板为单例：已打开时复用不重建', () => {
-		const orig = vscode.window.createWebviewPanel;
+describe('ChatViewProvider 侧栏视图', () => {
+	it('show() 只聚焦扩展视图容器，不创建编辑区 WebviewPanel', async () => {
+		const orig = vscode.commands.executeCommand;
+		const origCreate = vscode.window.createWebviewPanel;
+		const commands: string[] = [];
 		let createdCount = 0;
+		vscode.commands.executeCommand = (async (command: string) => {
+			commands.push(command);
+		}) as unknown as typeof vscode.commands.executeCommand;
 		vscode.window.createWebviewPanel = (() => {
 			createdCount++;
 			return createFakePanel([]);
 		}) as unknown as typeof vscode.window.createWebviewPanel;
 		try {
 			const { internals } = setup();
-			internals._panel = undefined; // 清除 setup 预设的假面板，验证 show() 的创建逻辑
 			internals.show();
-			const first = internals._panel;
-			assert.ok(first);
-			internals.show();
-			assert.strictEqual(internals._panel, first, '再次 show 应复用同一面板');
-			assert.strictEqual(createdCount, 1, '面板应只创建一次');
+			assert.deepStrictEqual(commands, ['workbench.view.extension.yunxiaoAgentContainer']);
+			assert.strictEqual(createdCount, 0);
 		} finally {
-			vscode.window.createWebviewPanel = orig;
+			vscode.commands.executeCommand = orig;
+			vscode.window.createWebviewPanel = origCreate;
 		}
 	});
 
-	it('面板关闭：清空 _panel、取消事件订阅、未决审批回退 deny', () => {
-		const orig = vscode.window.createWebviewPanel;
+	it('侧栏视图销毁时取消事件订阅，并拒绝未决审批', () => {
 		const disposeHandlers: (() => void)[] = [];
-		vscode.window.createWebviewPanel = (() =>
-			createFakePanel(disposeHandlers)) as unknown as typeof vscode.window.createWebviewPanel;
 		let unsubCalled = false;
 		const decisions: string[] = [];
 		const provider = new ChatViewProvider(
@@ -182,16 +206,23 @@ describe('ChatViewProvider 编辑区面板（show 单例与关闭清理）', () 
 			_pendingApprovals: Map<string, (decision: string) => void>;
 		};
 		internals._pendingApprovals.set('call-1', (d) => decisions.push(d));
-		try {
-			internals.show();
-			assert.ok(internals._panel);
-			disposeHandlers.forEach((h) => h());
-			assert.strictEqual(internals._panel, undefined, '关闭后应清空面板引用');
-			assert.strictEqual(unsubCalled, true, '关闭后应取消事件订阅');
-			assert.deepStrictEqual(decisions, ['deny'], '未决审批应回退 deny');
-		} finally {
-			vscode.window.createWebviewPanel = orig;
-		}
+		const webview = createFakeWebview() as vscode.Webview & { html: string; postMessage: () => void; onDidReceiveMessage: () => vscode.Disposable };
+		webview.html = '';
+		webview.postMessage = async () => true;
+		webview.onDidReceiveMessage = () => ({ dispose: () => {} });
+		const view = {
+			webview,
+			onDidDispose: (handler: () => void) => {
+				disposeHandlers.push(handler);
+				return { dispose: () => {} };
+			},
+		} as unknown as vscode.WebviewView;
+
+		internals.resolveWebviewView(view, {} as vscode.WebviewViewResolveContext, {} as vscode.CancellationToken);
+		disposeHandlers.forEach((handler) => handler());
+		assert.strictEqual(internals._chatView, undefined, '销毁后应清空视图引用');
+		assert.strictEqual(unsubCalled, true, '销毁后应取消事件订阅');
+		assert.deepStrictEqual(decisions, ['deny'], '未决审批应回退 deny');
 	});
 
 	it('deleteSession 删除当前会话时回推 currentSessionDeleted（前端不再靠列表推断删除）', async () => {
@@ -216,9 +247,9 @@ describe('ChatViewProvider 编辑区面板（show 单例与关闭清理）', () 
 			}
 		);
 		const internals = provider as unknown as PanelInternals;
-		internals._panel = {
-			webview: { postMessage: (message: Record<string, unknown>) => messages.push(message) },
-		} as unknown as vscode.WebviewPanel;
+		internals._chatWebview = {
+			postMessage: (message: Record<string, unknown>) => messages.push(message),
+		} as unknown as vscode.Webview;
 		internals._currentSessionId = 'old-session';
 
 		const origShow = vscode.window.showWarningMessage;

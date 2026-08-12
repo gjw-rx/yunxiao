@@ -373,14 +373,14 @@ async function _activate(context: vscode.ExtensionContext) {
 		onModelConfigSaved: applyModelConfig,
 	});
 
-	// 侧边栏 activity bar 图标入口：点击展开容器时 provider 会在编辑区打开对话面板（见 ChatViewProvider.resolveWebviewView）
+	// 侧边栏 activity bar 图标入口：点击展开容器时 provider 在侧栏初始化聊天视图（见 ChatViewProvider.resolveWebviewView）
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider('yunxiaoAgent.chatView', provider, {
 			webviewOptions: { retainContextWhenHidden: true },
 		})
 	);
 
-	// 打开对话面板命令：在编辑器区域创建（或聚焦）WebviewPanel（与 Claude Code / Codex 一致）
+	// 打开对话命令：聚焦云效 Agent 侧栏视图
 	context.subscriptions.push(
 		vscode.commands.registerCommand('yunxiaoAgent.openPanel', () => {
 			provider.show();

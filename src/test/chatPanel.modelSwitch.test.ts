@@ -14,7 +14,7 @@ import { ModelConfigStore } from '../config/modelConfigStore';
 import type { SyncSource } from '../config/syncConfig';
 
 interface PanelInternals {
-	_panel?: vscode.WebviewPanel;
+	_chatWebview?: vscode.Webview;
 	_handleMessage(msg: { command: string; [key: string]: unknown }): Promise<void>;
 }
 
@@ -82,9 +82,9 @@ async function setup() {
 		},
 	});
 	const internals = provider as unknown as PanelInternals;
-	internals._panel = {
-		webview: { postMessage: (message: Record<string, unknown>) => messages.push(message) },
-	} as unknown as vscode.WebviewPanel;
+	internals._chatWebview = {
+		postMessage: (message: Record<string, unknown>) => messages.push(message),
+	} as unknown as vscode.Webview;
 	const view = await modelStore.getSettingsView();
 	const modelA = view.models?.find((m) => m.model === 'gpt-4o');
 	const modelB = view.models?.find((m) => m.model === 'deepseek-chat');
@@ -160,9 +160,9 @@ describe('ChatViewProvider /model 切换模型宿主处理', () => {
 			},
 		});
 		const internals = provider as unknown as PanelInternals;
-		internals._panel = {
-			webview: { postMessage: (message: Record<string, unknown>) => messages.push(message) },
-		} as unknown as vscode.WebviewPanel;
+		internals._chatWebview = {
+			postMessage: (message: Record<string, unknown>) => messages.push(message),
+		} as unknown as vscode.Webview;
 
 		let quickPickCalled = false;
 		const origPick = vscode.window.showQuickPick;
