@@ -14,6 +14,7 @@ import { SessionHeader } from './components/session/SessionHeader';
 import { SessionTokenBar } from './components/session/SessionTokenBar';
 import { MessageList } from './components/chat/MessageList';
 import { MessageInput } from './components/chat/MessageInput';
+import { TodoPanel } from './components/chat/TodoPanel';
 import { ErrorBar } from './components/shared/ErrorBar';
 import { SettingsPage } from './components/settings/SettingsPage';
 
@@ -128,6 +129,7 @@ export function App(): JSX.Element {
 				onToggleDiff={(callId) => dispatchRef.current({ type: 'toggleDiffExpand', callId })}
 				onResolveApproval={(callId) => dispatchRef.current({ type: 'approvalResolved', callId })}
 			/>
+			<TodoPanel snapshot={state.todoSnapshot} summary={state.todoSummary} />
 			<ErrorBar message={state.error} onClear={() => dispatchRef.current({ type: 'clearError' })} />
 			<MessageInput
 				currentSessionId={state.currentSessionId}

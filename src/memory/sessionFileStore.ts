@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { Message } from './types';
+import type { TodoSnapshot } from './todoTypes';
 import * as logger from '../logger';
 
 /** 会话元数据（索引条目） */
@@ -34,6 +35,8 @@ export interface SessionIndex {
 	readonly currentSessionId?: string;
 	/** sessionId -> 元数据 */
 	readonly sessions: Record<string, SessionMeta>;
+	/** sessionId -> 最新任务快照。 */
+	readonly todos?: Record<string, TodoSnapshot>;
 }
 
 /** 内部可变索引（SessionIndex 的写版本，供 mutateIndex 修改） */
@@ -42,6 +45,7 @@ type MutableSessionIndex = {
 	workspacePath: string;
 	currentSessionId?: string;
 	sessions: Record<string, SessionMeta>;
+	todos: Record<string, TodoSnapshot>;
 };
 
 /** 默认标题长度上限（字符） */
@@ -49,6 +53,55 @@ export const TITLE_MAX = 40;
 
 /** index.json 文件名 */
 const INDEX_FILE = 'index.json';
+
+/** 任务状态的合法取值集合。 */
+const TODO_STATUSES = new Set(['pending', 'in_progress', 'completed', 'cancelled']);
+
+/**
+ * 将索引中的任务快照转换为可用结构；损坏项按空快照处理。
+ * @param value 原始索引字段。
+ * @returns 会话任务快照映射。
+ */
+function parseTodoSnapshots(value: unknown): Record<string, TodoSnapshot> {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		return {};
+	}
+
+	const snapshots: Record<string, TodoSnapshot> = {};
+	for (const [sessionId, rawSnapshot] of Object.entries(value)) {
+		if (!rawSnapshot || typeof rawSnapshot !== 'object' || Array.isArray(rawSnapshot)) {
+			continue;
+		}
+		const rawTodos = (rawSnapshot as { todos?: unknown }).todos;
+		if (!Array.isArray(rawTodos)) {
+			snapshots[sessionId] = { todos: [] };
+			continue;
+		}
+		const uniqueIds = new Set<string>();
+		const todos: TodoSnapshot['todos'][number][] = [];
+		for (const rawTodo of rawTodos) {
+			if (!rawTodo || typeof rawTodo !== 'object' || Array.isArray(rawTodo)) {
+				continue;
+			}
+			const todo = rawTodo as { id?: unknown; content?: unknown; status?: unknown };
+			if (
+				typeof todo.id !== 'string' ||
+				typeof todo.content !== 'string' ||
+				typeof todo.status !== 'string' ||
+				!TODO_STATUSES.has(todo.status) ||
+				uniqueIds.has(todo.id)
+			) {
+				continue;
+			}
+			uniqueIds.add(todo.id);
+			todos.push({ id: todo.id, content: todo.content, status: todo.status as TodoSnapshot['todos'][number]['status'] });
+		}
+		snapshots[sessionId] = {
+			todos: todos.filter((todo) => todo.status === 'in_progress').length <= 1 ? todos : [],
+		};
+	}
+	return snapshots;
+}
 
 /**
  * workspace 根路径编码为目录名：除字母/数字/连字符外的字符（含 `/`、`_`、非 ASCII）
@@ -115,6 +168,19 @@ export class SessionFileStore {
 	 */
 	getSession(sessionId: string): SessionMeta | undefined {
 		return this.index.sessions[sessionId];
+	}
+
+	/** 读取会话任务快照。 @param sessionId 会话 ID。 @returns 任务快照。 */
+	getTodoSnapshot(sessionId: string): TodoSnapshot {
+		return this.index.todos[sessionId] ?? { todos: [] };
+	}
+
+	/** 写入会话任务快照。 @param sessionId 会话 ID。 @param snapshot 任务快照。 @returns 无返回值。 */
+	setTodoSnapshot(sessionId: string, snapshot: TodoSnapshot): void {
+		this.mutateIndex((idx) => {
+			idx.todos[sessionId] = snapshot;
+		});
+		logger.log(`[SessionFileStore] 写入任务快照 sessionId=${sessionId} count=${snapshot.todos.length}`);
 	}
 
 	/**
@@ -248,6 +314,7 @@ export class SessionFileStore {
 		});
 		this.mutateIndex((idx) => {
 			delete idx.sessions[sessionId];
+			delete idx.todos[sessionId];
 			if (idx.currentSessionId === sessionId) {
 				idx.currentSessionId = undefined;
 			}
@@ -328,7 +395,7 @@ export class SessionFileStore {
 	 * @returns 索引
 	 */
 	private loadIndex(workspacePath: string): MutableSessionIndex {
-		const empty: SessionIndex = { version: 1, workspacePath, sessions: {} };
+		const empty: MutableSessionIndex = { version: 1, workspacePath, sessions: {}, todos: {} };
 		try {
 			const raw = fs.readFileSync(path.join(this.sessionDir, INDEX_FILE), 'utf8');
 			const parsed = JSON.parse(raw) as Partial<SessionIndex>;
@@ -339,6 +406,7 @@ export class SessionFileStore {
 				sessions: parsed.sessions && typeof parsed.sessions === 'object'
 					? (parsed.sessions as Record<string, SessionMeta>)
 					: {},
+				todos: parseTodoSnapshots(parsed.todos),
 			};
 		} catch {
 			return empty;

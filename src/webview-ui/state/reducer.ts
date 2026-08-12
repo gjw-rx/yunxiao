@@ -17,6 +17,8 @@ import type {
 	SlashCommandGroup,
 	ToolEntry,
 	ToolState,
+	TodoSnapshot,
+	TodoSummary,
 	TokenUsageDetail,
 	WorkspaceFile,
 } from '../protocol';
@@ -62,6 +64,10 @@ export interface ChatState {
 	error: string;
 	/** 会话级 token 累计 */
 	sessionTokenUsage: SessionTokenPayload | null;
+	/** 当前会话的任务快照；无任务时为 null。 */
+	todoSnapshot: TodoSnapshot | null;
+	/** 当前会话的任务状态汇总。 */
+	todoSummary: TodoSummary | null;
 	/** 消息流（含过程步骤与回复气泡，按渲染顺序） */
 	messages: MessageItem[];
 	/** 工具时间线条目：call_id → 条目 */
@@ -94,6 +100,8 @@ export const initialState: ChatState = {
 	selectedSkills: [],
 	error: '',
 	sessionTokenUsage: null,
+	todoSnapshot: null,
+	todoSummary: null,
 	messages: [],
 	toolEntries: {},
 	approvals: {},
@@ -163,6 +171,7 @@ export type ChatAction =
 	| { type: 'progress'; phase?: string }
 	| { type: 'tokenUsage'; payload: { token_usage?: TokenUsageDetail } }
 	| { type: 'sessionTokenUsage'; payload: SessionTokenPayload }
+	| { type: 'todoState'; snapshot: TodoSnapshot; summary: TodoSummary }
 	| { type: 'historyLoaded'; messages: HistoryEntry[] }
 	| { type: 'workspaceFiles'; files: WorkspaceFile[] }
 	| { type: 'modelInfo'; model: string }
@@ -192,6 +201,8 @@ function resetConversation(state: ChatState): ChatState {
 		liveThoughtId: null,
 		isStreaming: false,
 		sessionTokenUsage: null,
+		todoSnapshot: null,
+		todoSummary: null,
 	};
 }
 
@@ -438,6 +449,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 		}
 		case 'sessionTokenUsage': {
 			return { ...state, sessionTokenUsage: action.payload };
+		}
+		case 'todoState': {
+			return {
+				...state,
+				todoSnapshot: action.snapshot.todos.length > 0 ? action.snapshot : null,
+				todoSummary: action.snapshot.todos.length > 0 ? action.summary : null,
+			};
 		}
 		case 'historyLoaded': {
 			const base = resetConversation(state);

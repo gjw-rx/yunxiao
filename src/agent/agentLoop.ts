@@ -26,6 +26,7 @@ import type { CompactionConfig } from './compaction';
 import { compactIfNeeded } from './compaction';
 import { estimateText, estimateRequest } from './tokenEstimator';
 import type { TokenUsageSnapshot } from '../memory/types';
+import type { SessionTodoStore } from '../memory/sessionTodoStore';
 import { randomUUID } from 'crypto';
 import { DoomLoopDetector } from './doomLoopDetector';
 import { ToolValidationError } from '../core/errors';
@@ -73,6 +74,8 @@ export interface AgentLoopConfig {
 	readonly compaction?: CompactionConfig;
 	/** 配置来源读取函数（none/claude/trae 三选一）：决定项目规则注入哪一套（CLAUDE.md 或 .trae/rules），由扩展装配时注入 */
 	readonly syncSource?: () => SyncSource;
+	/** 当前会话任务快照存储，用于将未结束任务临时注入模型上下文。 */
+	readonly todoStore?: SessionTodoStore;
 }
 
 const MAX_STEPS_PROMPT =
@@ -194,8 +197,10 @@ export class AgentLoop {
 				});
 
 				// ── 4. 组装消息 ──
+				const todoContext = this.config.todoStore?.formatActiveContext(sessionId);
 				const messages: LLMMessage[] = [
 					{ role: 'system', content: systemPrompt },
+					...(todoContext ? [{ role: 'system' as const, content: todoContext }] : []),
 					...history,
 				];
 

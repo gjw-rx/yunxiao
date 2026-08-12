@@ -49,9 +49,11 @@ import {
 import { createProvider } from './llm/provider';
 import { MessageStore } from './memory/messageStore';
 import { SessionFileStore } from './memory/sessionFileStore';
+import { SessionTodoStore } from './memory/sessionTodoStore';
 import type { Message } from './memory/types';
 import { AgentLoop } from './agent/agentLoop';
 import type { CompactionConfig } from './agent/compaction';
+import { TodoWriteTool } from './tools/todo/todoWrite';
 import * as logger from './logger';
 
 /**
@@ -107,6 +109,7 @@ async function _activate(context: vscode.ExtensionContext) {
 	const fileStore = new SessionFileStore(workspaceRoot);
 	await migrateLegacyMessages(context, fileStore);
 	const messageStore = new MessageStore(fileStore);
+	const todoStore = new SessionTodoStore(fileStore);
 
 	// 本地工具注册表
 	const registry = new ToolRegistry();
@@ -116,6 +119,7 @@ async function _activate(context: vscode.ExtensionContext) {
 		sessionManager: null as unknown as LocalSessionManager,
 		registry,
 		eventBus,
+		todoStore,
 	});
 
 	// 审批网关：使用 webview 内嵌审批卡片
@@ -178,6 +182,7 @@ async function _activate(context: vscode.ExtensionContext) {
 	registry.register(new GitCommitTool());
 	registry.register(new GitBranchTool());
 	registry.register(new GitStashTool());
+	registry.register(new TodoWriteTool(todoStore, eventBus));
 
 	// Skill 系统：默认项目 Skill 目录为 .claude/skills，按「配置来源」同步生态 Skill（默认 claude）。
 	// 不再读取 yunxiaoAgent.skills.directories / yunxiaoAgent.sync.source VS Code 配置。
@@ -309,6 +314,7 @@ async function _activate(context: vscode.ExtensionContext) {
 			skillRegistry,
 			syncSource: () => getSyncSource(context.globalState),
 			compaction: compactionConfig,
+			todoStore,
 		}
 	);
 

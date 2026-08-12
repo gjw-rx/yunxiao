@@ -10,6 +10,8 @@ import type { ModelConfig } from './config/modelConfig';
 import type { SyncSource } from './config/syncConfig';
 import type { SkillInstallResult } from './skill/skillInstaller';
 import type { RuntimeStatus } from './webview-ui/protocol';
+import type { SessionTodoStore } from './memory/sessionTodoStore';
+import { summarizeTodos, type TodoStateUpdate } from './memory/todoTypes';
 import { buildSlashCommandGroups } from './chat/slashCommands';
 import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
 import * as logger from './logger';
@@ -18,6 +20,7 @@ interface ChatViewDeps {
   readonly sessionManager: LocalSessionManager;
   readonly registry: ToolRegistry;
   readonly eventBus: EventBus;
+  readonly todoStore?: SessionTodoStore;
 }
 
 /** 设置面板依赖：模型存储、配置来源、Skill 安装与模型保存回调。 */
@@ -52,6 +55,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly _registry: ToolRegistry;
   private readonly _sessionManager: LocalSessionManager;
   private readonly _eventBus: EventBus;
+  private readonly _todoStore?: SessionTodoStore;
   private _currentSessionId?: string;
   private _createSessionRequest = 0;
   private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
@@ -69,6 +73,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._registry = deps.registry;
     this._sessionManager = deps.sessionManager;
     this._eventBus = deps.eventBus;
+    this._todoStore = deps.todoStore;
   }
 
   /**
@@ -312,6 +317,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'session_token_usage':
         webview.postMessage({ command: 'sessionTokenUsage', payload: e.payload });
+        break;
+      case 'todo_state_change':
+        webview.postMessage({ command: 'todoState', ...(e.payload as TodoStateUpdate) });
         break;
       case 'stream_end':
         webview.postMessage({ command: 'replyEnd' });
@@ -738,8 +746,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'loadHistory': {
-        const history = this._sessionManager.loadHistory(msg.sessionId as string);
+        const sessionId = msg.sessionId as string;
+        const history = this._sessionManager.loadHistory(sessionId);
         webview.postMessage({ command: 'historyLoaded', messages: history });
+        if (this._todoStore) {
+          const snapshot = this._todoStore.read(sessionId);
+          webview.postMessage({ command: 'todoState', snapshot, summary: summarizeTodos(snapshot) });
+        }
         break;
       }
       case 'approvalDecision': {

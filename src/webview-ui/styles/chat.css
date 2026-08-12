@@ -2226,3 +2226,87 @@
 #sessionTokenBar .stb-item .stb-approx {
 	opacity: 0.55;
 }
+
+/* ── 会话任务面板 ── */
+.todo-panel {
+	margin: 8px 14px;
+	border: 1px solid var(--border, rgba(128, 128, 128, 0.2));
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 96%, var(--accent) 4%);
+	overflow: hidden;
+}
+.todo-panel__header {
+	display: flex;
+	align-items: center;
+	width: 100%;
+	gap: 7px;
+	padding: 7px 9px;
+	border: 0;
+	background: transparent;
+	color: var(--fg);
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+	text-align: left;
+}
+.todo-panel__header:hover {
+	background: var(--hover-bg);
+}
+.todo-panel__chevron {
+	width: 12px;
+	color: var(--muted);
+	font-size: 15px;
+	line-height: 12px;
+}
+.todo-panel__title {
+	font-weight: 600;
+}
+.todo-panel__count {
+	margin-left: auto;
+	color: var(--muted);
+	font-family: var(--mono);
+	font-size: 11px;
+}
+.todo-panel__list {
+	margin: 0;
+	padding: 1px 10px 8px 29px;
+}
+.todo-panel__item {
+	display: grid;
+	grid-template-columns: 14px minmax(0, 1fr);
+	gap: 5px;
+	padding: 3px 0;
+	color: var(--fg);
+	font-size: 12px;
+	line-height: 18px;
+}
+.todo-panel__status {
+	width: 13px;
+	height: 13px;
+	margin-top: 2px;
+	border: 1px solid var(--muted);
+	border-radius: 50%;
+	color: var(--vscode-editor-background, #1e1e1e);
+	font-size: 10px;
+	line-height: 11px;
+	text-align: center;
+}
+.todo-panel__item--in_progress .todo-panel__status {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+.todo-panel__item--completed,
+.todo-panel__item--cancelled {
+	color: var(--muted);
+}
+.todo-panel__item--completed > span:last-child,
+.todo-panel__item--cancelled > span:last-child {
+	text-decoration: line-through;
+}
+.todo-panel__item--completed .todo-panel__status {
+	border-color: var(--success, #3fb950);
+	background: var(--success, #3fb950);
+}
+.todo-panel__item--cancelled .todo-panel__status {
+	border-color: var(--muted);
+}

@@ -1,7 +1,9 @@
 # session-history-storage Specification
 
-## ADDED Requirements
+## Purpose
 
+定义 VS Code 插件会话消息、会话索引和任务快照在本地文件中的持久化、恢复、工作区隔离、兼容迁移与删除清理行为。
+## Requirements
 ### Requirement: 会话消息持久化到用户目录 JSONL 文件
 会话消息 SHALL 持久化到 `~/.yunForce/projects/<workspace 路径编码>/<sessionId>.jsonl` 文件中，每个会话一个文件，JSONL 格式（每行一条 JSON 消息，消息体复用存储层 `Message` 结构），追加写。`MessageStore` 对外接口（`append`/`loadHistory`/`getCompactionPoint`/`clear`/`deleteMessagesAfter`/`updateMessage`）SHALL 保持不变，`AgentLoop` 与 `HistoryLoader` 无需感知存储介质变化。文件不存在时读取 SHALL 返回空列表而不报错；坏行 SHALL 跳过并记录日志。
 
@@ -56,3 +58,21 @@
 #### Scenario: 迁移失败不阻塞启动
 - **WHEN** 迁移过程中写入文件失败
 - **THEN** 插件正常启动，输出日志告警，新会话照常工作
+
+### Requirement: 会话索引持久化任务快照
+系统 SHALL 在 workspace 会话 `index.json` 中按 `sessionId` 保存最新的任务快照。任务快照 SHALL 与会话索引使用相同的串行写入和原子替换机制；缺少、损坏或不符合任务快照结构的索引数据 MUST 被视为空任务状态，且 MUST NOT 阻止会话历史加载。
+
+#### Scenario: 任务快照原子持久化
+- **WHEN** 当前会话成功写入新的任务列表
+- **THEN** 系统以原子索引更新持久化该会话快照，重启后可读取相同内容
+
+#### Scenario: 旧索引兼容
+- **WHEN** 读取不含任务快照字段的既有 `index.json`
+- **THEN** 系统将该会话视为无任务列表并正常加载其消息与元数据
+
+### Requirement: 删除会话同时删除任务快照
+系统 SHALL 在删除会话时一并移除该会话的任务快照。删除一个会话 MUST NOT 移除同一 workspace 中其他会话的任务快照。
+
+#### Scenario: 删除会话清理任务记录
+- **WHEN** 用户确认删除拥有任务快照的会话 `s1`
+- **THEN** `s1` 的 JSONL、会话索引条目和任务快照均被移除，且其他会话的任务快照保持不变

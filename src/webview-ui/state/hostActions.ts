@@ -70,6 +70,8 @@ export function hostToAction(msg: HostToWebviewMessage): ChatAction | null {
 			return { type: 'plan', steps: msg.steps };
 		case 'historyLoaded':
 			return { type: 'historyLoaded', messages: msg.messages };
+		case 'todoState':
+			return { type: 'todoState', snapshot: msg.snapshot, summary: msg.summary };
 		case 'approvalRequest':
 			return {
 				type: 'approvalRequest',

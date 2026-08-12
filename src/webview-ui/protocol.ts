@@ -206,6 +206,39 @@ export interface SessionTokenPayload {
 	readonly cache_write_tokens?: number;
 }
 
+/** 任务状态。 */
+export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
+
+/** 单条会话任务。 */
+export interface TodoItem {
+	/** 任务稳定唯一标识。 */
+	readonly id: string;
+	/** 面向用户的任务说明。 */
+	readonly content: string;
+	/** 当前执行状态。 */
+	readonly status: TodoStatus;
+}
+
+/** 会话完整任务快照。 */
+export interface TodoSnapshot {
+	/** 按执行顺序排列的任务。 */
+	readonly todos: readonly TodoItem[];
+}
+
+/** 任务状态计数。 */
+export interface TodoSummary {
+	/** 任务总数。 */
+	readonly total: number;
+	/** 待办数量。 */
+	readonly pending: number;
+	/** 进行中数量。 */
+	readonly in_progress: number;
+	/** 已完成数量。 */
+	readonly completed: number;
+	/** 已取消数量。 */
+	readonly cancelled: number;
+}
+
 /** 工具调用状态（时间线转换：pending → running → success/error）。 */
 export type ToolState = 'pending' | 'running' | 'success' | 'error';
 
@@ -373,6 +406,16 @@ export interface HistoryLoadedMessage {
 	readonly messages: HistoryEntry[];
 }
 
+/** 宿主推送的会话任务快照。 */
+export interface TodoStateMessage {
+	/** 消息命令名。 */
+	readonly command: 'todoState';
+	/** 当前完整任务快照。 */
+	readonly snapshot: TodoSnapshot;
+	/** 当前任务状态汇总。 */
+	readonly summary: TodoSummary;
+}
+
 /** 扩展侧触发新建会话（工具栏按钮）。 */
 export interface TriggerNewSessionMessage {
 	readonly command: 'triggerNewSession';
@@ -466,6 +509,7 @@ export type HostToWebviewMessage =
 	| ProgressMessage
 	| PlanMessage
 	| HistoryLoadedMessage
+	| TodoStateMessage
 	| TriggerNewSessionMessage
 	| ApprovalRequestMessage
 	| WorkspaceFilesMessage

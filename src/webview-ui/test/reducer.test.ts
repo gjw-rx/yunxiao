@@ -9,6 +9,29 @@ import { hostToAction } from '../state/hostActions';
 import { chatReducer, initialState, aggregateSessionTokens, summarizeArgs, type ChatState } from '../state/reducer';
 import type { HostToWebviewMessage } from '../protocol';
 
+describe('todoState', () => {
+	it('映射并清除空任务快照', () => {
+		const action = hostToAction({
+			command: 'todoState',
+			snapshot: { todos: [{ id: 'one', content: '实现任务面板', status: 'in_progress' }] },
+			summary: { total: 1, pending: 0, in_progress: 1, completed: 0, cancelled: 0 },
+		});
+		expect(action).toEqual({
+			type: 'todoState',
+			snapshot: { todos: [{ id: 'one', content: '实现任务面板', status: 'in_progress' }] },
+			summary: { total: 1, pending: 0, in_progress: 1, completed: 0, cancelled: 0 },
+		});
+		const populated = chatReducer(initialState, action!);
+		expect(populated.todoSnapshot?.todos[0].status).toBe('in_progress');
+		const cleared = chatReducer(populated, {
+			type: 'todoState',
+			snapshot: { todos: [] },
+			summary: { total: 0, pending: 0, in_progress: 0, completed: 0, cancelled: 0 },
+		});
+		expect(cleared.todoSnapshot).toBeNull();
+	});
+});
+
 /** 构造一个已进入会话且完成握手的初始状态。 */
 function activeState(overrides: Partial<ChatState> = {}): ChatState {
 	return {
