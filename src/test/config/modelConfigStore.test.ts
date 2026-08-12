@@ -50,12 +50,12 @@ function createMemorySecrets() {
 function setup() {
 	const globalState = createMemoryMemento();
 	const secrets = createMemorySecrets();
-	const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'yunxiao-model-store-'));
+	const globalConfigRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'yunxiao-model-store-'));
 	const store = new ModelConfigStore({
 		globalState,
 		secrets,
-	} as unknown as vscode.ExtensionContext, workspaceRoot);
-	return { store, globalState, secrets, workspaceRoot };
+	} as unknown as vscode.ExtensionContext, globalConfigRoot);
+	return { store, globalState, secrets, globalConfigRoot };
 }
 
 /** 合法模型配置输入。 */
@@ -186,10 +186,10 @@ describe('ModelConfigStore', () => {
 	});
 
 	describe('多模型文件与启用状态', () => {
-		it('非敏感字段写入工作区 .yunForce/modelConfig，密钥不写入文件', async () => {
-			const { store, workspaceRoot } = setup();
+		it('非敏感字段写入全局 .yunForce/modelConfig，密钥不写入文件', async () => {
+			const { store, globalConfigRoot } = setup();
 			await store.save(validInput({ apiKey: 'sk-file-secret' }));
-			const raw = fs.readFileSync(path.join(workspaceRoot, '.yunForce', 'modelConfig', 'models.json'), 'utf8');
+			const raw = fs.readFileSync(path.join(globalConfigRoot, 'modelConfig', 'models.json'), 'utf8');
 			assert.ok(raw.includes('gpt-4o-mini'));
 			assert.ok(!raw.includes('sk-file-secret'));
 		});
