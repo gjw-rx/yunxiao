@@ -14,15 +14,13 @@ interface SettingsNavItem {
 	readonly id: SettingsSection;
 	/** 显示名称。 */
 	readonly label: string;
-	/** 简短说明。 */
-	readonly description: string;
 }
 
 /** 设置页分类列表。 */
 const SETTINGS_NAV_ITEMS: readonly SettingsNavItem[] = [
-	{ id: 'model', label: '模型', description: '服务与生成参数' },
-	{ id: 'skill', label: 'Skill', description: '能力与工作流' },
-	{ id: 'usage', label: '使用情况', description: '用量与统计' },
+	{ id: 'model', label: '模型' },
+	{ id: 'skill', label: 'Skill' },
+	{ id: 'usage', label: '使用情况' },
 ];
 
 /** 设置分类图标。 */
@@ -127,7 +125,7 @@ export function SettingsPage(): JSX.Element {
 							onClick={() => setActiveSection(item.id)}
 						>
 							<SettingsSectionIcon section={item.id} />
-							<span><strong>{item.label}</strong><small>{item.description}</small></span>
+							<span>{item.label}</span>
 						</button>
 					))}
 				</nav>

@@ -4,7 +4,7 @@
  * 职责：渲染过滤后的工作区文件列表，支持键盘/鼠标选择；选中后移除输入框中的
  * `@查询` 片段并将文件加入已引用列表。
  */
-import { type JSX } from 'react';
+import { useEffect, useRef, type JSX } from 'react';
 import type { WorkspaceFile } from '../../protocol';
 
 /** 选择器属性。 */
@@ -21,6 +21,13 @@ export interface FilePickerProps {
 
 /** 文件选择器（弹出层）。 */
 export function FilePicker({ files, activeIndex, onSelect, onClose }: FilePickerProps): JSX.Element | null {
+	const activeOptionRef = useRef<HTMLButtonElement>(null);
+
+	/** 高亮项变更时将其滚动到候选列表的可见区域。 */
+	useEffect(() => {
+		activeOptionRef.current?.scrollIntoView({ block: 'nearest' });
+	}, [activeIndex]);
+
 	if (files.length === 0) {
 		return (
 			<div id="filePicker" className="show" role="listbox" aria-label="选择工作区文件">
@@ -41,6 +48,7 @@ export function FilePicker({ files, activeIndex, onSelect, onClose }: FilePicker
 			<div id="filePickerList">
 				{files.map((file, index) => (
 					<button
+						ref={index === activeIndex ? activeOptionRef : null}
 						type="button"
 						className={`file-option${index === activeIndex ? ' active' : ''}`}
 						role="option"

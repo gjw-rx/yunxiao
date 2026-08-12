@@ -1304,28 +1304,27 @@
 	display: flex;
 	flex: 0 0 188px;
 	flex-direction: column;
-	padding: 22px 10px;
-	border-right: 1px solid var(--border);
-	background: var(--vscode-sideBar-background, var(--bg));
+	padding: 36px 18px;
+	background: var(--bg);
 }
 .settings-nav-title {
-	padding: 0 8px 16px;
+	padding: 0 10px 16px;
 	font-size: 14px;
 	font-weight: 600;
 }
 .settings-nav nav {
 	display: flex;
 	flex-direction: column;
-	gap: 2px;
+	gap: 4px;
 }
 .settings-nav-item {
 	display: flex;
 	align-items: center;
 	gap: 9px;
 	width: 100%;
-	padding: 7px 8px;
+	padding: 8px 10px;
 	border: 0;
-	border-radius: 4px;
+	border-radius: 9px;
 	color: var(--muted);
 	background: transparent;
 	cursor: pointer;
@@ -1339,7 +1338,7 @@
 }
 .settings-nav-item.active {
 	color: var(--fg);
-	background: var(--vscode-list-activeSelectionBackground, var(--hover-bg));
+	background: var(--vscode-list-inactiveSelectionBackground, var(--hover-bg));
 }
 .settings-nav-item svg {
 	flex: 0 0 auto;
@@ -1348,21 +1347,9 @@
 	color: currentColor;
 }
 .settings-nav-item span {
-	display: flex;
 	min-width: 0;
-	flex-direction: column;
-	gap: 1px;
-}
-.settings-nav-item strong {
 	font-size: 12px;
 	font-weight: 600;
-}
-.settings-nav-item small {
-	overflow: hidden;
-	color: var(--muted);
-	font-size: 10px;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 .settings-content {
 	min-width: 0;
@@ -1370,9 +1357,9 @@
 	overflow-y: auto;
 }
 .settings-content-inner {
-	width: min(760px, 100%);
+	width: min(960px, 100%);
 	margin: 0 auto;
-	padding: 42px clamp(24px, 7vw, 64px) 80px;
+	padding: 42px clamp(24px, 5vw, 72px) 80px;
 }
 .settings-heading {
 	margin-bottom: 26px;
@@ -1481,7 +1468,7 @@
 }
 @media (max-width: 520px) {
 	.settings-page { flex-direction: column; }
-	.settings-nav { flex: 0 0 auto; padding: 10px; border-right: 0; border-bottom: 1px solid var(--border); }
+	.settings-nav { flex: 0 0 auto; padding: 10px; }
 	.settings-nav-title { display: none; }
 	.settings-nav nav { flex-direction: row; overflow-x: auto; }
 	.settings-nav-item { min-width: 116px; }
