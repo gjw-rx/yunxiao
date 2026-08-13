@@ -314,7 +314,8 @@ export class AgentLoop {
 				const history = loadHistoryForLLM(sessionId, this.messageStore);
 
 				// ── 3. 构建系统提示词（每轮重读项目规范，保证使用最新内容）──
-				// 配置来源二选一：claude 注入 CLAUDE.md/AGENTS.md 项目规范，trae 注入 .trae/rules 规则，none 均不注入，避免两套约束重复
+				// AGENTS.md 为默认加载的 Agent 指令文件，与配置来源解耦：claude 来源时项目级 CLAUDE.md 优先（loadProjectRules 内部决定）；
+				// trae 来源时 AGENTS.md 与 Trae 规则并存注入；none 来源仅注入 AGENTS.md（用户级 + 项目级）。
 				const syncSource = this.config.syncSource?.() ?? 'none';
 				const workspaceRoot = this.config.workspaceRoots[0] ?? '';
 				const systemPrompt = buildSystemPrompt({
@@ -325,7 +326,7 @@ export class AgentLoop {
 					date: new Date().toISOString().slice(0, 10),
 					modelId: this.config.model,
 					providerId: this.config.providerId,
-					projectRules: syncSource === 'claude' ? await loadProjectRules(workspaceRoot) : null,
+					projectRules: await loadProjectRules(workspaceRoot),
 					traeRules: syncSource === 'trae' ? await loadTraeRules(workspaceRoot) : null,
 				});
 

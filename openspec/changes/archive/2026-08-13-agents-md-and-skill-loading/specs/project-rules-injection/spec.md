@@ -1,8 +1,7 @@
-# project-rules-injection Specification
+# project-rules-injection Specification (delta)
 
-## Purpose
-定义项目规范（Agent 指令文件）的加载与注入：项目级 `CLAUDE.md`（优先）与 `AGENTS.md`（默认加载）解析、作为「项目级规范」注入系统提示词并标注来源、读取安全降级与每次运行读取最新内容。AGENTS.md 默认加载规则与「配置来源」解耦，与 agents-md-loading 能力共同构成完整的 Agent 文件机制。
-## Requirements
+## MODIFIED Requirements
+
 ### Requirement: 项目规范文件解析
 
 系统 SHALL 在每次会话运行时加载项目规范文件：项目级 `CLAUDE.md` 优先，存在时 SHALL 仅使用 `CLAUDE.md`；不存在时 SHALL 加载项目级 `AGENTS.md`；两者均不存在时项目级部分为空。`AGENTS.md` 作为默认加载的 Agent 指令文件，SHALL 与「配置来源」（syncSource）解耦：配置来源为 `none` 或 `trae` 时仍加载项目级 `AGENTS.md`（用户级与项目级 AGENTS.md 的默认加载与拼接规则由 agents-md-loading 能力规定）。
@@ -45,27 +44,3 @@
 
 - **WHEN** 项目规范注入生效时 Agent 会话启动
 - **THEN** 系统提示词仍包含原有的 agent 提示词、`<env>` 环境段与 `<available_skills>` 段
-
-### Requirement: 读取安全与失败降级
-
-读取项目规范文件 SHALL 遵循文件读取安全策略（大小上限、非文本文件检测等）。文件过大时 SHALL 截断或跳过；读取失败 SHALL 静默降级（不注入、不影响对话主流程）并记录日志。
-
-#### Scenario: 文件过大
-
-- **WHEN** `CLAUDE.md` 超过读取大小上限
-- **THEN** 系统截断内容或跳过注入，并记录日志
-
-#### Scenario: 读取失败
-
-- **WHEN** `CLAUDE.md` 读取抛出异常（如权限错误）
-- **THEN** 系统不注入项目规范，会话正常运行，错误被记录到日志
-
-### Requirement: 每次运行读取最新内容
-
-系统 SHALL 在每次 Agent 会话运行时（构建系统提示词时）重新读取项目规范文件，确保使用用户最新修改的内容。
-
-#### Scenario: 修改规范后新会话生效
-
-- **WHEN** 用户在两次会话之间修改了 `CLAUDE.md`
-- **THEN** 下一次会话构建的系统提示词包含修改后的内容
-

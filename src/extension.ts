@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as os from 'os';
 import { ChatViewProvider } from './chatPanel';
 import { ToolRegistry } from './core/toolRegistry';
 import { ToolRouter } from './core/toolRouter';
@@ -37,6 +36,7 @@ import { getWorkspaceRoots } from './tools/fs/pathGuard';
 import { SkillRegistry } from './skill/skillRegistry';
 import { loadSkillsFromDirectory } from './skill/skillLoader';
 import { SkillTool } from './skill/skillTool';
+import { getResidentSkillDirs, getSourceSkillDirs } from './skill/skillDirectories';
 import { installSkillArchive, type SkillInstallResult } from './skill/skillInstaller';
 import { ModelConfigStore } from './config/modelConfigStore';
 import type { ModelConfig } from './config/modelConfig';
@@ -187,7 +187,7 @@ async function _activate(context: vscode.ExtensionContext) {
 	registry.register(new GitStashTool());
 	registry.register(new TodoWriteTool(todoStore, eventBus));
 
-	// Skill 系统：默认项目 Skill 目录为 .claude/skills，按「配置来源」同步生态 Skill（默认 claude）。
+	// Skill 系统：Claude Skill 目录（~/.claude/skills 与项目 .claude/skills）默认常驻加载，与配置来源解耦。
 	// 不再读取 yunxiaoAgent.skills.directories / yunxiaoAgent.sync.source VS Code 配置。
 	const skillRegistry = new SkillRegistry();
 	registry.register(new SkillTool(skillRegistry));
@@ -212,53 +212,56 @@ async function _activate(context: vscode.ExtensionContext) {
 		})
 	);
 
-	// 生态配置同步（Claude / Trae 二选一）：按「配置来源」读取对应目录的 SKILL 并注册进 Skill 系统
-	// （claude → 项目 .claude/skills（先加载，优先）与 ~/.claude/skills（后加载，同名跳过）；trae → ~/.trae(s) 与项目 .trae(s)/skills；none → 不加载）。
-	// 记录本次同步注册的 skill 名，切换来源或安装刷新时据此卸载，避免多套生态配置叠加。
+	// Skill 同步：Claude Skill 目录（~/.claude/skills 与项目 .claude/skills）为常驻默认加载，与配置来源解耦、切源不卸载；
+	// 自定义 Skill 目录始终加载、Trae Skill 目录仅 trae 来源加载，二者为「来源绑定」加载，切源时先卸载重载。
+	// 记录来源绑定部分注册的 skill 名，切换来源或安装刷新时据此卸载，避免多套生态配置叠加。
 	// 同步走串行链：来源快速切换/安装刷新时按顺序执行，避免并发卸载/注册导致 skill 注册状态错乱。
 	let syncedSkillNames: string[] = [];
 	let syncChain: Promise<void> = Promise.resolve();
+
+	/**
+	 * 从目录加载 Skill 并注册（去重：同名不覆盖，先加载目录优先）。
+	 *
+	 * @param dir Skill 目录绝对路径
+	 * @returns 本次新注册的 Skill 名列表
+	 */
+	const registerSkillsFrom = async (dir: string): Promise<string[]> => {
+		const loaded = await loadSkillsFromDirectory(dir);
+		const registered: string[] = [];
+		for (const skill of loaded) {
+			if (skillRegistry.get(skill.name)) {
+				logger.log(`[Extension] 跳过同名 Skill（先加载目录优先） name=${skill.name} 目录=${dir}`);
+				continue;
+			}
+			skillRegistry.register(skill);
+			registered.push(skill.name);
+		}
+		if (loaded.length > 0) {
+			logger.log(`[Extension] 从 Skill 目录加载了 ${loaded.length} 个 Skill: ${dir}`);
+		}
+		return registered;
+	};
+
 	const syncSkills = (): Promise<void> => {
 		const run = async (): Promise<void> => {
+			// 卸载来源绑定 Skill（自定义目录 + Trae 生态），常驻默认加载的 Claude Skill 不受影响
 			for (const name of syncedSkillNames) {
 				skillRegistry.unregister(name);
-				logger.log(`[Extension] 卸载生态配置 Skill name=${name}`);
+				logger.log(`[Extension] 卸载来源绑定 Skill name=${name}`);
 			}
 			syncedSkillNames = [];
-			const source = getSyncSource(context.globalState);
 			// 实时获取工作区根（激活后新打开文件夹也能立即生效）
 			const workspaceRoot = getWorkspaceRoots()[0] ?? process.cwd();
+			// 常驻默认加载（与配置来源解耦）：项目 .claude/skills 先于用户级 ~/.claude/skills，同名时项目优先
+			for (const dir of getResidentSkillDirs(workspaceRoot)) {
+				await registerSkillsFrom(dir);
+			}
+			// 来源绑定加载：自定义 Skill 目录始终加载；Trae Skill 目录仅 trae 来源时加载
+			const source = getSyncSource(context.globalState);
 			const configuredDirs = getSkillDirectories(context.globalState)
 				.map((dir) => path.join(workspaceRoot, dir));
-			const sourceDirs =
-				source === 'claude'
-					? [
-						path.join(workspaceRoot, '.claude', 'skills'),
-						path.join(os.homedir(), '.claude', 'skills'),
-					]
-					: source === 'trae'
-						? [
-							path.join(os.homedir(), '.trae', 'skills'),
-							path.join(os.homedir(), '.trae-cn', 'skills'),
-							path.join(workspaceRoot, '.trae', 'skills'),
-							path.join(workspaceRoot, '.trae-cn', 'skills'),
-						]
-					: [];
-			const syncDirs = [...configuredDirs, ...sourceDirs];
-			for (const dir of syncDirs) {
-				const loaded = await loadSkillsFromDirectory(dir);
-				for (const skill of loaded) {
-					// 去重：先加载的目录优先（项目 .claude/skills 先于用户级），后续目录同名不覆盖（仅补缺）
-					if (skillRegistry.get(skill.name)) {
-						logger.log(`[Extension] 跳过同名 Skill（先加载目录优先） name=${skill.name} 目录=${dir}`);
-						continue;
-					}
-					skillRegistry.register(skill);
-					syncedSkillNames.push(skill.name);
-				}
-				if (loaded.length > 0) {
-					logger.log(`[Extension] 从生态配置目录加载了 ${loaded.length} 个 Skill: ${dir}`);
-				}
+			for (const dir of getSourceSkillDirs(workspaceRoot, source, configuredDirs)) {
+				syncedSkillNames.push(...(await registerSkillsFrom(dir)));
 			}
 			provider.refreshSlashCommands();
 		};
