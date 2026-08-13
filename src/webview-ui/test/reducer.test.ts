@@ -62,6 +62,12 @@ describe('协议映射 hostToAction', () => {
 		});
 	});
 
+	it('审批模式消息映射并更新当前状态', () => {
+		const action = hostToAction({ command: 'approvalMode', mode: 'full-access' });
+		expect(action).toEqual({ type: 'approvalMode', mode: 'full-access' });
+		expect(chatReducer(initialState, action!)).toMatchObject({ approvalMode: 'full-access' });
+	});
+
 	it('openSession 携带标题，sessionCreated 不带标题', () => {
 		expect(hostToAction({ command: 'openSession', sessionId: 's1', title: '旧会话' })).toEqual({
 			type: 'openSession',

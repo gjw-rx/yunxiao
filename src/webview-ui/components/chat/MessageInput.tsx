@@ -7,7 +7,7 @@
  */
 import { useEffect, useRef, useState, type JSX, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { post } from '../../bridge/vscode';
-import type { ModelPickerItem, SlashCommand, SlashCommandGroup, WorkspaceFile } from '../../protocol';
+import type { ApprovalMode, ModelPickerItem, SlashCommand, SlashCommandGroup, WorkspaceFile } from '../../protocol';
 import { findSlashCommandToken, type SlashCommandToken } from '../../utils/chatBehavior';
 import { SlashCommandPicker, type FilteredSlashCommand } from '../commands/SlashCommandPicker';
 import { FilePicker } from '../files/FilePicker';
@@ -20,6 +20,8 @@ export interface MessageInputProps {
 	isStreaming: boolean;
 	/** 模型名称 */
 	modelName: string;
+	/** 当前工作区审批模式。 */
+	approvalMode: ApprovalMode;
 	/** 已启用模型的选择弹窗候选项 */
 	modelProfiles: readonly ModelPickerItem[];
 	/** 已引用文件 */
@@ -51,6 +53,7 @@ export function MessageInput({
 	currentSessionId,
 	isStreaming,
 	modelName,
+	approvalMode,
 	modelProfiles,
 	selectedFiles,
 	selectedSkills,
@@ -67,6 +70,7 @@ export function MessageInput({
 	const [text, setText] = useState('');
 	const inputRef = useRef<HTMLTextAreaElement>(null);
 	const modelPickerRef = useRef<HTMLDivElement>(null);
+	const approvalModeRef = useRef<HTMLDivElement>(null);
 
 	// ── 选择器状态 ──
 	const [slashOpen, setSlashOpen] = useState(false);
@@ -78,6 +82,7 @@ export function MessageInput({
 	const [fileAtStart, setFileAtStart] = useState(-1);
 	const [filteredFiles, setFilteredFiles] = useState<WorkspaceFile[]>([]);
 	const [modelPickerOpen, setModelPickerOpen] = useState(false);
+	const [approvalModeOpen, setApprovalModeOpen] = useState(false);
 
 	// 输入框自动增高（上限 160px）
 	useEffect(() => {
@@ -100,15 +105,20 @@ export function MessageInput({
 
 	// 模型选择弹窗打开时，点击外部或按 Esc 关闭弹窗
 	useEffect(() => {
-		if (!modelPickerOpen) return;
+		if (!modelPickerOpen && !approvalModeOpen) return;
 		const closeOnOutsideClick = (event: MouseEvent): void => {
-			if (!modelPickerRef.current?.contains(event.target as Node)) {
+			if (
+				!modelPickerRef.current?.contains(event.target as Node) &&
+				!approvalModeRef.current?.contains(event.target as Node)
+			) {
 				setModelPickerOpen(false);
+				setApprovalModeOpen(false);
 			}
 		};
 		const closeOnEscape = (event: globalThis.KeyboardEvent): void => {
 			if (event.key === 'Escape') {
 				setModelPickerOpen(false);
+				setApprovalModeOpen(false);
 			}
 		};
 		document.addEventListener('mousedown', closeOnOutsideClick);
@@ -117,7 +127,7 @@ export function MessageInput({
 			document.removeEventListener('mousedown', closeOnOutsideClick);
 			document.removeEventListener('keydown', closeOnEscape);
 		};
-	}, [modelPickerOpen]);
+	}, [modelPickerOpen, approvalModeOpen]);
 
 	/** 切换模型选择弹窗并在打开时请求最新已启用模型列表。 */
 	const toggleModelPicker = (): void => {
@@ -133,6 +143,18 @@ export function MessageInput({
 	const selectModel = (modelId: string): void => {
 		setModelPickerOpen(false);
 		post({ command: 'selectModel', modelId });
+	};
+
+	/** 切换审批模式菜单的展开状态。 */
+	const toggleApprovalMode = (): void => {
+		setApprovalModeOpen((open) => !open);
+		setModelPickerOpen(false);
+	};
+
+	/** 提交审批模式切换请求，最终状态以宿主回推为准。 */
+	const selectApprovalMode = (mode: ApprovalMode): void => {
+		setApprovalModeOpen(false);
+		post({ command: 'setApprovalMode', mode });
 	};
 
 	/** 关闭两个选择器。 */
@@ -398,6 +420,39 @@ export function MessageInput({
 								<path d="M8 2v12M2 8h12" />
 							</svg>
 						</button>
+						<div className={`approval-mode${approvalMode === 'full-access' ? ' is-full-access' : ''}`} ref={approvalModeRef}>
+							<button
+								type="button"
+								id="approvalModeButton"
+								className="approval-mode-trigger"
+								title={approvalMode === 'full-access' ? '完全访问：非删除操作将自动批准' : '请求批准：操作前会请求确认'}
+								aria-label={approvalMode === 'full-access' ? '当前审批模式：完全访问' : '当前审批模式：请求批准'}
+								aria-haspopup="menu"
+								aria-expanded={approvalModeOpen}
+								onClick={toggleApprovalMode}
+							>
+								<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+									<path d="M8 1.75 13 3.7v3.7c0 3.15-2.1 5.75-5 6.85-2.9-1.1-5-3.7-5-6.85V3.7L8 1.75Z" />
+									<path d="m5.75 8 1.5 1.5 3-3" />
+								</svg>
+								<span>{approvalMode === 'full-access' ? '完全访问' : '请求批准'}</span>
+								<svg className="approval-mode-chevron" viewBox="0 0 12 12" aria-hidden="true">
+									<path d="M3 4.5 6 7.5l3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+								</svg>
+							</button>
+							{approvalModeOpen && (
+								<div className="approval-mode-menu" role="menu" aria-label="选择审批模式">
+									<button type="button" role="menuitemradio" aria-checked={approvalMode === 'request'} className={`approval-mode-option${approvalMode === 'request' ? ' selected' : ''}`} onClick={() => selectApprovalMode('request')}>
+										<span className="approval-mode-option-title">请求批准</span>
+										<small>编辑、执行等操作会在执行前请求确认</small>
+									</button>
+									<button type="button" role="menuitemradio" aria-checked={approvalMode === 'full-access'} className={`approval-mode-option approval-mode-option-danger${approvalMode === 'full-access' ? ' selected' : ''}`} onClick={() => selectApprovalMode('full-access')}>
+										<span className="approval-mode-option-title">完全访问</span>
+										<small>非删除操作自动批准；删除操作仍需确认</small>
+									</button>
+								</div>
+							)}
+						</div>
 					</div>
 					<div className="toolbar-right">
 						<div className="model-info" ref={modelPickerRef}>

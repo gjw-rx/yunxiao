@@ -15,6 +15,12 @@ import * as logger from '../logger';
 /** 审批决策。 */
 export type ApprovalDecision = 'allow' | 'always' | 'deny';
 
+/** 工作区工具审批模式。 */
+export type ApprovalMode = 'request' | 'full-access';
+
+/** 审批模式的 VS Code 配置键。 */
+export const APPROVAL_MODE_CONFIG_KEY = 'approvalMode';
+
 /** 可注入的提示器：展示审批弹窗并返回用户选择（关闭/拒绝返回 undefined）。 */
 export interface ApprovalPromptContext {
 	readonly toolName: string;
@@ -49,6 +55,10 @@ export interface ApprovalConfigStore {
 	addAlwaysAllow(name: string): Promise<void>;
 	getScopedApprovals?(): ScopedApproval[];
 	addScopedApproval?(approval: ScopedApproval): Promise<void>;
+	/** 读取当前工作区审批模式；缺失时由网关回退为 request。 */
+	getApprovalMode?(): unknown;
+	/** 持久化当前工作区审批模式。 */
+	setApprovalMode?(mode: ApprovalMode): Promise<void>;
 }
 
 /** ApprovalGateway 构造选项。 */
@@ -116,6 +126,16 @@ const defaultStore: ApprovalConfigStore = {
 		const filtered = current.filter((entry) => !sameScope(entry, approval));
 		await cfg.update(SCOPED_CONFIG_KEY, [...filtered, approval], vscodeApi().ConfigurationTarget.Workspace);
 	},
+	getApprovalMode(): unknown {
+		return vscodeApi().workspace.getConfiguration(CONFIG_SECTION).get<unknown>(APPROVAL_MODE_CONFIG_KEY);
+	},
+	async setApprovalMode(mode: ApprovalMode): Promise<void> {
+		await vscodeApi().workspace.getConfiguration(CONFIG_SECTION).update(
+			APPROVAL_MODE_CONFIG_KEY,
+			mode,
+			vscodeApi().ConfigurationTarget.Workspace,
+		);
+	},
 };
 
 export class ApprovalGateway {
@@ -134,6 +154,32 @@ export class ApprovalGateway {
 	}
 
 	/**
+	 * 获取有效的工作区审批模式，非法配置一律回退为请求批准。
+	 * @returns 当前有效审批模式。
+	 */
+	getApprovalMode(): ApprovalMode {
+		const mode = this.store.getApprovalMode?.();
+		if (mode === undefined || isApprovalMode(mode)) {
+			return mode ?? 'request';
+		}
+		logger.error(`[ApprovalGateway] 审批模式配置无效，已回退 request value=${String(mode)}`);
+		return 'request';
+	}
+
+	/**
+	 * 保存当前工作区审批模式。
+	 * @param mode 待保存的审批模式。
+	 * @returns Promise<void>。
+	 */
+	async setApprovalMode(mode: ApprovalMode): Promise<void> {
+		if (!this.store.setApprovalMode) {
+			throw new Error('审批模式存储不可用');
+		}
+		await this.store.setApprovalMode(mode);
+		logger.log(`[ApprovalGateway] 审批模式已保存 mode=${mode}`);
+	}
+
+	/**
 	 * 请求审批。命中持久/会话允许则直通；否则弹窗。
 	 * @returns 'allow' | 'always' 表示放行，'deny' 表示拒绝。
 	 */
@@ -142,10 +188,15 @@ export class ApprovalGateway {
 		summary: string,
 		sessionId?: string,
 		callId?: string,
-		scope: ApprovalScope = defaultScope()
+		scope: ApprovalScope = defaultScope(),
+		isDeletion = false,
 	): Promise<ApprovalDecision> {
 		const normalizedScope = normalizeScope(scope);
 		logger.log('[ApprovalGateway] 发起审批请求 toolName=' + toolName + ' sessionId=' + (sessionId ?? 'none') + ' callId=' + (callId ?? 'none'));
+		if (!isDeletion && this.getApprovalMode() === 'full-access') {
+			logger.log(`[ApprovalGateway] 完全访问自动批准 toolName=${toolName} sessionId=${sessionId ?? 'none'}`);
+			return 'allow';
+		}
 		// 1. 持久允许（配置）
 		if (this.matchesScopedApproval(toolName, normalizedScope)) {
 			return 'allow';
@@ -187,7 +238,7 @@ export class ApprovalGateway {
 		callId?: string,
 		scope?: ApprovalScope
 	): Promise<ApprovalDecision> {
-		const first = await this.requestApproval(toolName, summary, sessionId, callId, scope);
+		const first = await this.requestApproval(toolName, summary, sessionId, callId, scope, true);
 		if (first === 'deny') {
 			return 'deny';
 		}
@@ -227,6 +278,15 @@ export class ApprovalGateway {
 		}
 		await this.store.addAlwaysAllow(toolName);
 	}
+}
+
+/**
+ * 判断值是否为受支持的审批模式。
+ * @param value 待校验的未知配置值。
+ * @returns 是否为有效审批模式。
+ */
+export function isApprovalMode(value: unknown): value is ApprovalMode {
+	return value === 'request' || value === 'full-access';
 }
 
 /** 规范化本地范围，避免路径分隔符和大小写造成错误复用。 */

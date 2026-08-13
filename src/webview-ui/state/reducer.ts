@@ -7,6 +7,7 @@
  */
 import type {
 	ApprovalEntry,
+	ApprovalMode,
 	DiffEntry,
 	HistoryEntry,
 	ModelPickerItem,
@@ -48,6 +49,8 @@ export interface ChatState {
 	isStreaming: boolean;
 	/** 模型名称 */
 	modelName: string;
+	/** 当前工作区工具审批模式。 */
+	approvalMode: ApprovalMode;
 	/** 已启用模型的选择弹窗候选项 */
 	modelProfiles: ModelPickerItem[];
 	/** 斜杠命令分组 */
@@ -94,6 +97,7 @@ export const initialState: ChatState = {
 	sessionTitle: '',
 	isStreaming: false,
 	modelName: '',
+	approvalMode: 'request',
 	modelProfiles: [],
 	slashCommandGroups: [],
 	sessions: [],
@@ -177,6 +181,7 @@ export type ChatAction =
 	| { type: 'historyLoaded'; messages: HistoryEntry[] }
 	| { type: 'workspaceFiles'; files: WorkspaceFile[] }
 	| { type: 'modelInfo'; model: string }
+	| { type: 'approvalMode'; mode: ApprovalMode }
 	| { type: 'modelPicker'; models: readonly ModelPickerItem[] }
 	| { type: 'slashCommands'; groups: SlashCommandGroup[] }
 	| { type: 'sessionList'; sessions: SessionMeta[] }
@@ -535,6 +540,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 			return { ...state, workspaceFiles: action.files };
 		case 'modelInfo':
 			return { ...state, modelName: action.model };
+		case 'approvalMode':
+			return { ...state, approvalMode: action.mode };
 		case 'modelPicker':
 			return { ...state, modelProfiles: [...action.models] };
 		case 'slashCommands':

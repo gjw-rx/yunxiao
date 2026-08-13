@@ -14,6 +14,7 @@ import type { SessionTodoStore } from './memory/sessionTodoStore';
 import { summarizeTodos, type TodoStateUpdate } from './memory/todoTypes';
 import { buildSlashCommandGroups } from './chat/slashCommands';
 import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
+import { APPROVAL_MODE_CONFIG_KEY, isApprovalMode, type ApprovalMode } from './core/approvalGateway';
 import * as logger from './logger';
 
 interface ChatViewDeps {
@@ -122,6 +123,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       status: this._runtimeStatus,
       ...(this._runtimeMessage ? { message: this._runtimeMessage } : {}),
     });
+  }
+
+  /**
+   * 获取当前工作区的有效审批模式，非法值按安全默认值处理。
+   * @returns 当前有效审批模式。
+   */
+  private _getApprovalMode(): ApprovalMode {
+    const mode = vscode.workspace.getConfiguration('yunxiaoAgent').get<unknown>(APPROVAL_MODE_CONFIG_KEY);
+    if (mode === undefined || isApprovalMode(mode)) {
+      return mode ?? 'request';
+    }
+    logger.error(`[ChatPanel] 审批模式配置无效，已回退 request value=${String(mode)}`);
+    return 'request';
+  }
+
+  /**
+   * 向聊天 Webview 推送当前工作区审批模式。
+   * @param webview 接收审批模式的聊天 Webview。
+   * @returns void。
+   */
+  private _pushApprovalMode(webview: vscode.Webview): void {
+    webview.postMessage({ command: 'approvalMode', mode: this._getApprovalMode() });
+  }
+
+  /**
+   * 保存当前工作区审批模式。
+   * @param mode 待保存的有效审批模式。
+   * @returns Promise<void>。
+   */
+  private async _setApprovalMode(mode: ApprovalMode): Promise<void> {
+    await vscode.workspace.getConfiguration('yunxiaoAgent').update(
+      APPROVAL_MODE_CONFIG_KEY,
+      mode,
+      vscode.ConfigurationTarget.Workspace,
+    );
+    logger.log(`[ChatPanel] 审批模式已保存 mode=${mode}`);
   }
 
   /**
@@ -618,6 +655,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'webviewReady': {
         // 握手：UI 挂载完成后先同步当前运行时状态，避免未就绪时触发聊天业务。
         this._pushRuntimeState(webview);
+		this._pushApprovalMode(webview);
         if (this._runtimeStatus !== 'ready') {
           break;
         }
@@ -627,6 +665,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
+		case 'setApprovalMode': {
+			const mode = msg.mode;
+			if (!isApprovalMode(mode)) {
+				logger.error(`[ChatPanel] 拒绝无效审批模式请求 mode=${String(mode)}`);
+				this._pushApprovalMode(webview);
+				break;
+			}
+			try {
+				await this._setApprovalMode(mode);
+				this._pushApprovalMode(webview);
+			} catch (error) {
+				logger.error(`[ChatPanel] 保存审批模式失败 mode=${mode} error=${error instanceof Error ? error.message : String(error)}`);
+				this._pushApprovalMode(webview);
+			}
+			break;
+		}
       case 'openSettings': {
         this._showSettingsPanel();
         break;

@@ -12,6 +12,9 @@
 /** 配置来源（生态 Skill 与项目规则加载来源）。 */
 export type SyncSource = 'none' | 'claude' | 'trae';
 
+/** 工作区工具审批模式。 */
+export type ApprovalMode = 'request' | 'full-access';
+
 /** 设置页展示的模型配置视图（API Key 只以"是否已配置"布尔形式返回，密钥永不回传）。 */
 export interface ModelSettingsView {
 	/** 当前默认模型 ID；未配置时缺省。 */
@@ -295,6 +298,12 @@ export interface ModelInfoMessage {
 	readonly model: string;
 }
 
+/** 宿主同步当前工作区审批模式。 */
+export interface ApprovalModeMessage {
+	readonly command: 'approvalMode';
+	readonly mode: ApprovalMode;
+}
+
 /** 宿主返回对话输入框可切换的已启用模型列表。 */
 export interface ModelPickerMessage {
 	readonly command: 'modelPicker';
@@ -506,6 +515,7 @@ export interface RuntimeStateMessage {
 /** Host → Webview 判别联合。 */
 export type HostToWebviewMessage =
 	| RuntimeStateMessage
+	| ApprovalModeMessage
 	| ModelInfoMessage
 	| ModelPickerMessage
 	| SlashCommandsMessage
@@ -542,6 +552,12 @@ export type HostToWebviewMessage =
 /** 应用挂载完成握手：宿主随后推送模型名与斜杠命令初始数据。 */
 export interface WebviewReadyMessage {
 	readonly command: 'webviewReady';
+}
+
+/** 对话输入区请求切换当前工作区审批模式。 */
+export interface SetApprovalModeMessage {
+	readonly command: 'setApprovalMode';
+	readonly mode: ApprovalMode;
 }
 
 /** 新建会话。 */
@@ -729,6 +745,7 @@ export interface UploadSkillArchiveMessage {
 /** Webview → Host 判别联合。 */
 export type WebviewToHostMessage =
 	| WebviewReadyMessage
+	| SetApprovalModeMessage
 	| CreateSessionMessage
 	| SendMessageMessage
 	| StopStreamMessage

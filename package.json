@@ -7,7 +7,7 @@
     "url": "https://github.com/gjw-rx/yunxiao.git"
   },
   "description": "码力云效-对接自有ai服务",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "license": "MIT",
   "icon": "media/icon.png",
   "engines": {
@@ -110,6 +110,16 @@
           "default": [],
           "description": "本地工具的范围授权记录（工作区、工具、资源、有效期）；由扩展维护",
           "scope": "window"
+        },
+        "yunxiaoAgent.approvalMode": {
+          "type": "string",
+          "enum": [
+            "request",
+            "full-access"
+          ],
+          "default": "request",
+          "description": "本工作区的工具审批模式：请求批准会逐次确认；完全访问会自动批准非删除操作，删除操作仍需确认",
+          "scope": "resource"
         },
         "yunxiaoAgent.shellWhitelist": {
           "type": "array",

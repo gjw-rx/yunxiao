@@ -149,22 +149,25 @@ export class TerminalExecTool extends BaseTool {
 		const classifyResult = this.shellWhitelist.classify(command);
 
 		if (classifyResult.category === 'dangerous') {
-			logger.log(`# [Terminal] 危险命令待审批 - command=${command.slice(0, 100)}, reason=${classifyResult.reason}`);
+			logger.log(`# [Terminal] 危险命令已拦截 - command=${command.slice(0, 100)}, reason=${classifyResult.reason}`);
+			return {
+				status: 'cancelled',
+				error: `危险命令已被拦截: ${classifyResult.reason}`,
+				metadata: { duration_ms: Date.now() - startedAt },
+			};
 		}
 
-		// 3. 危险或未知命令交由用户审批
+		// 3. 删除命令始终走 destructive 审批；其他未知命令由审批模式决定。
 		if (classifyResult.category !== 'whitelisted') {
-			const risk = classifyResult.category === 'dangerous'
-				? `检测到危险模式：${classifyResult.reason}\n`
-				: '';
-			const summary = `${risk}terminal_exec 将执行：\n${command}`;
-			const decision = await this.approval.requestApproval(
-				'terminal_exec',
-				summary,
-				context.sessionId,
-				undefined,
-				{ workspaceId: context.workspaceRoots.join('|'), resourcePattern: 'command', commandPattern: command }
-			);
+			const summary = `terminal_exec 将执行：\n${command}`;
+			const scope = { workspaceId: context.workspaceRoots.join('|'), resourcePattern: 'command', commandPattern: command };
+			const decision = this.shellWhitelist.isDeletionCommand(command)
+				? await this.approval.requestDestructiveApproval(
+					'terminal_exec', summary, context.sessionId, undefined, scope
+				)
+				: await this.approval.requestApproval(
+					'terminal_exec', summary, context.sessionId, undefined, scope
+				);
 			if (decision === 'deny') {
 				return {
 					status: 'cancelled',

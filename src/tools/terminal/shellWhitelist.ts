@@ -92,4 +92,13 @@ export class ShellWhitelist {
 		// 3. 未知
 		return { category: 'unknown' };
 	}
+
+	/**
+	 * 判断命令是否具有删除文件或清理工作区的意图。
+	 * @param command 待识别的原始终端命令。
+	 * @returns 命中删除命令时返回 true。
+	 */
+	isDeletionCommand(command: string): boolean {
+		return /^(?:rm|rmdir|del|erase|remove-item)\b|^git\s+clean\b/i.test(command.trim());
+	}
 }

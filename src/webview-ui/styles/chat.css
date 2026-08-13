@@ -1409,6 +1409,73 @@
 	height: 15px;
 }
 
+.approval-mode {
+	position: relative;
+}
+.approval-mode-trigger {
+	display: inline-flex;
+	height: 28px;
+	align-items: center;
+	gap: 5px;
+	padding: 0 8px;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	color: var(--muted);
+	background: transparent;
+	cursor: pointer;
+	font-family: var(--font);
+	font-size: 10px;
+	font-weight: 600;
+	transition: color .15s, background .15s, border-color .15s;
+}
+.approval-mode-trigger:hover,
+.approval-mode-trigger[aria-expanded="true"] {
+	border-color: var(--border-light);
+	color: var(--fg);
+	background: var(--hover-bg);
+}
+.approval-mode-trigger:focus-visible {
+	outline: 1px solid var(--focus);
+	outline-offset: 1px;
+}
+.approval-mode-trigger > svg:first-child { width: 14px; height: 14px; }
+.approval-mode-chevron { width: 11px; height: 11px; transition: transform .15s; }
+.approval-mode-trigger[aria-expanded="true"] .approval-mode-chevron { transform: rotate(180deg); }
+.approval-mode.is-full-access .approval-mode-trigger { color: var(--vscode-editorWarning-foreground, #d7ba7d); }
+.approval-mode-menu {
+	position: absolute;
+	bottom: calc(100% + 8px);
+	left: 0;
+	display: grid;
+	width: 248px;
+	gap: 3px;
+	padding: 5px;
+	border: 1px solid var(--vscode-widget-border, var(--border));
+	border-radius: 8px;
+	background: var(--vscode-quickInput-background, var(--bg));
+	box-shadow: 0 10px 28px rgba(0, 0, 0, .28);
+	z-index: 120;
+	animation: picker-rise .12s ease-out both;
+}
+.approval-mode-option {
+	display: grid;
+	gap: 3px;
+	padding: 8px 9px;
+	border: 1px solid transparent;
+	border-radius: 5px;
+	color: var(--fg);
+	background: transparent;
+	cursor: pointer;
+	font-family: var(--font);
+	text-align: left;
+}
+.approval-mode-option:hover,
+.approval-mode-option.selected { border-color: var(--border-light); background: var(--hover-bg); }
+.approval-mode-option:focus-visible { outline: 1px solid var(--focus); outline-offset: -1px; }
+.approval-mode-option-title { font-size: 11px; font-weight: 650; }
+.approval-mode-option small { color: var(--muted); font-size: 10px; line-height: 1.4; }
+.approval-mode-option-danger.selected .approval-mode-option-title { color: var(--vscode-editorWarning-foreground, #d7ba7d); }
+
 .chevron {
 	width: 12px;
 	height: 12px;

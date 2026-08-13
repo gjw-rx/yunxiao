@@ -4,6 +4,7 @@ import {
 	type ApprovalDecision,
 	type ApprovalPrompter,
 	type ApprovalConfigStore,
+	type ApprovalMode,
 } from '../../core/approvalGateway';
 
 /** 构造可编程的 mock 提示器：按队列返回决策。 */
@@ -25,18 +26,27 @@ function mockPrompter(responses: (ApprovalDecision | undefined)[]): {
 }
 
 /** 可检查的 mock 配置存储。added/alwaysAllow 暴露在 store 上便于断言。 */
-function mockStore(initial: string[] = []): {
-	store: ApprovalConfigStore & { added: string[]; alwaysAllow: string[] };
+function mockStore(initial: string[] = [], approvalMode: unknown = undefined): {
+	store: ApprovalConfigStore & { added: string[]; alwaysAllow: string[]; approvalMode: unknown; savedModes: ApprovalMode[] };
 } {
 	const store = {
 		alwaysAllow: [...initial],
 		added: [] as string[],
+		approvalMode,
+		savedModes: [] as ApprovalMode[],
 		getAlwaysAllow(): string[] {
 			return store.alwaysAllow;
 		},
 		async addAlwaysAllow(name: string): Promise<void> {
 			store.added.push(name);
 			store.alwaysAllow.push(name);
+		},
+		getApprovalMode(): unknown {
+			return store.approvalMode;
+		},
+		async setApprovalMode(mode: ApprovalMode): Promise<void> {
+			store.savedModes.push(mode);
+			store.approvalMode = mode;
 		},
 	};
 	return { store };
@@ -175,5 +185,30 @@ describe('ApprovalGateway', () => {
 		const decision = await gw.requestDestructiveApproval('fs_delete_file', '删除 a', 'sess-1');
 		assert.strictEqual(decision, 'allow');
 		assert.strictEqual(calls.length, 2);
+	});
+
+	it('完全访问自动批准非删除操作且不写入会话授权', async () => {
+		const { store } = mockStore([], 'full-access');
+		const { prompter, calls } = mockPrompter(['deny']);
+		const gw = new ApprovalGateway({ prompter, store });
+		assert.strictEqual(await gw.requestApproval('fs_write_file', '写入 a', 'sess-1'), 'allow');
+		assert.strictEqual(calls.length, 0);
+		store.approvalMode = 'request';
+		assert.strictEqual(await gw.requestApproval('fs_write_file', '写入 a', 'sess-1'), 'deny');
+		assert.strictEqual(calls.length, 1);
+	});
+
+	it('完全访问不绕过 destructive 删除的双重确认', async () => {
+		const { store } = mockStore([], 'full-access');
+		const { prompter, calls } = mockPrompter(['allow', 'allow']);
+		const gw = new ApprovalGateway({ prompter, store });
+		assert.strictEqual(await gw.requestDestructiveApproval('fs_delete_file', '删除 a', 'sess-1'), 'allow');
+		assert.strictEqual(calls.length, 2);
+	});
+
+	it('非法审批模式回退到 request', () => {
+		const { store } = mockStore([], 'invalid');
+		const gw = new ApprovalGateway({ store });
+		assert.strictEqual(gw.getApprovalMode(), 'request');
 	});
 });

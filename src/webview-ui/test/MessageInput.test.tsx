@@ -34,6 +34,7 @@ describe('MessageInput', () => {
 				currentSessionId="session-1"
 				isStreaming={false}
 				modelName="deepseek-v4-flash"
+				approvalMode="request"
 				modelProfiles={modelProfiles}
 				selectedFiles={[]}
 				selectedSkills={[]}
@@ -67,5 +68,22 @@ describe('MessageInput', () => {
 		fireEvent.click(screen.getByRole('menuitem', { name: 'gpt-4o' }));
 
 		expect(bridge.post).toHaveBeenCalledWith({ command: 'selectModel', modelId: 'model-b' });
+	});
+
+	it('审批模式菜单说明完全访问的删除保护并提交切换请求', () => {
+		renderMessageInput();
+		fireEvent.click(screen.getByRole('button', { name: '当前审批模式：请求批准' }));
+		expect(screen.getByRole('menu', { name: '选择审批模式' })).toBeTruthy();
+		const fullAccess = screen.getByRole('menuitemradio', { name: /完全访问/ });
+		expect(fullAccess.textContent).toContain('删除操作仍需确认');
+		fireEvent.click(fullAccess);
+		expect(bridge.post).toHaveBeenCalledWith({ command: 'setApprovalMode', mode: 'full-access' });
+	});
+
+	it('按 Escape 关闭审批模式菜单', () => {
+		renderMessageInput();
+		fireEvent.click(screen.getByRole('button', { name: '当前审批模式：请求批准' }));
+		fireEvent.keyDown(document, { key: 'Escape' });
+		expect(screen.queryByRole('menu', { name: '选择审批模式' })).toBeNull();
 	});
 });
