@@ -2396,8 +2396,12 @@
 	cursor: default;
 }
 .change-review-page {
-	min-height: 100vh;
+	height: 100vh;
+	min-height: 0;
 	box-sizing: border-box;
+	overflow-x: hidden;
+	overflow-y: auto;
+	overscroll-behavior-y: contain;
 	padding: 34px 40px;
 	background: var(--bg);
 	color: var(--fg);
@@ -2498,6 +2502,7 @@
 	min-height: calc(100vh - 150px);
 }
 .change-diff-column {
+	min-width: 0;
 	overflow: hidden;
 	border: 1px solid var(--border);
 	border-radius: 7px;
@@ -2509,7 +2514,7 @@
 	color: var(--muted);
 	font-size: 12px;
 }
-.change-diff-column pre { margin: 0; overflow: auto; padding: 10px 0; font-family: var(--mono); font-size: 12px; line-height: 20px; }
+.change-diff-column pre { margin: 0; overflow-x: auto; overflow-y: visible; padding: 10px 0; font-family: var(--mono); font-size: 12px; line-height: 20px; }
 .change-diff-column code { display: block; min-width: max-content; padding-right: 14px; white-space: pre; }
 .change-diff-column code span { display: inline-block; width: 38px; margin-right: 12px; color: var(--muted); text-align: right; user-select: none; }
 .change-diff-column.before code { background: color-mix(in srgb, var(--error, #f85149) 9%, transparent); }
