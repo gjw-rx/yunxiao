@@ -1,12 +1,12 @@
 /**
- * Agent 指令文件读取 - 默认加载用户级全局与项目级的 AGENTS.md / CLAUDE.md 作为项目级规范。
+ * Agent 指令文件读取 - 配置来源为 claude 时，加载用户级全局与项目级的 AGENTS.md / CLAUDE.md 作为项目级规范。
  *
- * 参考 Claude Code 的 AGENTS.md 机制：
+ * 对齐 Claude Code 的 AGENTS.md 机制（属于 Claude 生态，跟随「配置来源」= claude）：
  * - 用户级全局：~/.claude/AGENTS.md（回退 ~/.claude/CLAUDE.md）
  * - 项目级：CLAUDE.md 优先（既有行为），回退 AGENTS.md
- * - AGENTS.md 为默认加载的 Agent 指令文件，与「配置来源」解耦（none/trae 来源仍加载）
  *
- * 由 AgentLoop 每轮构建系统提示词时调用，读取失败静默降级不影响主流程。
+ * 由 AgentLoop 在配置来源为 claude 时每轮构建系统提示词调用（trae/none 来源不调用），
+ * 读取失败静默降级不影响主流程。
  */
 import { promises as fs } from 'fs';
 import * as path from 'path';

@@ -37,21 +37,28 @@ describe('buildSystemPrompt', () => {
 		assert.ok(prompt.includes('C:\\Users\\test\\.claude\\AGENTS.md、C:\\fake-workspace\\AGENTS.md'));
 	});
 
-	it('projectRules 与 traeRules 并存时均注入', () => {
-		const prompt = buildSystemPrompt(
+	it('projectRules 与 traeRules 由调用方按来源二选一注入', () => {
+		const withProjectRules = buildSystemPrompt(
 			baseContext({
 				projectRules: {
 					sources: ['C:\\fake-workspace\\AGENTS.md'],
 					content: '# AGENTS 规范',
 				},
+			}),
+		);
+		assert.ok(withProjectRules.includes('# 项目级规范'));
+		assert.ok(!withProjectRules.includes('# Trae 项目规则'));
+
+		const withTraeRules = buildSystemPrompt(
+			baseContext({
 				traeRules: {
 					sources: ['.trae/rules/base.md'],
 					content: '## 来源: .trae/rules/base.md\n\n# Trae 规则',
 				},
 			}),
 		);
-		assert.ok(prompt.includes('# 项目级规范'));
-		assert.ok(prompt.includes('# Trae 项目规则'));
+		assert.ok(withTraeRules.includes('# Trae 项目规则'));
+		assert.ok(!withTraeRules.includes('# 项目级规范'));
 	});
 
 	it('无 skills 时不注入 available_skills 段落', () => {
