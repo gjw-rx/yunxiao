@@ -42,23 +42,42 @@ export function TodoPanel({ snapshot, summary }: TodoPanelProps): JSX.Element | 
 	}
 
 	return (
-		<section className="todo-panel" aria-label="任务进度">
+		<section className={`todo-panel${expanded ? '' : ' todo-panel--collapsed'}`} aria-label="任务进度">
 			<button
 				type="button"
 				className="todo-panel__header"
 				onClick={() => setExpanded((value) => !value)}
 				aria-expanded={expanded}
+				aria-controls={expanded ? 'todo-panel-list' : undefined}
 			>
-				<span className="todo-panel__chevron" aria-hidden="true">{expanded ? '⌄' : '›'}</span>
 				<span className="todo-panel__title">任务进度</span>
-				<span className="todo-panel__count">{summary.completed}/{summary.total}</span>
+				<span className="todo-panel__summary">
+					<span className="todo-panel__count">
+						<strong>{summary.completed}</strong><span aria-hidden="true"> / </span>{summary.total}
+					</span>
+					<span className="todo-panel__toggle-icon" aria-hidden="true">
+						<svg viewBox="0 0 12 12" fill="none">
+							<path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+						</svg>
+					</span>
+				</span>
 			</button>
+			<div
+				className="todo-panel__progress"
+				role="progressbar"
+				aria-label="任务完成进度"
+				aria-valuemin={0}
+				aria-valuemax={summary.total}
+				aria-valuenow={summary.completed}
+			>
+				<span style={{ width: `${(summary.completed / summary.total) * 100}%` }} />
+			</div>
 			{expanded && (
-				<ol className="todo-panel__list">
+				<ol id="todo-panel-list" className="todo-panel__list">
 					{snapshot.todos.map((todo) => (
 						<li className={`todo-panel__item todo-panel__item--${todo.status}`} key={todo.id}>
 							<span className="todo-panel__status" aria-hidden="true">{statusMark(todo.status)}</span>
-							<span>{todo.content}</span>
+							<span className="todo-panel__content">{todo.content}</span>
 						</li>
 					))}
 				</ol>

@@ -144,6 +144,12 @@ describe('reducer 状态转换', () => {
 		expect(state.messages.find((m) => m.id === liveId)).toMatchObject({ streaming: false });
 	});
 
+	it('用户消息发出后立即进入流式状态', () => {
+		const state = chatReducer(activeState(), { type: 'userMessageSent', text: '开始处理' });
+
+		expect(state.isStreaming).toBe(true);
+	});
+
 	it('stepEnd 只收尾文本步，不结束整体流式状态', () => {
 		let state = activeState({ isStreaming: true });
 		state = chatReducer(state, { type: 'replyChunk', text: '第一段' });

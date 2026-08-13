@@ -513,14 +513,16 @@ export function MessageInput({
 							<button
 								type="button"
 								id="stopBtn"
-								className="btn btn-stop btn-icon"
-								title="停止"
-								aria-label="停止"
+								className="btn btn-stop stop-generation-button"
+								disabled={!currentSessionId}
+								title="停止生成"
+								aria-label="停止生成"
 								onClick={() => currentSessionId && post({ command: 'stopStream', sessionId: currentSessionId })}
 							>
 								<svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
 									<rect x="1" y="1" width="8" height="8" rx="1" />
 								</svg>
+								<span className="stop-generation-button__label">停止生成</span>
 							</button>
 						)}
 					</div>

@@ -64,6 +64,13 @@
 	--diff-del-bg: var(--vscode-diffEditor-removedTextBackground, rgba(244, 135, 113, 0.2));
 	--diff-add-line: var(--vscode-diffEditor-insertedLineBackground, rgba(137, 209, 133, 0.12));
 	--diff-del-line: var(--vscode-diffEditor-removedLineBackground, rgba(244, 135, 113, 0.12));
+	/* 深色编辑器中的高对比 Diff 色阶：保持新增与删除在深蓝背景中可立即区分。 */
+	--diff-add-strong-line: color-mix(in srgb, #00c98d 42%, var(--bg));
+	--diff-del-strong-line: color-mix(in srgb, #ff5a6a 42%, var(--bg));
+	--diff-add-strong-text: color-mix(in srgb, #d4ffed 88%, var(--fg));
+	--diff-del-strong-text: color-mix(in srgb, #ffe0e4 88%, var(--fg));
+	--diff-add-strong-mark: color-mix(in srgb, #00bd82 64%, var(--bg));
+	--diff-del-strong-mark: color-mix(in srgb, #d94253 64%, var(--bg));
 }
 
 * {

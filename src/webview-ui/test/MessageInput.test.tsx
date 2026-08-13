@@ -28,11 +28,11 @@ describe('MessageInput', () => {
 	];
 
 	/** 创建带有模型列表的消息输入组件。 */
-	const renderMessageInput = (): void => {
+	const renderMessageInput = (isStreaming = false): void => {
 		render(
 			<MessageInput
 				currentSessionId="session-1"
-				isStreaming={false}
+				isStreaming={isStreaming}
 				modelName="deepseek-v4-flash"
 				approvalMode="request"
 				modelProfiles={modelProfiles}
@@ -85,5 +85,14 @@ describe('MessageInput', () => {
 		fireEvent.click(screen.getByRole('button', { name: '当前审批模式：请求批准' }));
 		fireEvent.keyDown(document, { key: 'Escape' });
 		expect(screen.queryByRole('menu', { name: '选择审批模式' })).toBeNull();
+	});
+
+	it('流式回复期间显示停止生成按钮并发送中断请求', () => {
+		renderMessageInput(true);
+		const stopButton = screen.getByRole('button', { name: '停止生成' });
+
+		fireEvent.click(stopButton);
+
+		expect(bridge.post).toHaveBeenCalledWith({ command: 'stopStream', sessionId: 'session-1' });
 	});
 });

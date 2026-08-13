@@ -558,7 +558,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 			// 用户消息由前端渲染（宿主不回传）：开启新回合并追加消息
 			const turn = state.turnCounter + 1;
 			const messages = [...state.messages, { id: nextId('user'), kind: 'user' as const, text: action.text, turn }];
-			return { ...state, messages, turnCounter: turn, selectedFiles: [], selectedSkills: [] };
+			return { ...state, messages, turnCounter: turn, selectedFiles: [], selectedSkills: [], isStreaming: true };
 		}
 		case 'deleteUserMessage': {
 			// 删除用户消息及其后续同回合内容（与迁移前"删除此消息"行为一致）
