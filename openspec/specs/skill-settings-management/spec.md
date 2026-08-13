@@ -2,9 +2,7 @@
 
 ## Purpose
 在设置页面列出已加载 Skill 及其来源，并将用户通过安装入口提交的有效 Skill 内容安装到项目 Claude Skill 目录（`.claude/skills/<skill-name>/SKILL.md`），随后刷新运行时可用 Skill。
-
 ## Requirements
-
 ### Requirement: 设置页展示已加载 Skill
 设置 Webview SHALL 请求并展示当前 Skill 注册表中每个已加载 Skill 的名称、描述和来源路径。页面打开及安装成功后的快照 MUST 反映当前注册表状态。
 
@@ -33,3 +31,11 @@
 #### Scenario: 初始同步期间变更 Skill 来源
 - **WHEN** 首次后台同步尚未完成，用户在设置页保存新的 Skill 来源或目录
 - **THEN** 系统串行执行同步操作，并在保存操作返回成功时展示新配置对应的已完成注册表快照及最新斜杠命令
+
+### Requirement: 设置页提供 Agent 生态来源
+Skill 设置页 SHALL 将 `agent` 作为生态配置来源单选项展示，并保持与 `none`、`claude`、`trae` 的互斥选择行为。切换成功后的设置页 Skill 快照 SHALL 反映当前注册表中来自 Agent 目录的 Skill 及其来源路径。
+
+#### Scenario: 从设置页切换到 Agent
+- **WHEN** 用户在 Skill 设置页面选择 `agent`
+- **THEN** 页面在同步完成后显示 Agent 来源为当前选择，并展示新加载的 Skill 或明确空状态
+

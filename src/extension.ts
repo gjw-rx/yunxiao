@@ -212,8 +212,8 @@ async function _activate(context: vscode.ExtensionContext) {
 		})
 	);
 
-	// 生态配置同步（Claude / Trae 二选一）：按「配置来源」读取对应目录的 SKILL 并注册进 Skill 系统
-	// （claude → 项目 .claude/skills（先加载，优先）与 ~/.claude/skills（后加载，同名跳过）；trae → ~/.trae(s) 与项目 .trae(s)/skills；none → 不加载）。
+	// 生态配置同步（Claude / Trae / Agent 互斥）：按「配置来源」读取对应目录的 SKILL 并注册进 Skill 系统
+	// （claude → 项目 .claude/skills（先加载，优先）与 ~/.claude/skills（后加载，同名跳过）；trae → ~/.trae(s) 与项目 .trae(s)/skills；agent → ~/.agents/skills；none → 不加载）。
 	// 记录本次同步注册的 skill 名，切换来源或安装刷新时据此卸载，避免多套生态配置叠加。
 	// 同步走串行链：来源快速切换/安装刷新时按顺序执行，避免并发卸载/注册导致 skill 注册状态错乱。
 	let syncedSkillNames: string[] = [];
@@ -243,7 +243,9 @@ async function _activate(context: vscode.ExtensionContext) {
 							path.join(workspaceRoot, '.trae', 'skills'),
 							path.join(workspaceRoot, '.trae-cn', 'skills'),
 						]
-					: [];
+						: source === 'agent'
+							? [path.join(os.homedir(), '.agents', 'skills')]
+							: [];
 			const syncDirs = [...configuredDirs, ...sourceDirs];
 			for (const dir of syncDirs) {
 				const loaded = await loadSkillsFromDirectory(dir);

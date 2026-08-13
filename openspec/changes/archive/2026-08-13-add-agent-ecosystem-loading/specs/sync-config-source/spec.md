@@ -1,8 +1,5 @@
-# sync-config-source Specification
+## MODIFIED Requirements
 
-## Purpose
-本能力提供「配置来源」单选配置（`yunxiaoAgent.sync.source`），将 Claude 与 Trae 两套生态配置（SKILL 同步 + 项目规则注入）收敛为三选一：`none` / `claude` / `trae`。避免两套配置同时开启导致系统提示词重复出现相关约束信息、skill 叠加加载。替换原有的两个布尔开关（`yunxiaoAgent.claude.syncEnabled`、`yunxiaoAgent.trae.syncEnabled`）。
-## Requirements
 ### Requirement: 配置来源单选
 系统 SHALL 在插件配置页面中提供配置来源的枚举单选，取值 `none` / `claude` / `trae` / `agent`，默认 `claude`。`none` 表示不加载任何生态配置；`claude` 表示加载 Claude 生态；`trae` 表示加载 Trae 生态；`agent` 表示加载 Agent 生态。四值互斥，同一时刻只生效一个来源。配置值非法时 SHALL 回退默认值 `claude`。系统 SHALL NOT 通过 `yunxiaoAgent.sync.source` VS Code 配置项读写该值。
 
@@ -51,11 +48,3 @@
 #### Scenario: none 来源不注入
 - **WHEN** 配置来源为 `none`，项目同时存在 `CLAUDE.md`、`AGENTS.md` 与 `.trae/rules`
 - **THEN** 系统提示词不包含任何生态项目规则段落
-
-### Requirement: 配置变更热生效
-系统 SHALL 监听 `yunxiaoAgent.sync.*` 配置变更：切换来源时重新执行生态 SKILL 同步并刷新斜杠命令数据。同步过程 SHALL 串行执行（变更回调排队），避免快速连续切换导致卸载/注册交错产生状态错乱；任一次同步失败 SHALL 不影响其他功能。
-
-#### Scenario: 变更后立即生效
-- **WHEN** 用户将配置来源从 `trae` 切换为 `claude` 后不重启插件
-- **THEN** 生态 skill 与项目规则注入随即按新来源生效（skill 立即刷新，规则注入在下一次系统提示词构建时生效）
-

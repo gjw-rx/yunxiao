@@ -234,6 +234,16 @@ describe('ChatViewProvider 设置面板宿主协议', () => {
 		assert.strictEqual(msg?.source, 'trae');
 	});
 
+	it('setSyncSource 切换为 agent 后保存并回推 agent 来源快照', async () => {
+		const { messages, panel, internals, currentSource } = setup();
+		await internals._handleSettingsMessage(panel, { command: 'setSyncSource', source: 'agent' });
+
+		assert.strictEqual(currentSource(), 'agent');
+		const msg = lastMessage(messages, 'skillsList');
+		assert.ok(msg, '来源切换后应回推最新 skillsList');
+		assert.strictEqual(msg?.source, 'agent');
+	});
+
 	it('setSkillDirectories 保存目录并回推重新加载后的 Skill 快照', async () => {
 		const { messages, panel, internals, currentDirectories } = setup();
 		await internals._handleSettingsMessage(panel, {

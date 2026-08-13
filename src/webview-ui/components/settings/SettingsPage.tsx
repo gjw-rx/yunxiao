@@ -34,10 +34,11 @@ const SETTINGS_NAV_ITEMS: readonly SettingsNavItem[] = [
 	{ id: 'usage', label: '使用情况' },
 ];
 
-/** 配置来源选项（三值互斥，默认 claude）。 */
+/** 配置来源选项（四值互斥，默认 claude）。 */
 const SOURCE_OPTIONS: readonly { value: SyncSource; label: string }[] = [
 	{ value: 'claude', label: 'Claude' },
 	{ value: 'trae', label: 'Trae' },
+	{ value: 'agent', label: 'Agent' },
 	{ value: 'none', label: '不加载' },
 ];
 
@@ -331,7 +332,7 @@ function SkillSettings({
 							</label>
 						))}
 						</div>
-						<span className="settings-field-help">来源之间互斥，切换后会立即重新加载。</span>
+						<span className="settings-field-help">来源之间互斥，切换后会立即重新加载。Agent 来源加载全局 ~/.agents/skills 目录；Skill 列表中会显示其来源路径。</span>
 					</div>
 					<label className="settings-field">
 						<span className="settings-field-label">Skill 加载目录</span>

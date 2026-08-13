@@ -105,10 +105,12 @@ export interface SystemPromptContext {
 	readonly modelId?: string;
 	/** Provider ID（如 "openai"） */
 	readonly providerId?: string;
-	/** 项目级规范（CLAUDE.md / AGENTS.md 内容）；与 traeRules 二选一注入（由调用方按配置来源保证只传其一） */
+	/** 项目级规范（CLAUDE.md / AGENTS.md 内容）；与 traeRules、agentProjectRules 互斥注入（由调用方按配置来源保证只传其一） */
 	readonly projectRules?: ProjectRules | null;
-	/** Trae 项目规则（.trae/rules 与 .trae-cn/rules 内容）；与 projectRules 二选一注入（由调用方按配置来源保证只传其一） */
+	/** Trae 项目规则（.trae/rules 与 .trae-cn/rules 内容）；与 projectRules、agentProjectRules 互斥注入（由调用方按配置来源保证只传其一） */
 	readonly traeRules?: TraeRules | null;
+	/** Agent 生态项目规则（工作区根 AGENTS.md 内容）；与 projectRules、traeRules 互斥注入（由调用方按配置来源保证只传其一） */
+	readonly agentProjectRules?: ProjectRules | null;
 }
 
 /** 检测目录是否为 git 仓库 */
@@ -194,7 +196,21 @@ function buildTraeRulesSection(rules: TraeRules | null | undefined): string {
 	].join('\n');
 }
 
-/** 构建完整系统提示词：Agent 提示词 + 环境信息 + 项目规范 + Trae 规则 + Skill guidance。 */
+/** 构建 Agent 生态项目规则段。无规则时返回空字符串。 */
+function buildAgentProjectRulesSection(rules: ProjectRules | null | undefined): string {
+	if (!rules) {
+		return '';
+	}
+	return [
+		'# Agent 项目规则',
+		`以下内容为 Agent 生态项目规范（来源：${rules.source}），开发工作必须遵循：`,
+		'<agent_project_rules>',
+		rules.content,
+		'</agent_project_rules>',
+	].join('\n');
+}
+
+/** 构建完整系统提示词：Agent 提示词 + 环境信息 + 项目规范 + Trae 规则 + Agent 规则 + Skill guidance。 */
 export function buildSystemPrompt(context: SystemPromptContext): string {
 	const sections: string[] = [];
 
@@ -216,6 +232,12 @@ export function buildSystemPrompt(context: SystemPromptContext): string {
 		sections.push(traeSection);
 	}
 
+	// Agent 生态项目规则（存在则注入）
+	const agentSection = buildAgentProjectRulesSection(context.agentProjectRules);
+	if (agentSection) {
+		sections.push(agentSection);
+	}
+
 	// Skill guidance（为空则跳过）
 	const guidance = buildSkillGuidance(context.skills);
 	if (guidance) {
@@ -224,7 +246,7 @@ export function buildSystemPrompt(context: SystemPromptContext): string {
 
 	const systemPrompt = sections.join('\n\n');
 
-	logger.log(`[SystemPrompt] 构建完成 length=${systemPrompt.length} 自定义=${context.agentPrompt?.trim() ? 'yes' : 'no'} skills=${context.skills.length} projectRules=${context.projectRules?.source ?? 'none'} traeRules=${context.traeRules?.sources.length ?? 0}`);
+	logger.log(`[SystemPrompt] 构建完成 length=${systemPrompt.length} 自定义=${context.agentPrompt?.trim() ? 'yes' : 'no'} skills=${context.skills.length} projectRules=${context.projectRules?.source ?? 'none'} traeRules=${context.traeRules?.sources.length ?? 0} agentRules=${context.agentProjectRules?.source ?? 'none'}`);
 
 	return systemPrompt;
 }

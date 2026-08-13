@@ -46,7 +46,7 @@ interface ChatViewDeps {
 interface SettingsPanelDeps {
   /** 插件私有模型配置存储 */
   readonly modelStore: ModelConfigStore;
-  /** 读取配置来源（none/claude/trae） */
+  /** 读取配置来源（none/claude/trae/agent） */
   readonly getSyncSource: () => SyncSource;
   /** 读取用户配置的 Skill 加载目录 */
   readonly getSkillDirectories: () => string[];

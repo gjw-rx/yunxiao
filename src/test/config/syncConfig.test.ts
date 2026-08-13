@@ -1,5 +1,5 @@
 /**
- * SyncConfig 测试 - 覆盖配置来源私有存储：默认 claude、三值互斥、非法值回退。
+ * SyncConfig 测试 - 覆盖配置来源私有存储：默认 claude、四值互斥、非法值回退。
  */
 import * as assert from 'assert';
 import * as vscode from 'vscode';
@@ -36,8 +36,8 @@ describe('SyncConfig', () => {
 		assert.strictEqual(getSyncSource(globalState as unknown as vscode.Memento), 'claude');
 	});
 
-	it('保存后可读取 none / claude / trae 三值', () => {
-		for (const source of ['none', 'claude', 'trae'] as const) {
+	it('保存后可读取 none / claude / trae / agent 四值', () => {
+		for (const source of ['none', 'claude', 'trae', 'agent'] as const) {
 			const globalState = createMemoryMemento();
 			const effective = setSyncSource(globalState as unknown as vscode.Memento, source);
 			assert.strictEqual(effective, source);

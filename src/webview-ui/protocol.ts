@@ -10,7 +10,7 @@
 // ── 共享界面状态类型 ──
 
 /** 配置来源（生态 Skill 与项目规则加载来源）。 */
-export type SyncSource = 'none' | 'claude' | 'trae';
+export type SyncSource = 'none' | 'claude' | 'trae' | 'agent';
 
 /** 工作区工具审批模式。 */
 export type ApprovalMode = 'request' | 'full-access';
@@ -536,7 +536,7 @@ export interface ModelSettingsSavedMessage {
 export interface SkillsListMessage {
 	readonly command: 'skillsList';
 	readonly skills: SkillInfo[];
-	/** 当前配置来源（none/claude/trae） */
+	/** 当前配置来源（none/claude/trae/agent） */
 	readonly source: SyncSource;
 	/** 用户配置的 Skill 加载目录（均相对工作区根） */
 	readonly directories: string[];
@@ -792,7 +792,7 @@ export interface RequestSkillsMessage {
 	readonly command: 'requestSkills';
 }
 
-/** 设置页切换配置来源（none/claude/trae，三值互斥）。 */
+/** 设置页切换配置来源（none/claude/trae/agent，四值互斥）。 */
 export interface SetSyncSourceMessage {
 	readonly command: 'setSyncSource';
 	readonly source: SyncSource;

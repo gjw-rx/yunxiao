@@ -23,6 +23,9 @@ describe('Extension Test Suite', () => {
 		assert.match(source, /await syncSkills\(\);\s*provider\.refreshModelInfo\(\);\s*provider\.setRuntimeStatus\('ready'\)/, '首次同步完成后必须发布 ready 状态');
 		assert.match(source, /setSyncSource[\s\S]*?await syncSkills\(\);/, '切换 Skill 来源必须等待同步完成');
 		assert.match(source, /setSkillDirectories[\s\S]*?await syncSkills\(\);/, '保存 Skill 目录必须等待同步完成');
+		assert.match(source, /source === 'agent'\s*\?\s*\[path\.join\(os\.homedir\(\), '\.agents', 'skills'\)\]/, 'agent 来源必须加载全局 ~/.agents/skills 目录');
+		assert.match(source, /const syncDirs = \[\.\.\.configuredDirs, \.\.\.sourceDirs\]/, '显式配置目录必须先于生态目录加载（同名补缺）');
+		assert.match(source, /skillRegistry\.unregister\(name\)/, '切换来源时必须先卸载上次来源注册的生态 Skill');
 	});
 
 	it('Sample test', () => {

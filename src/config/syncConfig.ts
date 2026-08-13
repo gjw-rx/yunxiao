@@ -1,10 +1,11 @@
 /**
- * 配置来源管理 - 「配置来源」单选（none / claude / trae）的私有存储读写。
+ * 配置来源管理 - 「配置来源」单选（none / claude / trae / agent）的私有存储读写。
  *
- * Claude 与 Trae 的配置（SKILL 同步 + 项目规则注入）二选一：
+ * Claude、Trae 与 Agent 的配置（SKILL 同步 + 项目规则注入）互斥单选：
  * - none：不加载任何生态配置
  * - claude：加载 Claude 目录 SKILL 与项目 CLAUDE.md/AGENTS.md 规范（默认）
  * - trae：加载 Trae 目录 SKILL 与项目 .trae/rules 规则
+ * - agent：加载全局 ~/.agents/skills SKILL 与工作区根 AGENTS.md 规则
  *
  * 配置来源存入扩展私有 globalState，不再通过 `yunxiaoAgent.sync.source` VS Code 配置项读写。
  */
@@ -12,14 +13,14 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as logger from '../logger';
 
-/** 配置来源取值：none / claude / trae 三选一 */
-export type SyncSource = 'none' | 'claude' | 'trae';
+/** 配置来源取值：none / claude / trae / agent 四选一 */
+export type SyncSource = 'none' | 'claude' | 'trae' | 'agent';
 
 /** 配置来源默认值（默认 claude，加载 Claude 项目 Skill 目录）。 */
 export const DEFAULT_SYNC_SOURCE: SyncSource = 'claude';
 
 /** 合法取值集合（用于校验配置值，非法回退默认） */
-const VALID_SOURCES: readonly SyncSource[] = ['none', 'claude', 'trae'];
+const VALID_SOURCES: readonly SyncSource[] = ['none', 'claude', 'trae', 'agent'];
 
 /** 配置来源在 globalState 中的键名。 */
 const SYNC_SOURCE_STATE_KEY = 'yunxiaoAgent.syncSource';
@@ -53,7 +54,7 @@ export function normalizeSkillDirectories(raw: unknown): string[] {
  * 读取「配置来源」单选值。枚举外值回退默认 `claude` 并记录日志。
  *
  * @param globalState 扩展私有持久化状态
- * @returns 配置来源（none / claude / trae）
+ * @returns 配置来源（none / claude / trae / agent）
  */
 export function getSyncSource(globalState: vscode.Memento): SyncSource {
 	const raw = globalState.get<SyncSource>(SYNC_SOURCE_STATE_KEY, DEFAULT_SYNC_SOURCE);

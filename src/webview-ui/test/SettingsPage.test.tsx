@@ -229,6 +229,33 @@ describe('SettingsPage', () => {
 		expect(screen.getByText('暂无已加载 Skill')).toBeTruthy();
 	});
 
+	/** Skill 页应提供 Agent 生态来源单选并提交切换请求。 */
+	it('可切换配置来源为 Agent 并提交 setSyncSource', async () => {
+		render(<SettingsPage />);
+		fireEvent.click(screen.getByRole('button', { name: 'Skill' }));
+		emit({ command: 'skillsList', skills: [], source: 'claude', directories: ['.vscode/skills'], installTarget: '.claude/skills/<skill-name>/SKILL.md' });
+
+		fireEvent.click(screen.getByRole('radio', { name: 'Agent' }));
+		expect(bridge.post).toHaveBeenCalledWith({ command: 'setSyncSource', source: 'agent' });
+	});
+
+	/** 切换成功后的快照应反映 agent 来源，并展示来自全局目录的 Skill 来源路径。 */
+	it('agent 来源同步成功后展示新加载 Skill 及来源路径', async () => {
+		render(<SettingsPage />);
+		fireEvent.click(screen.getByRole('button', { name: 'Skill' }));
+		emit({
+			command: 'skillsList',
+			skills: [{ name: 'plan', description: 'Agent 规划', sourcePath: '/home/user/.agents/skills/plan/SKILL.md' }],
+			source: 'agent',
+			directories: ['.vscode/skills'],
+			installTarget: '.claude/skills/<skill-name>/SKILL.md',
+		});
+
+		expect(await screen.findByText('plan')).toBeTruthy();
+		expect(screen.getByText('/home/user/.agents/skills/plan/SKILL.md')).toBeTruthy();
+		expect((screen.getByRole('radio', { name: 'Agent' }) as HTMLInputElement).checked).toBe(true);
+	});
+
 	/** Skill 页应允许维护加载目录，并将变更提交给宿主刷新。 */
 	it('保存 Skill 加载目录并请求重新加载', async () => {
 		render(<SettingsPage />);

@@ -19,7 +19,7 @@ import type { ToolResult, ToolCall } from '../core/types';
 import type { SkillRegistry } from '../skill/skillRegistry';
 import { toolSchemasToDefinitions, llmToolCallToCoreToolCall, toolResultToContent } from './toolAdapter';
 import { buildSystemPrompt } from './systemPrompt';
-import { loadProjectRules } from './projectRules';
+import { loadProjectRules, loadAgentProjectRules } from './projectRules';
 import { loadTraeRules } from './traeRules';
 import type { SyncSource } from '../config/syncConfig';
 import type { RollbackRecorder } from '../core/rollbackJournal';
@@ -76,7 +76,7 @@ export interface AgentLoopConfig {
 	readonly skillRegistry?: SkillRegistry | null;
 	/** 上下文压缩配置（可选，不配置则不启用压缩） */
 	readonly compaction?: CompactionConfig;
-	/** 配置来源读取函数（none/claude/trae 三选一）：决定项目规则注入哪一套（CLAUDE.md 或 .trae/rules），由扩展装配时注入 */
+	/** 配置来源读取函数（none/claude/trae/agent 四选一）：决定项目规则注入哪一套（CLAUDE.md、.trae/rules 或 AGENTS.md），由扩展装配时注入 */
 	readonly syncSource?: () => SyncSource;
 	/** 当前会话任务快照存储，用于将未结束任务临时注入模型上下文。 */
 	readonly todoStore?: SessionTodoStore;
@@ -313,8 +313,8 @@ export class AgentLoop {
 				// ── 2. 加载完整历史（每轮重新加载，确保模型看到完整上下文）──
 				const history = loadHistoryForLLM(sessionId, this.messageStore);
 
-				// ── 3. 构建系统提示词（每轮重读项目规范，保证使用最新内容）──
-				// 配置来源二选一：claude 注入 CLAUDE.md/AGENTS.md 项目规范，trae 注入 .trae/rules 规则，none 均不注入，避免两套约束重复
+				// ── 3. 构建系统提示词（每轮重读项目规则，保证使用最新内容）──
+				// 配置来源互斥：claude 注入 CLAUDE.md/AGENTS.md 项目规范，trae 注入 .trae/rules 规则，agent 注入工作区根 AGENTS.md，none 均不注入，避免多套约束重复
 				const syncSource = this.config.syncSource?.() ?? 'none';
 				const workspaceRoot = this.config.workspaceRoots[0] ?? '';
 				const systemPrompt = buildSystemPrompt({
@@ -327,6 +327,7 @@ export class AgentLoop {
 					providerId: this.config.providerId,
 					projectRules: syncSource === 'claude' ? await loadProjectRules(workspaceRoot) : null,
 					traeRules: syncSource === 'trae' ? await loadTraeRules(workspaceRoot) : null,
+					agentProjectRules: syncSource === 'agent' ? await loadAgentProjectRules(workspaceRoot) : null,
 				});
 
 				// ── 4. 组装消息 ──
