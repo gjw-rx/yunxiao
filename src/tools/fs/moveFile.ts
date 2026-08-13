@@ -84,6 +84,26 @@ export class MoveFileTool extends BaseTool {
 		// 4. 自动建目标父目录
 		await fs.mkdir(path.dirname(toResolved.fsPath), { recursive: true });
 
+		// 4.5 记录回滚快照（源文件必存在；覆盖目标存在时一并记录，供 turn 回滚恢复）
+		if (context.sessionId && context.turnUserSeq !== undefined && context.rollbackRecorder) {
+			await context.rollbackRecorder.record({
+				sessionId: context.sessionId,
+				userSeq: context.turnUserSeq,
+				fsPath: fromResolved.fsPath,
+				relativePath: fromResolved.relativePath,
+				existedBefore: true,
+			});
+			if (overwritten) {
+				await context.rollbackRecorder.record({
+					sessionId: context.sessionId,
+					userSeq: context.turnUserSeq,
+					fsPath: toResolved.fsPath,
+					relativePath: toResolved.relativePath,
+					existedBefore: true,
+				});
+			}
+		}
+
 		// 5. 移动（跨设备回退 copy+delete）
 		try {
 			try {

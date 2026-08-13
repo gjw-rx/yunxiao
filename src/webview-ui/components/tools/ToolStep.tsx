@@ -15,10 +15,12 @@ export interface ToolStepProps {
 	entry: ToolEntry;
 	/** 点击展开/收起详情 */
 	onToggle: () => void;
+	/** 删除该工具结果消息（历史消息可删，实时步骤缺省） */
+	onDelete?: () => void;
 }
 
 /** 单个工具时间线步骤。 */
-export function ToolStep({ entry, onToggle }: ToolStepProps): JSX.Element {
+export function ToolStep({ entry, onToggle, onDelete }: ToolStepProps): JSX.Element {
 	const argPreview = summarizeArgs(entry.args);
 	return (
 		<div className={`step tool clickable ${entry.state}${entry.expanded ? ' expanded' : ''}`}>
@@ -47,6 +49,23 @@ export function ToolStep({ entry, onToggle }: ToolStepProps): JSX.Element {
 				<span className="step-chevron">
 					<ChevronIcon />
 				</span>
+				{onDelete && (
+					<button
+						type="button"
+						className="step-action-btn delete-btn"
+						title="删除此工具结果"
+						aria-label="删除此工具结果"
+						onClick={(e) => {
+							e.stopPropagation();
+							onDelete();
+						}}
+					>
+						<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+							<path d="M2.5 4h11M5.5 4V2.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V4M4.5 4v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4" />
+							<path d="M6.5 7.5v3.5M9.5 7.5v3.5" />
+						</svg>
+					</button>
+				)}
 			</div>
 			{entry.expanded && (
 				<div className="step-detail">

@@ -25,10 +25,10 @@ import type {
 
 /** 消息流条目（扁平渲染顺序数组，按 turn 分组渲染）。 */
 export type MessageItem =
-	| { id: string; kind: 'user'; text: string; turn: number }
-	| { id: string; kind: 'assistant'; text: string; streaming: boolean; tokenUsage?: TokenUsageDetail; turn: number }
+	| { id: string; kind: 'user'; text: string; turn: number; seq?: number; injected?: boolean }
+	| { id: string; kind: 'assistant'; text: string; streaming: boolean; tokenUsage?: TokenUsageDetail; turn: number; seq?: number }
 	| { id: string; kind: 'thought'; text: string; turn: number }
-	| { id: string; kind: 'tool'; callId: string; turn: number }
+	| { id: string; kind: 'tool'; callId: string; turn: number; seq?: number }
 	| { id: string; kind: 'plan'; steps: readonly string[]; turn: number }
 	| { id: string; kind: 'approval'; callId: string; turn: number }
 	| { id: string; kind: 'diff'; callId: string; turn: number }
@@ -82,6 +82,8 @@ export interface ChatState {
 	liveAssistantId: string | null;
 	/** 当前思考步骤 id（增量合并目标） */
 	liveThoughtId: string | null;
+	/** 回滚后待回填输入框的文本（rollbackRestored 事件写入，MessageInput 消费后置空） */
+	pendingDraft?: string;
 }
 
 /** 初始状态。 */
@@ -184,6 +186,8 @@ export type ChatAction =
 	| { type: 'userMessageSent'; text: string }
 	| { type: 'deleteUserMessage'; messageId: string }
 	| { type: 'deleteAssistantMessage'; messageId: string }
+	| { type: 'rollbackRestored'; text: string }
+	| { type: 'clearPendingDraft' }
 	| { type: 'toggleToolExpand'; callId: string }
 	| { type: 'toggleDiffExpand'; callId: string }
 	| { type: 'clearError' };
@@ -199,6 +203,7 @@ function resetConversation(state: ChatState): ChatState {
 		turnCounter: 0,
 		liveAssistantId: null,
 		liveThoughtId: null,
+		pendingDraft: undefined,
 		isStreaming: false,
 		sessionTokenUsage: null,
 		todoSnapshot: null,
@@ -464,7 +469,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 			const toolEntries: Record<string, ToolEntry> = {};
 			for (const m of action.messages) {
 				if (m.role === 'tool' && m.toolCallId) {
-					// 工具结果消息：更新已有 pending 条目，或创建已完成步骤
+					// 工具结果消息：更新已有 pending 条目，或创建已完成步骤；并关联后端 seq（供删除定位）
 					const existing = toolEntries[m.toolCallId];
 					if (existing) {
 						toolEntries[m.toolCallId] = {
@@ -472,6 +477,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 							state: 'success',
 							output: m.content,
 						};
+						messages = messages.map((item) =>
+							item.kind === 'tool' && item.callId === m.toolCallId ? { ...item, seq: m.seq } : item
+						);
 					} else {
 						turnCounter += 1;
 						const callId = m.toolCallId;
@@ -482,13 +490,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 							output: m.content,
 							expanded: false,
 						};
-						messages = [...messages, { id: nextId('tool'), kind: 'tool', callId, turn: turnCounter }];
+						messages = [...messages, { id: nextId('tool'), kind: 'tool', callId, turn: turnCounter, seq: m.seq }];
 					}
 				} else if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
 					// 含工具调用的 assistant 消息：先渲染回复文本，再渲染工具步骤（与实时交错顺序一致）
 					turnCounter += 1;
 					if (m.content) {
-						messages = [...messages, { id: nextId('assistant'), kind: 'assistant', text: m.content, streaming: false, tokenUsage: m.tokenUsage, turn: turnCounter }];
+						messages = [...messages, { id: nextId('assistant'), kind: 'assistant', text: m.content, streaming: false, tokenUsage: m.tokenUsage, turn: turnCounter, seq: m.seq }];
 					}
 					for (const tc of m.toolCalls) {
 						let parsedArgs: unknown;
@@ -508,10 +516,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 					}
 				} else if (m.role === 'assistant') {
 					turnCounter += 1;
-					messages = [...messages, { id: nextId('assistant'), kind: 'assistant', text: m.content, streaming: false, tokenUsage: m.tokenUsage, turn: turnCounter }];
+					messages = [...messages, { id: nextId('assistant'), kind: 'assistant', text: m.content, streaming: false, tokenUsage: m.tokenUsage, turn: turnCounter, seq: m.seq }];
 				} else if (m.role === 'user') {
 					turnCounter += 1;
-					messages = [...messages, { id: nextId('user'), kind: 'user', text: m.content, turn: turnCounter }];
+					messages = [...messages, { id: nextId('user'), kind: 'user', text: m.content, turn: turnCounter, seq: m.seq, ...(m.injected ? { injected: true } : {}) }];
 				}
 			}
 			const sessionTokenUsage = aggregateSessionTokens(action.messages);
@@ -565,6 +573,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 			const turn = msg.turn;
 			const messages = state.messages.filter((m) => !(m.kind !== 'user' && m.turn === turn));
 			return { ...state, messages, liveAssistantId: null, liveThoughtId: null };
+		}
+		case 'rollbackRestored': {
+			// 回滚成功后：待回填输入框的文本（MessageInput 消费后清空）
+			return { ...state, pendingDraft: action.text };
+		}
+		case 'clearPendingDraft': {
+			// 输入框已回填，清空待回填文本（保证同文本二次回填仍触发 useEffect）
+			return { ...state, pendingDraft: undefined };
 		}
 		case 'toggleToolExpand': {
 			const entry = state.toolEntries[action.callId];

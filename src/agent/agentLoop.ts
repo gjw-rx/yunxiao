@@ -22,6 +22,7 @@ import { buildSystemPrompt } from './systemPrompt';
 import { loadProjectRules } from './projectRules';
 import { loadTraeRules } from './traeRules';
 import type { SyncSource } from '../config/syncConfig';
+import type { RollbackRecorder } from '../core/rollbackJournal';
 import type { CompactionConfig, CompactionResult } from './compaction';
 import { compactIfNeeded } from './compaction';
 import { estimateText, estimateRequest } from './tokenEstimator';
@@ -76,6 +77,8 @@ export interface AgentLoopConfig {
 	readonly syncSource?: () => SyncSource;
 	/** 当前会话任务快照存储，用于将未结束任务临时注入模型上下文。 */
 	readonly todoStore?: SessionTodoStore;
+	/** 回滚快照记录器（写文件工具在执行前记录改动前状态）。 */
+	readonly rollbackRecorder?: RollbackRecorder;
 }
 
 const MAX_STEPS_PROMPT =
@@ -213,7 +216,7 @@ export class AgentLoop {
 					stepWarned = true;
 					const warning = `You are approaching the maximum step limit (${this.config.maxSteps} steps). You have used ${step} steps. Please wrap up your work and provide your final answer.`;
 					messages.push({ role: 'user', content: warning });
-					this.messageStore.append(sessionId, { role: 'user', content: warning });
+					this.messageStore.append(sessionId, { role: 'user', content: warning, injected: true });
 					logger.log(`[AgentLoop] step=${step} 接近 maxSteps=${this.config.maxSteps}，注入预警`);
 				}
 
@@ -352,7 +355,7 @@ export class AgentLoop {
 						emptyReplyRetries++;
 						logger.log(`[AgentLoop] step=${step} 空回复，注入提示后重试 ${emptyReplyRetries}/${MAX_EMPTY_REPLY_RETRIES} finish=${finishReason}`);
 						this.messageStore.append(sessionId, { role: 'assistant', content: text, tokenUsage: tokenSnapshot ?? undefined });
-						this.messageStore.append(sessionId, { role: 'user', content: EMPTY_REPLY_PROMPT });
+						this.messageStore.append(sessionId, { role: 'user', content: EMPTY_REPLY_PROMPT, injected: true });
 						step++;
 						continue;
 					}
@@ -379,7 +382,7 @@ export class AgentLoop {
 					tokenUsage: tokenSnapshot ?? undefined,
 				});
 
-				const toolContext = this.buildToolContext(sessionId, runId);
+				const toolContext = this.buildToolContext(sessionId, runId, userMsgSeq);
 
 				// ── 11. 执行工具：只读+canParallel 最多 3 并发，写/执行串行，结果按模型返回顺序入库 ──
 				const { blocked } = await this.executeToolCalls(
@@ -480,7 +483,7 @@ export class AgentLoop {
 	}
 
 	/** 构建 ToolContext，注入运行时信息。 */
-	private buildToolContext(sessionId: string, runId: string): ToolContext {
+	private buildToolContext(sessionId: string, runId: string, userSeq: number): ToolContext {
 		return {
 			workspaceRoots: this.config.workspaceRoots,
 			maxFileSize: this.config.maxFileSize,
@@ -492,6 +495,8 @@ export class AgentLoop {
 			toolTimeoutMs: this.config.toolTimeoutMs,
 			sessionId,
 			runId,
+			turnUserSeq: userSeq,
+			rollbackRecorder: this.config.rollbackRecorder,
 			terminalOutputLimit: this.config.terminalOutputLimit,
 			abortSignal: this.abortController?.signal,
 			toolResultLimit: this.config.toolResultLimit,
@@ -531,6 +536,7 @@ export class AgentLoop {
 			this.messageStore.append(sessionId, {
 				role: 'user',
 				content: guidance,
+				injected: true,
 			});
 		}
 

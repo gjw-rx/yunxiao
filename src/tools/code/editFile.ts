@@ -230,6 +230,17 @@ export class CodeEditTool extends BaseTool {
 			};
 		}
 
+		// 8.5 记录回滚快照（改动前状态，供 turn 回滚恢复；编辑目标必然存在）
+		if (context.sessionId && context.turnUserSeq !== undefined && context.rollbackRecorder) {
+			await context.rollbackRecorder.record({
+				sessionId: context.sessionId,
+				userSeq: context.turnUserSeq,
+				fsPath: resolved.fsPath,
+				relativePath: resolved.relativePath,
+				existedBefore: true,
+			});
+		}
+
 		const applyTmp = path.join(
 			path.dirname(resolved.fsPath),
 			`.${path.basename(resolved.fsPath)}.${crypto.randomUUID()}.tmp`

@@ -86,6 +86,8 @@ export function hostToAction(msg: HostToWebviewMessage): ChatAction | null {
 			return { type: 'sessionList', sessions: msg.sessions };
 		case 'currentSessionDeleted':
 			return { type: 'currentSessionDeleted' };
+		case 'rollbackRestored':
+			return { type: 'rollbackRestored', text: msg.text };
 		case 'triggerNewSession':
 			// 需要副作用：由订阅回调发送 createSession
 			return null;

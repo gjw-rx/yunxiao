@@ -109,6 +109,13 @@ describe('协议映射 hostToAction', () => {
 	it('triggerNewSession 需要副作用，映射为 null', () => {
 		expect(hostToAction({ command: 'triggerNewSession' })).toBeNull();
 	});
+
+	it('rollbackRestored 回推回填文本映射为对应动作', () => {
+		expect(hostToAction({ command: 'rollbackRestored', text: '重构登录模块' })).toEqual({
+			type: 'rollbackRestored',
+			text: '重构登录模块',
+		});
+	});
 });
 
 describe('reducer 状态转换', () => {
@@ -186,17 +193,21 @@ describe('reducer 状态转换', () => {
 		expect(state.messages.some((message) => message.kind === 'approval' && message.callId === 'c3')).toBe(false);
 	});
 
-	it('historyLoaded 重建消息并恢复工具步骤与 token 聚合', () => {
+	it('historyLoaded 重建消息并恢复工具步骤与 token 聚合（保留 seq 供删除/回滚定位）', () => {
 		const state = chatReducer(activeState(), {
 			type: 'historyLoaded',
 			messages: [
-				{ role: 'user', content: 'hello' },
-				{ role: 'assistant', content: '', toolCalls: [{ id: 't1', name: 'fs_read_file', arguments: '{"path":"a.ts"}' }] },
-				{ role: 'tool', toolCallId: 't1', content: 'file content' },
-				{ role: 'assistant', content: '回复', tokenUsage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, reasoning: 20, tool_calls: 0, model_output: 30, user_input: 10, context: 90, source: 'usage' } },
+				{ role: 'user', content: 'hello', seq: 0 },
+				{ role: 'assistant', content: '', seq: 1, toolCalls: [{ id: 't1', name: 'fs_read_file', arguments: '{"path":"a.ts"}' }] },
+				{ role: 'tool', toolCallId: 't1', content: 'file content', seq: 2 },
+				{ role: 'assistant', content: '回复', seq: 3, tokenUsage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, reasoning: 20, tool_calls: 0, model_output: 30, user_input: 10, context: 90, source: 'usage' } },
 			],
 		});
 
+		const userMsg = state.messages.find((m) => m.kind === 'user');
+		expect(userMsg).toMatchObject({ seq: 0 });
+		const toolMsg = state.messages.find((m) => m.kind === 'tool');
+		expect(toolMsg).toMatchObject({ seq: 2 });
 		expect(state.messages.filter((m) => m.kind === 'user')).toHaveLength(1);
 		expect(state.toolEntries['t1']).toMatchObject({ state: 'success', tool: 'fs_read_file', output: 'file content', args: { path: 'a.ts' } });
 		// 带 toolCalls 的空 content assistant 消息无 token 账，按内容估算计入（与迁移前行为一致）
@@ -237,6 +248,17 @@ describe('reducer 状态转换', () => {
 		expect(userTurn).toBeGreaterThan(0);
 	});
 
+	it('rollbackRestored 记录待回填输入框文本', () => {
+		const next = chatReducer(activeState(), { type: 'rollbackRestored', text: '重构登录模块' });
+		expect(next.pendingDraft).toBe('重构登录模块');
+	});
+
+	it('clearPendingDraft 清空待回填文本（支持同文本二次回填）', () => {
+		let state = chatReducer(activeState(), { type: 'rollbackRestored', text: 'x' });
+		state = chatReducer(state, { type: 'clearPendingDraft' });
+		expect(state.pendingDraft).toBeUndefined();
+	});
+
 	it('deleteAssistantMessage 删除助手消息所在回合（步骤 + 回复），保留用户消息', () => {
 		let state = activeState();
 		state = chatReducer(state, { type: 'userMessageSent', text: 'hi' });
@@ -253,10 +275,10 @@ describe('reducer 状态转换', () => {
 describe('历史 token 聚合 aggregateSessionTokens', () => {
 	it('仅以 assistant tokenUsage 快照为权威，user inputTokens 不双重累计', () => {
 		const agg = aggregateSessionTokens([
-			{ role: 'user', content: 'hello', inputTokens: 50 },
-			{ role: 'assistant', content: 'hi', tokenUsage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, reasoning: 20, tool_calls: 0, model_output: 30, user_input: 10, context: 90, source: 'usage' } },
-			{ role: 'user', content: 'again', inputTokens: 40 },
-			{ role: 'assistant', content: 'ok', tokenUsage: { prompt_tokens: 200, completion_tokens: 60, total_tokens: 260, reasoning: 0, tool_calls: 0, model_output: 60, user_input: 20, context: 180, source: 'usage', cache_read_tokens: 90, no_cache_tokens: 110 } },
+			{ role: 'user', content: 'hello', seq: 0, inputTokens: 50 },
+			{ role: 'assistant', content: 'hi', seq: 1, tokenUsage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, reasoning: 20, tool_calls: 0, model_output: 30, user_input: 10, context: 90, source: 'usage' } },
+			{ role: 'user', content: 'again', seq: 2, inputTokens: 40 },
+			{ role: 'assistant', content: 'ok', seq: 3, tokenUsage: { prompt_tokens: 200, completion_tokens: 60, total_tokens: 260, reasoning: 0, tool_calls: 0, model_output: 60, user_input: 20, context: 180, source: 'usage', cache_read_tokens: 90, no_cache_tokens: 110 } },
 		]);
 		expect(agg).not.toBeNull();
 		expect(agg?.total_tokens).toBe(410);
@@ -269,9 +291,9 @@ describe('历史 token 聚合 aggregateSessionTokens', () => {
 	it('无快照旧 assistant 消息按内容估算补齐（仅展示）', () => {
 		const oldText = 'old reply without usage';
 		const agg = aggregateSessionTokens([
-			{ role: 'user', content: 'hello' },
-			{ role: 'assistant', content: oldText },
-			{ role: 'assistant', content: 'ok', tokenUsage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, reasoning: 20, tool_calls: 0, model_output: 30, user_input: 10, context: 90, source: 'usage' } },
+			{ role: 'user', content: 'hello', seq: 0 },
+			{ role: 'assistant', content: oldText, seq: 1 },
+			{ role: 'assistant', content: 'ok', seq: 2, tokenUsage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, reasoning: 20, tool_calls: 0, model_output: 30, user_input: 10, context: 90, source: 'usage' } },
 		]);
 		expect(agg?.total_tokens).toBe(150 + Math.ceil(oldText.length / 4));
 		expect(agg?.breakdown?.model_output).toBe(30 + Math.ceil(oldText.length / 4));

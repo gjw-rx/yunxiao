@@ -8,6 +8,7 @@ import { SecurityAudit } from './core/securityAudit';
 import { ReliabilityMetrics } from './core/reliabilityMetrics';
 import { EventBus } from './core/eventBus';
 import { ToolExecutionJournal } from './core/toolExecutionJournal';
+import { RollbackJournal } from './core/rollbackJournal';
 import { ApprovalGateway } from './core/approvalGateway';
 import { LocalSessionManager } from './core/localSessionManager';
 import { ReadFileTool, DEFAULT_MAX_FILE_SIZE } from './tools/fs/readFile';
@@ -110,6 +111,8 @@ async function _activate(context: vscode.ExtensionContext) {
 	await migrateLegacyMessages(context, fileStore);
 	const messageStore = new MessageStore(fileStore);
 	const todoStore = new SessionTodoStore(fileStore);
+	// 回滚快照：与会话存储同 workspace 隔离目录，记录写文件工具改动前的状态
+	const rollbackJournal = new RollbackJournal(path.join(fileStore.sessionDirPath, 'rollback'));
 
 	// 本地工具注册表
 	const registry = new ToolRegistry();
@@ -317,11 +320,12 @@ async function _activate(context: vscode.ExtensionContext) {
 			syncSource: () => getSyncSource(context.globalState),
 			compaction: compactionConfig,
 			todoStore,
+			rollbackRecorder: rollbackJournal,
 		}
 	);
 
 	// 本地会话管理器
-	const sessionManager = new LocalSessionManager(agentLoop, messageStore);
+	const sessionManager = new LocalSessionManager(agentLoop, messageStore, rollbackJournal, workspaceRoot);
 
 	// 回填 provider 的依赖（解决循环依赖：provider -> approval -> provider）
 	(provider as unknown as { _sessionManager: LocalSessionManager })._sessionManager = sessionManager;

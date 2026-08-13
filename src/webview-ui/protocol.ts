@@ -162,6 +162,8 @@ export interface HistoryEntry {
 	readonly role: string;
 	/** 消息文本内容 */
 	readonly content: string;
+	/** 存储层消息序号（删除/回滚时用于定位消息） */
+	readonly seq: number;
 	/** assistant 消息携带的工具调用列表 */
 	readonly toolCalls?: readonly { id: string; name: string; arguments: string }[];
 	/** tool 消息关联的工具调用 ID */
@@ -184,6 +186,8 @@ export interface HistoryEntry {
 	};
 	/** user 消息的输入 token 分摊值（估算） */
 	readonly inputTokens?: number;
+	/** 是否为系统注入消息（step 预警等）；仅 user 消息可能为 true */
+	readonly injected?: boolean;
 }
 
 /** 单次 LLM 调用的 token 用量明细（tokenUsage 事件 payload.token_usage）。 */
@@ -453,6 +457,12 @@ export interface CurrentSessionDeletedMessage {
 	readonly command: 'currentSessionDeleted';
 }
 
+/** 回滚成功后回推被回滚的用户输入，供前端回填输入框。 */
+export interface RollbackRestoredMessage {
+	readonly command: 'rollbackRestored';
+	readonly text: string;
+}
+
 /** 设置页模型配置快照（响应 requestModelSettings / 保存成功推送）。 */
 export interface ModelSettingsMessage {
 	readonly command: 'modelSettings';
@@ -521,6 +531,7 @@ export type HostToWebviewMessage =
 	| WorkspaceFilesMessage
 	| SessionListMessage
 	| CurrentSessionDeletedMessage
+	| RollbackRestoredMessage
 	| ModelSettingsMessage
 	| ModelSettingsSavedMessage
 	| SkillsListMessage
@@ -609,6 +620,22 @@ export interface OpenSessionRequestMessage {
 export interface DeleteSessionMessage {
 	readonly command: 'deleteSession';
 	readonly sessionId: string;
+}
+
+/** 删除单条消息（宿主按角色补删配对消息并回推最新历史）。 */
+export interface DeleteMessageMessage {
+	readonly command: 'deleteMessage';
+	readonly sessionId: string;
+	/** 存储层消息序号 */
+	readonly seq: number;
+}
+
+/** 回滚用户输入 turn（宿主弹确认框，恢复文件并截断消息）。 */
+export interface RollbackTurnMessage {
+	readonly command: 'rollbackTurn';
+	readonly sessionId: string;
+	/** 用户消息序号 */
+	readonly seq: number;
 }
 
 /** 请求在编辑器中打开独立设置标签。 */
@@ -715,6 +742,8 @@ export type WebviewToHostMessage =
 	| RequestSessionsMessage
 	| OpenSessionRequestMessage
 	| DeleteSessionMessage
+	| DeleteMessageMessage
+	| RollbackTurnMessage
 	| OpenSettingsMessage
 	| SwitchModelMessage
 	| CompactContextMessage

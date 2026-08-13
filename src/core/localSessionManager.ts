@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 import type { AgentLoop } from '../agent/agentLoop';
 import type { MessageStore } from '../memory/messageStore';
 import type { SessionMeta } from '../memory/sessionFileStore';
+import type { RollbackJournal } from './rollbackJournal';
 import type { Message } from '../memory/types';
 import type { CompactionResult } from '../agent/compaction';
 import * as logger from '../logger';
@@ -16,8 +17,12 @@ import * as logger from '../logger';
 export interface HistoryEntry {
 	role: string;
 	content: string;
+	/** 存储层消息序号（删除/回滚时用于定位消息） */
+	seq: number;
 	toolCalls?: Array<{ id: string; name: string; arguments: string }>;
 	toolCallId?: string;
+	/** 是否为系统注入消息（step 预警等）；仅 user 消息可能为 true */
+	injected?: boolean;
 	/** assistant 消息的 token 账（真实 usage + 四类拆分），供历史重载后恢复展示 */
 	tokenUsage?: import('../memory/types').TokenUsageSnapshot;
 	/** user 消息的输入 token 分摊值（估算），供历史重载后聚合展示 */
@@ -30,6 +35,8 @@ export class LocalSessionManager {
 	constructor(
 		private readonly agentLoop: AgentLoop,
 		private readonly messageStore: MessageStore,
+		private readonly rollbackJournal?: RollbackJournal,
+		private readonly workspaceRoot?: string,
 	) {}
 
 	/**
@@ -79,20 +86,27 @@ export class LocalSessionManager {
 					return {
 						role: m.role,
 						content: m.content,
+						seq: m.seq,
 						toolCalls: m.toolCalls,
 						tokenUsage: m.tokenUsage,
 					};
 				}
 				if (m.role === 'assistant' && 'tokenUsage' in m && m.tokenUsage) {
-					return { role: m.role, content: m.content, tokenUsage: m.tokenUsage };
+					return { role: m.role, content: m.content, seq: m.seq, tokenUsage: m.tokenUsage };
 				}
 				if (m.role === 'tool' && 'toolCallId' in m) {
-					return { role: m.role, content: m.content, toolCallId: (m as { toolCallId: string }).toolCallId };
+					return { role: m.role, content: m.content, seq: m.seq, toolCallId: (m as { toolCallId: string }).toolCallId };
 				}
-				if (m.role === 'user' && 'inputTokens' in m && m.inputTokens) {
-					return { role: m.role, content: m.content, inputTokens: m.inputTokens };
+				if (m.role === 'user') {
+					return {
+						role: m.role,
+						content: m.content,
+						seq: m.seq,
+						...(m.injected ? { injected: true } : {}),
+						...(m.inputTokens ? { inputTokens: m.inputTokens } : {}),
+					};
 				}
-				return { role: m.role, content: m.content };
+				return { role: m.role, content: m.content, seq: m.seq };
 			});
 	}
 
@@ -102,7 +116,7 @@ export class LocalSessionManager {
 	}
 
 	/**
-	 * 删除会话：取消进行中的 Agent Loop 并移除存储数据（文件 + 索引）。
+	 * 删除会话：取消进行中的 Agent Loop 并移除存储数据（文件 + 索引 + 回滚快照）。
 	 * @param sessionId 会话 ID
 	 */
 	deleteSession(sessionId: string): void {
@@ -112,6 +126,43 @@ export class LocalSessionManager {
 			this.agentLoop.cancel();
 		}
 		this.messageStore.clear(sessionId);
+		if (this.rollbackJournal) {
+			void this.rollbackJournal.clearSession(sessionId);
+		}
+	}
+
+	/**
+	 * 删除单条消息（含按角色补删配对消息），持久化生效；后续请求不再包含被删内容。
+	 * @param sessionId 会话 ID
+	 * @param seq 消息序号
+	 */
+	deleteMessage(sessionId: string, seq: number): void {
+		logger.log(`[SessionManager] 删除消息 sessionId=${sessionId} seq=${seq}`);
+		this.messageStore.deleteMessage(sessionId, seq);
+	}
+
+	/**
+	 * 回滚用户输入 turn：恢复文件到该 turn 前 → 截断消息（删除该 turn 及之后）→ 清理回滚快照，返回被回滚的输入文本。
+	 * @param sessionId 会话 ID
+	 * @param seq 用户消息序号
+	 * @returns 被回滚的用户输入文本（供前端回填输入框）
+	 * @throws 会话正在生成或目标非用户消息时抛出
+	 */
+	async rollbackTurn(sessionId: string, seq: number): Promise<string> {
+		logger.log(`[SessionManager] 回滚会话 sessionId=${sessionId} seq=${seq}`);
+		if (this.agentLoop.isRunning(sessionId)) {
+			throw new Error('当前会话正在生成，请先停止后再回滚');
+		}
+		const messages = this.messageStore.loadHistory(sessionId);
+		const target = messages.find((m) => m.role === 'user' && m.seq === seq && !m.injected);
+		if (!target || target.role !== 'user') {
+			throw new Error('仅可回滚用户输入消息');
+		}
+		if (this.workspaceRoot && this.rollbackJournal) {
+			await this.rollbackJournal.restoreTurn(sessionId, seq, this.workspaceRoot);
+		}
+		this.messageStore.deleteMessagesAfter(sessionId, seq - 1);
+		return target.content;
 	}
 
 	/**

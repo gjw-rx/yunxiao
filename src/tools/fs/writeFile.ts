@@ -70,6 +70,16 @@ export class WriteFileTool extends BaseTool {
 		} catch {
 			// 不存在 -> 新建
 		}
+		// 2.5 记录回滚快照（改动前状态，供 turn 回滚恢复；目标原本不存在时记为新建）
+		if (context.sessionId && context.turnUserSeq !== undefined && context.rollbackRecorder) {
+			await context.rollbackRecorder.record({
+				sessionId: context.sessionId,
+				userSeq: context.turnUserSeq,
+				fsPath: resolved.fsPath,
+				relativePath: resolved.relativePath,
+				existedBefore: overwritten,
+			});
+		}
 		// 3. 自动建父目录 + 原子写入（临时文件 + rename）
 		const dir = path.dirname(resolved.fsPath);
 		const tmpPath = path.join(

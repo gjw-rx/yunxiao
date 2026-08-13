@@ -39,6 +39,7 @@ describe('MessageInput', () => {
 				selectedSkills={[]}
 				slashCommandGroups={[]}
 				workspaceFiles={[]}
+				onDraftConsumed={vi.fn()}
 				onRemoveFile={vi.fn()}
 				onRemoveSkill={vi.fn()}
 				onAddFile={vi.fn()}

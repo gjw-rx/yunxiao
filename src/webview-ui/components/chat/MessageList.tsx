@@ -17,17 +17,27 @@ import { ThoughtIcon, PlanIcon } from '../shared/icons';
 import { ToolStep } from '../tools/ToolStep';
 
 /** 用户消息行。 */
-function UserMessage({ text, onDelete }: { text: string; onDelete: () => void }): JSX.Element {
+function UserMessage({ text, seq, injected, onDelete, onRollback }: { text: string; seq?: number; injected?: boolean; onDelete: () => void; onRollback: () => void }): JSX.Element {
 	return (
 		<div className="msg-row user-row">
 			<div className="message user">{text}</div>
 			<div className="msg-actions">
-				<button type="button" className="msg-action-btn delete-btn" title="删除此消息" aria-label="删除此消息" onClick={onDelete}>
-					<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-						<path d="M2.5 4h11M5.5 4V2.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V4M4.5 4v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4" />
-						<path d="M6.5 7.5v3.5M9.5 7.5v3.5" />
-					</svg>
-				</button>
+				{!injected && seq !== undefined && (
+					<button type="button" className="msg-action-btn rollback-btn" title="回滚此消息" aria-label="回滚此消息" onClick={onRollback}>
+						<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+							<path d="M3 6.5h7a3.5 3.5 0 0 1 0 7H6" />
+							<path d="M3 6.5 6 3.5M3 6.5 6 9.5" />
+						</svg>
+					</button>
+				)}
+				{!injected && seq !== undefined && (
+					<button type="button" className="msg-action-btn delete-btn" title="删除此消息" aria-label="删除此消息" onClick={onDelete}>
+						<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+							<path d="M2.5 4h11M5.5 4V2.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V4M4.5 4v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4" />
+							<path d="M6.5 7.5v3.5M9.5 7.5v3.5" />
+						</svg>
+					</button>
+				)}
 			</div>
 		</div>
 	);
@@ -78,7 +88,7 @@ async function copyText(text: string): Promise<void> {
 
 /** 助手回复行（含操作栏与 token 用量）。 */
 function AssistantMessage({ message, onDelete }: {
-	message: { id: string; text: string; streaming: boolean; tokenUsage?: TokenUsageDetail };
+	message: { id: string; text: string; streaming: boolean; tokenUsage?: TokenUsageDetail; seq?: number };
 	onDelete: () => void;
 }): JSX.Element {
 	const [copied, setCopied] = useState(false);
@@ -136,12 +146,14 @@ function AssistantMessage({ message, onDelete }: {
 				>
 					<LikeIcon liked={liked} />
 				</button>
-				<button type="button" className="msg-action-btn delete-btn" title="删除此消息" aria-label="删除此消息" onClick={onDelete}>
-					<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-						<path d="M2.5 4h11M5.5 4V2.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V4M4.5 4v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4" />
-						<path d="M6.5 7.5v3.5M9.5 7.5v3.5" />
-					</svg>
-				</button>
+				{message.seq !== undefined && (
+					<button type="button" className="msg-action-btn delete-btn" title="删除此消息" aria-label="删除此消息" onClick={onDelete}>
+						<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+							<path d="M2.5 4h11M5.5 4V2.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V4M4.5 4v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4" />
+							<path d="M6.5 7.5v3.5M9.5 7.5v3.5" />
+						</svg>
+					</button>
+				)}
 			</div>
 		</div>
 	);
@@ -197,10 +209,14 @@ function CompactionStep({ active }: { active: boolean }): JSX.Element {
 export interface MessageListProps {
 	/** 全局聊天状态 */
 	state: ChatState;
-	/** 删除用户消息 */
-	onDeleteUser: (messageId: string) => void;
-	/** 删除助手消息所在回合 */
-	onDeleteAssistant: (messageId: string) => void;
+	/** 删除用户消息（seq 为后端消息序号，缺省时仅本地乐观删除） */
+	onDeleteUser: (messageId: string, seq?: number) => void;
+	/** 删除助手消息（seq 为后端消息序号，缺省时仅本地乐观删除） */
+	onDeleteAssistant: (messageId: string, seq?: number) => void;
+	/** 删除工具结果消息（需后端 seq） */
+	onDeleteTool: (callId: string, seq?: number) => void;
+	/** 回滚用户消息所在 turn（需后端 seq） */
+	onRollbackUser: (messageId: string, seq?: number) => void;
 	/** 展开/收起工具步骤 */
 	onToggleTool: (callId: string) => void;
 	/** 展开/收起 Diff 卡 */
@@ -210,7 +226,7 @@ export interface MessageListProps {
 }
 
 /** 消息流列表：按回合分组渲染。 */
-export function MessageList({ state, onDeleteUser, onDeleteAssistant, onToggleTool, onToggleDiff, onResolveApproval }: MessageListProps): JSX.Element {
+export function MessageList({ state, onDeleteUser, onDeleteAssistant, onDeleteTool, onRollbackUser, onToggleTool, onToggleDiff, onResolveApproval }: MessageListProps): JSX.Element {
 	const { messages, toolEntries, approvals, diffs } = state;
 	const messagesRef = useRef<HTMLDivElement>(null);
 	const shouldFollowRef = useRef(true);
@@ -250,8 +266,8 @@ export function MessageList({ state, onDeleteUser, onDeleteAssistant, onToggleTo
 				return (
 					<AssistantMessage
 						key={m.id}
-						message={{ id: m.id, text: m.text, streaming: m.streaming, tokenUsage: m.tokenUsage }}
-						onDelete={() => onDeleteAssistant(m.id)}
+						message={{ id: m.id, text: m.text, streaming: m.streaming, tokenUsage: m.tokenUsage, seq: m.seq }}
+						onDelete={() => onDeleteAssistant(m.id, m.seq)}
 					/>
 				);
 			case 'thought':
@@ -261,7 +277,14 @@ export function MessageList({ state, onDeleteUser, onDeleteAssistant, onToggleTo
 			case 'tool': {
 				const entry: ToolEntry | undefined = toolEntries[m.callId];
 				if (!entry) return <span key={m.id} />;
-				return <ToolStep key={m.id} entry={entry} onToggle={() => onToggleTool(m.callId)} />;
+				return (
+					<ToolStep
+						key={m.id}
+						entry={entry}
+						onToggle={() => onToggleTool(m.callId)}
+						onDelete={m.seq !== undefined ? () => onDeleteTool(m.callId, m.seq) : undefined}
+					/>
+				);
 			}
 			case 'approval': {
 				const entry: ApprovalEntry | undefined = approvals[m.callId];
@@ -291,7 +314,7 @@ export function MessageList({ state, onDeleteUser, onDeleteAssistant, onToggleTo
 				turnItems = [];
 				turnOpen = false;
 			}
-			groups.push(<UserMessage key={m.id} text={m.text} onDelete={() => onDeleteUser(m.id)} />);
+			groups.push(<UserMessage key={m.id} text={m.text} seq={m.seq} injected={m.injected} onDelete={() => onDeleteUser(m.id, m.seq)} onRollback={() => onRollbackUser(m.id, m.seq)} />);
 		} else {
 			if (!turnOpen) {
 				turnOpen = true;

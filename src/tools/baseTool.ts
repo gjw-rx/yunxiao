@@ -4,6 +4,7 @@
  */
 import type { ToolSchema, ToolResult } from '../core/types';
 import { ToolValidationError } from '../core/errors';
+import type { RollbackRecorder } from '../core/rollbackJournal';
 import * as logger from '../logger';
 
 /** 结果治理：默认最大行数（超出截断并标注）。 */
@@ -54,6 +55,10 @@ export interface ToolContext {
 	readonly sessionId?: string;
 	/** 当前云端 Run ID；旧 v1 流可能缺失。 */
 	readonly runId?: string;
+	/** 当前用户输入消息的 seq（turn 边界），供回滚快照定位所属 turn。 */
+	readonly turnUserSeq?: number;
+	/** 回滚快照记录器（写文件工具在执行前注入改动前状态）。 */
+	readonly rollbackRecorder?: RollbackRecorder;
 	/** 用户警告回调（如敏感文件访问），由会话层桥接到 UI。 */
 	readonly warn?: (message: string) => void;
 	/** 终端输出截断上限（字符），保留尾部。 */

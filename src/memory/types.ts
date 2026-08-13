@@ -73,6 +73,8 @@ export interface UserMessage {
 	readonly attachments?: Attachment[];
 	/** 用户输入 token 分摊值（估算，供会话累计） */
 	readonly inputTokens?: number;
+	/** 是否为系统注入消息（step 预警、空回复提示、doom 引导等）；真实用户输入缺省为 false，用于识别 turn 边界 */
+	readonly injected?: boolean;
 }
 
 /** 助手消息 */

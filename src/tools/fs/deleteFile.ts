@@ -106,6 +106,17 @@ export class DeleteFileTool extends BaseTool {
 			return { status: 'error', error: `文件已被并发修改，未删除: ${inputPath}`, metadata: { retryable: false } };
 		}
 
+		// 2.5 记录回滚快照（删除前保存内容，供 turn 回滚恢复）
+		if (context.sessionId && context.turnUserSeq !== undefined && context.rollbackRecorder) {
+			await context.rollbackRecorder.record({
+				sessionId: context.sessionId,
+				userSeq: context.turnUserSeq,
+				fsPath: resolved.fsPath,
+				relativePath: resolved.relativePath,
+				existedBefore: true,
+			});
+		}
+
 		// 3. 删除
 		try {
 			const result = await this.deleteFn(resolved.fsPath, recursive);

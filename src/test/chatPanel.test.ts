@@ -274,6 +274,8 @@ describe('ChatViewProvider 侧栏视图', () => {
 			postMessage: (message: Record<string, unknown>) => messages.push(message),
 		} as unknown as vscode.Webview;
 		internals._currentSessionId = 'old-session';
+		// 与 setup() 一致：标记运行时就绪，否则 guardedCommands 会在 _handleMessage 入口直接忽略 deleteSession
+		internals.setRuntimeStatus('ready');
 
 		const origShow = vscode.window.showWarningMessage;
 		vscode.window.showWarningMessage = (async () => '删除') as unknown as typeof vscode.window.showWarningMessage;
@@ -286,6 +288,98 @@ describe('ChatViewProvider 侧栏视图', () => {
 		const deleted = messages.find((m) => m.command === 'currentSessionDeleted');
 		assert.ok(deleted, '删除当前会话应回推 currentSessionDeleted');
 		assert.strictEqual(internals._currentSessionId, undefined, 'host 当前会话指针应清空');
+	});
+
+	it('deleteMessage 删除单条消息并回推最新历史', async () => {
+		const messages: Record<string, unknown>[] = [];
+		const deleted: Array<{ sessionId: string; seq: number }> = [];
+		const provider = new ChatViewProvider(
+			{ extensionPath: '', subscriptions: [] } as unknown as vscode.ExtensionContext,
+			{
+				sessionManager: {
+					loadHistory: () => [{ role: 'user', content: 'hello', seq: 0 }],
+					deleteMessage: (sessionId: string, seq: number) => {
+						deleted.push({ sessionId, seq });
+					},
+				} as unknown as LocalSessionManager,
+				registry: {} as ToolRegistry,
+				eventBus: { onAll: () => () => {} } as unknown as EventBus,
+			}
+		);
+		const internals = provider as unknown as PanelInternals;
+		internals._chatWebview = {
+			postMessage: (message: Record<string, unknown>) => messages.push(message),
+		} as unknown as vscode.Webview;
+		internals.setRuntimeStatus('ready');
+
+		await internals._handleMessage({ command: 'deleteMessage', sessionId: 's1', seq: 0 });
+
+		assert.deepStrictEqual(deleted, [{ sessionId: 's1', seq: 0 }]);
+		assert.ok(messages.some((m) => m.command === 'historyLoaded'), '删除后应回推最新历史');
+	});
+
+	it('rollbackTurn 确认后回滚并回推 rollbackRestored 与最新历史', async () => {
+		const messages: Record<string, unknown>[] = [];
+		const provider = new ChatViewProvider(
+			{ extensionPath: '', subscriptions: [] } as unknown as vscode.ExtensionContext,
+			{
+				sessionManager: {
+					loadHistory: () => [{ role: 'user', content: 'hello', seq: 0 }],
+					rollbackTurn: async () => 'hello',
+				} as unknown as LocalSessionManager,
+				registry: {} as ToolRegistry,
+				eventBus: { onAll: () => () => {} } as unknown as EventBus,
+			}
+		);
+		const internals = provider as unknown as PanelInternals;
+		internals._chatWebview = {
+			postMessage: (message: Record<string, unknown>) => messages.push(message),
+		} as unknown as vscode.Webview;
+		internals.setRuntimeStatus('ready');
+
+		const origShow = vscode.window.showWarningMessage;
+		vscode.window.showWarningMessage = (async () => '回滚') as unknown as typeof vscode.window.showWarningMessage;
+		try {
+			await internals._handleMessage({ command: 'rollbackTurn', sessionId: 's1', seq: 0 });
+		} finally {
+			vscode.window.showWarningMessage = origShow;
+		}
+
+		assert.ok(messages.some((m) => m.command === 'rollbackRestored' && m.text === 'hello'), '确认后应回推被回滚文本');
+		assert.ok(messages.some((m) => m.command === 'historyLoaded'), '回滚后应回推最新历史');
+	});
+
+	it('rollbackTurn 取消确认时不回滚，仍回推最新历史', async () => {
+		const messages: Record<string, unknown>[] = [];
+		const provider = new ChatViewProvider(
+			{ extensionPath: '', subscriptions: [] } as unknown as vscode.ExtensionContext,
+			{
+				sessionManager: {
+					loadHistory: () => [{ role: 'user', content: 'hello', seq: 0 }],
+					rollbackTurn: async () => {
+						throw new Error('不应调用 rollbackTurn');
+					},
+				} as unknown as LocalSessionManager,
+				registry: {} as ToolRegistry,
+				eventBus: { onAll: () => () => {} } as unknown as EventBus,
+			}
+		);
+		const internals = provider as unknown as PanelInternals;
+		internals._chatWebview = {
+			postMessage: (message: Record<string, unknown>) => messages.push(message),
+		} as unknown as vscode.Webview;
+		internals.setRuntimeStatus('ready');
+
+		const origShow = vscode.window.showWarningMessage;
+		vscode.window.showWarningMessage = (async () => undefined) as unknown as typeof vscode.window.showWarningMessage;
+		try {
+			await internals._handleMessage({ command: 'rollbackTurn', sessionId: 's1', seq: 0 });
+		} finally {
+			vscode.window.showWarningMessage = origShow;
+		}
+
+		assert.ok(!messages.some((m) => m.command === 'rollbackRestored'), '取消确认不应回滚');
+		assert.ok(messages.some((m) => m.command === 'historyLoaded'));
 	});
 
 	it('openSettings 在编辑器打开独立设置标签，重复打开时复用已有标签', async () => {

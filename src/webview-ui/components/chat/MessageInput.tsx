@@ -30,6 +30,10 @@ export interface MessageInputProps {
 	slashCommandGroups: SlashCommandGroup[];
 	/** 工作区文件（@ 引用候选） */
 	workspaceFiles: WorkspaceFile[];
+	/** 回滚后待回填输入框的文本（值变化时覆盖当前输入） */
+	draftText?: string;
+	/** 已消费 draftText（回填完成），用于通知 reducer 清空待回填文本 */
+	onDraftConsumed: () => void;
 	/** 移除引用文件 */
 	onRemoveFile: (file: WorkspaceFile) => void;
 	/** 移除已选 Skill */
@@ -52,6 +56,8 @@ export function MessageInput({
 	selectedSkills,
 	slashCommandGroups,
 	workspaceFiles,
+	draftText,
+	onDraftConsumed,
 	onRemoveFile,
 	onRemoveSkill,
 	onAddFile,
@@ -80,6 +86,17 @@ export function MessageInput({
 		el.style.height = 'auto';
 		el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
 	}, [text]);
+
+	// 回滚回填：draftText 变化时覆盖输入框内容（仅回填，不触发选择器），消费后通知 reducer 清空
+	useEffect(() => {
+		if (draftText !== undefined && draftText !== '') {
+			setText(draftText);
+			onDraftConsumed();
+			requestAnimationFrame(() => {
+				inputRef.current?.focus();
+			});
+		}
+	}, [draftText, onDraftConsumed]);
 
 	// 模型选择弹窗打开时，点击外部或按 Esc 关闭弹窗
 	useEffect(() => {

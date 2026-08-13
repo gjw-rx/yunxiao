@@ -123,8 +123,30 @@ export function App(): JSX.Element {
 			<SessionTokenBar payload={state.sessionTokenUsage} />
 			<MessageList
 				state={state}
-				onDeleteUser={(id) => dispatchRef.current({ type: 'deleteUserMessage', messageId: id })}
-				onDeleteAssistant={(id) => dispatchRef.current({ type: 'deleteAssistantMessage', messageId: id })}
+				onDeleteUser={(id, seq) => {
+					// 乐观本地删除 + 通知宿主持久化删除（回推 historyLoaded 后最终刷新）
+					dispatchRef.current({ type: 'deleteUserMessage', messageId: id });
+					if (seq !== undefined && state.currentSessionId) {
+						post({ command: 'deleteMessage', sessionId: state.currentSessionId, seq });
+					}
+				}}
+				onDeleteAssistant={(id, seq) => {
+					dispatchRef.current({ type: 'deleteAssistantMessage', messageId: id });
+					if (seq !== undefined && state.currentSessionId) {
+						post({ command: 'deleteMessage', sessionId: state.currentSessionId, seq });
+					}
+				}}
+				onDeleteTool={(_callId, seq) => {
+					if (seq !== undefined && state.currentSessionId) {
+						post({ command: 'deleteMessage', sessionId: state.currentSessionId, seq });
+					}
+				}}
+				onRollbackUser={(_id, seq) => {
+					// 回滚由宿主导航（恢复文件 + 截断消息 + 弹确认框），前端等待 historyLoaded / rollbackRestored 刷新
+					if (seq !== undefined && state.currentSessionId) {
+						post({ command: 'rollbackTurn', sessionId: state.currentSessionId, seq });
+					}
+				}}
 				onToggleTool={(callId) => dispatchRef.current({ type: 'toggleToolExpand', callId })}
 				onToggleDiff={(callId) => dispatchRef.current({ type: 'toggleDiffExpand', callId })}
 				onResolveApproval={(callId) => dispatchRef.current({ type: 'approvalResolved', callId })}
@@ -140,6 +162,8 @@ export function App(): JSX.Element {
 				selectedSkills={state.selectedSkills}
 				slashCommandGroups={state.slashCommandGroups}
 				workspaceFiles={state.workspaceFiles}
+				draftText={state.pendingDraft}
+				onDraftConsumed={() => dispatchRef.current({ type: 'clearPendingDraft' })}
 				onRemoveFile={(file) =>
 					dispatchRef.current({ type: 'setSelectedFiles', files: state.selectedFiles.filter((f) => f.path !== file.path) })
 				}

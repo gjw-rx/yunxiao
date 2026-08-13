@@ -157,6 +157,104 @@ describe('MessageStore', () => {
 		});
 	});
 
+	describe('deleteMessage', () => {
+		it('删除非注入用户消息级联删除整个 turn', () => {
+			const store = new MessageStore();
+			store.append('s1', { role: 'user', content: 'u1' });           // seq 0
+			store.append('s1', { role: 'assistant', content: 'a1' });      // seq 1
+			store.append('s1', { role: 'user', content: 'u2' });           // seq 2
+			store.append('s1', { role: 'assistant', content: 'a2' });      // seq 3
+			store.deleteMessage('s1', 0);
+			assert.deepStrictEqual(store.loadHistory('s1').map((m) => m.seq), [2, 3]);
+		});
+
+		it('注入消息不截断删除级联', () => {
+			const store = new MessageStore();
+			store.append('s1', { role: 'user', content: 'u1' });                              // seq 0
+			store.append('s1', { role: 'user', content: 'injected', injected: true });       // seq 1
+			store.append('s1', { role: 'assistant', content: 'a1' });                        // seq 2
+			store.append('s1', { role: 'user', content: 'u2' });                             // seq 3
+			store.deleteMessage('s1', 0);
+			assert.deepStrictEqual(store.loadHistory('s1').map((m) => m.seq), [3]);
+		});
+
+		it('删除带工具调用的助手消息级联删除其工具结果', () => {
+			const store = new MessageStore();
+			store.append('s1', { role: 'user', content: 'u1' });
+			store.append('s1', {
+				role: 'assistant',
+				content: 'a',
+				toolCalls: [
+					{ id: 'c1', name: 'fs_read_file', arguments: '{}' },
+					{ id: 'c2', name: 'fs_read_file', arguments: '{}' },
+				],
+			});
+			store.append('s1', { role: 'tool', toolCallId: 'c1', content: 'r1' });
+			store.append('s1', { role: 'tool', toolCallId: 'c2', content: 'r2' });
+			store.append('s1', { role: 'assistant', content: 'final' });
+			store.deleteMessage('s1', 1);
+			assert.deepStrictEqual(store.loadHistory('s1').map((m) => m.seq), [0, 4]);
+		});
+
+		it('删除工具结果消息并清理孤立工具调用', () => {
+			const store = new MessageStore();
+			store.append('s1', { role: 'user', content: 'u1' });
+			store.append('s1', {
+				role: 'assistant',
+				content: 'a',
+				toolCalls: [
+					{ id: 'c1', name: 'x', arguments: '{}' },
+					{ id: 'c2', name: 'y', arguments: '{}' },
+				],
+			});
+			store.append('s1', { role: 'tool', toolCallId: 'c1', content: 'r1' });
+			store.append('s1', { role: 'tool', toolCallId: 'c2', content: 'r2' });
+			store.deleteMessage('s1', 2);
+			const history = store.loadHistory('s1');
+			assert.deepStrictEqual(history.map((m) => m.seq), [0, 1, 3]);
+			const assistant = history.find((m) => m.seq === 1);
+			const toolCalls = assistant && 'toolCalls' in assistant
+				? (assistant as { toolCalls: Array<{ id: string }> }).toolCalls.map((tc) => tc.id)
+				: [];
+			assert.deepStrictEqual(toolCalls, ['c2']);
+		});
+
+		it('删除唯一工具结果后删除空助手消息', () => {
+			const store = new MessageStore();
+			store.append('s1', { role: 'user', content: 'u1' });
+			store.append('s1', { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'x', arguments: '{}' }] });
+			store.append('s1', { role: 'tool', toolCallId: 'c1', content: 'r1' });
+			store.deleteMessage('s1', 2);
+			assert.deepStrictEqual(store.loadHistory('s1').map((m) => m.seq), [0]);
+		});
+
+		it('删除 compaction 消息', () => {
+			const store = new MessageStore();
+			store.append('s1', { role: 'user', content: 'u1' });
+			store.append('s1', { role: 'compaction', summary: 's', recentContext: [] });
+			store.append('s1', { role: 'user', content: 'u2' });
+			store.deleteMessage('s1', 1);
+			assert.deepStrictEqual(store.loadHistory('s1').map((m) => m.seq), [0, 2]);
+		});
+
+		it('不存在 seq 为无操作', () => {
+			const store = new MessageStore();
+			store.append('s1', { role: 'user', content: 'u1' });
+			store.deleteMessage('s1', 100);
+			assert.strictEqual(store.loadHistory('s1').length, 1);
+		});
+
+		it('删除后持久化到 workspaceState', () => {
+			const state = createMockState();
+			const store = new MessageStore(state);
+			store.append('s1', { role: 'user', content: 'u1' });       // seq 0
+			store.append('s1', { role: 'assistant', content: 'a1' });  // seq 1
+			store.deleteMessage('s1', 0);
+			const persisted = state.data['yunxiaoAgent.messages'] as Record<string, Message[]>;
+			assert.strictEqual(persisted['s1'].length, 0);
+		});
+	});
+
 	describe('1000 条上限', () => {
 		it('超过 1000 条时移除最旧消息', () => {
 			const store = new MessageStore();

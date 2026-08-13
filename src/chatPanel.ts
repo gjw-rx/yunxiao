@@ -606,6 +606,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'requestSessions',
       'openSession',
       'deleteSession',
+      'deleteMessage',
+      'rollbackTurn',
     ]);
     if (this._runtimeStatus !== 'ready' && guardedCommands.has(msg.command)) {
       logger.log(`[ChatPanel] 运行时未就绪，忽略业务消息 command=${msg.command} status=${this._runtimeStatus}`);
@@ -781,12 +783,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'loadHistory': {
         const sessionId = msg.sessionId as string;
-        const history = this._sessionManager.loadHistory(sessionId);
-        webview.postMessage({ command: 'historyLoaded', messages: history });
-        if (this._todoStore) {
-          const snapshot = this._todoStore.read(sessionId);
-          webview.postMessage({ command: 'todoState', snapshot, summary: summarizeTodos(snapshot) });
-        }
+        this._pushHistory(webview, sessionId);
         break;
       }
       case 'approvalDecision': {
@@ -899,6 +896,58 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         webview.postMessage({ command: 'sessionList', sessions: this._sessionManager.listSessions() });
         break;
       }
+      case 'deleteMessage': {
+        // 删除单条消息（含配对补删），处理后回推最新历史刷新前端
+        const sessionId = msg.sessionId as string;
+        const seq = msg.seq as number;
+        if (!sessionId || typeof seq !== 'number') {
+          break;
+        }
+        logger.log(`[ChatPanel] 删除消息 sessionId=${sessionId} seq=${seq}`);
+        this._sessionManager.deleteMessage(sessionId, seq);
+        this._pushHistory(webview, sessionId);
+        break;
+      }
+      case 'rollbackTurn': {
+        // 回滚用户输入 turn：确认后恢复文件 + 截断消息，回推最新历史并回填输入框
+        const sessionId = msg.sessionId as string;
+        const seq = msg.seq as number;
+        if (!sessionId || typeof seq !== 'number') {
+          break;
+        }
+        const confirm = await vscode.window.showWarningMessage(
+          '回滚将删除该消息及其后全部对话并复原相关文件改动，该操作不可恢复。确定继续？',
+          { modal: true },
+          '回滚'
+        );
+        if (confirm === '回滚') {
+          try {
+            const text = await this._sessionManager.rollbackTurn(sessionId, seq);
+            webview.postMessage({ command: 'rollbackRestored', text });
+          } catch (err) {
+            logger.error(`[ChatPanel] 回滚失败 sessionId=${sessionId} seq=${seq} error=${err instanceof Error ? err.message : String(err)}`);
+            vscode.window.showErrorMessage(`回滚失败：${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        // 无论是否确认都回推最新历史，前端据此刷新（取消时内容不变）
+        this._pushHistory(webview, sessionId);
+        break;
+      }
+    }
+  }
+
+  /**
+   * 回推会话最新历史与任务快照（删除消息 / 回滚 / 加载历史后刷新前端）。
+   * @param webview 聊天面板 webview
+   * @param sessionId 会话 ID
+   * @returns 无返回值
+   */
+  private _pushHistory(webview: vscode.Webview, sessionId: string): void {
+    const history = this._sessionManager.loadHistory(sessionId);
+    webview.postMessage({ command: 'historyLoaded', messages: history });
+    if (this._todoStore) {
+      const snapshot = this._todoStore.read(sessionId);
+      webview.postMessage({ command: 'todoState', snapshot, summary: summarizeTodos(snapshot) });
     }
   }
 
