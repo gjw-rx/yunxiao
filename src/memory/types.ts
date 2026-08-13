@@ -116,6 +116,8 @@ export interface CompactionMessage {
 	readonly summary: string;
 	/** 压缩时保留的近期消息原文（含 seq） */
 	readonly recentContext: Message[];
+	/** 压缩检查点时捕获的活跃任务上下文（可选；旧检查点或当时无活跃任务时缺失）。 */
+	readonly todoContext?: string;
 	readonly seq: number;
 }
 

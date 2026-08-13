@@ -25,9 +25,10 @@ export function loadHistoryForLLM(sessionId: string, store: MessageStore): LLMMe
 
 	const result = [
 		{ role: 'system' as const, content: effective.summary },
+		...(effective.todoContext ? [{ role: 'system' as const, content: effective.todoContext }] : []),
 		...convertToLLMMessages(effective.messages),
 	];
-	logger.log(`[HistoryLoader] 加载历史完成 sessionId=${sessionId} 消息数=${result.length} 压缩点=有`);
+	logger.log(`[HistoryLoader] 加载历史完成 sessionId=${sessionId} 消息数=${result.length} 压缩点=有 todoContext=${effective.todoContext ? '有' : '无'}`);
 	return result;
 }
 

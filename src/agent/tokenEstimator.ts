@@ -79,6 +79,6 @@ function getMessageText(msg: Message): string {
 		case 'tool':
 			return msg.content;
 		case 'compaction':
-			return msg.summary + msg.recentContext.map((m) => getMessageText(m)).join('');
+			return msg.summary + (msg.todoContext ?? '') + msg.recentContext.map((m) => getMessageText(m)).join('');
 	}
 }

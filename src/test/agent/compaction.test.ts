@@ -8,6 +8,8 @@ import {
 	type CompactionConfig,
 } from '../../agent/compaction';
 import { MessageStore } from '../../memory/messageStore';
+import { loadHistoryForLLM } from '../../memory/historyLoader';
+import type { SessionTodoStore } from '../../memory/sessionTodoStore';
 import type { Message } from '../../memory/types';
 import type { LLMProvider } from '../../llm/types';
 
@@ -239,5 +241,90 @@ describe('上下文压缩检查点', () => {
 
 		assert.strictEqual(result.status, 'compacted');
 		assert.ok(receivedPrompt.includes('已有摘要'));
+	});
+});
+
+describe('上下文压缩检查点任务上下文', () => {
+	it('成功创建检查点时捕获活跃任务上下文', async () => {
+		const store = new MessageStore();
+		store.append('cp-context', { role: 'user', content: '短消息'.repeat(20) });
+		store.append('cp-context', { role: 'assistant', content: '短回复'.repeat(20) });
+
+		const todoStore = {
+			formatActiveContext: () => '当前会话的任务进度：\n- [进行中] implement. 实现任务面板',
+		} as unknown as SessionTodoStore;
+
+		const result = await compactIfNeeded(
+			'cp-context',
+			createSummaryProvider(),
+			'test-model',
+			createConfig(),
+			store,
+			createEventBus() as never,
+			{ reason: 'manual', requestTokens: 0 },
+			todoStore,
+		);
+
+		assert.strictEqual(result.status, 'compacted');
+		const checkpoint = store.getCompactionPoint('cp-context');
+		assert.ok(checkpoint?.todoContext?.includes('实现任务面板'));
+	});
+
+	it('无活跃任务时不写入检查点任务上下文', async () => {
+		const store = new MessageStore();
+		store.append('cp-empty', { role: 'user', content: '短消息'.repeat(20) });
+		store.append('cp-empty', { role: 'assistant', content: '短回复'.repeat(20) });
+
+		const todoStore = {
+			formatActiveContext: () => null,
+		} as unknown as SessionTodoStore;
+
+		const result = await compactIfNeeded(
+			'cp-empty',
+			createSummaryProvider(),
+			'test-model',
+			createConfig(),
+			store,
+			createEventBus() as never,
+			{ reason: 'manual', requestTokens: 0 },
+			todoStore,
+		);
+
+		assert.strictEqual(result.status, 'compacted');
+		const checkpoint = store.getCompactionPoint('cp-empty');
+		assert.strictEqual(checkpoint?.todoContext, undefined);
+	});
+
+	it('旧检查点（无任务上下文）可正常重建有效历史', async () => {
+		const store = new MessageStore();
+		store.append('legacy-cp', { role: 'compaction', summary: '旧摘要', recentContext: [userMessage('保留上下文', 0)] });
+		store.append('legacy-cp', { role: 'user', content: '后续消息' });
+
+		const effective = store.getEffectiveHistory('legacy-cp');
+		assert.strictEqual(effective.summary, '旧摘要');
+		assert.strictEqual(effective.todoContext, null);
+
+		const history = loadHistoryForLLM('legacy-cp', store);
+		assert.deepStrictEqual(
+			history.map((message) => message.content),
+			['旧摘要', '保留上下文', '后续消息'],
+		);
+	});
+
+	it('历史重建时检查点任务上下文与摘要相邻提供给模型', async () => {
+		const store = new MessageStore();
+		store.append('cp-rebuild', {
+			role: 'compaction',
+			summary: '新摘要',
+			recentContext: [userMessage('保留上下文', 0)],
+			todoContext: '当前会话的任务进度：\n- [进行中] implement. 实现任务面板',
+		});
+		store.append('cp-rebuild', { role: 'user', content: '后续消息' });
+
+		const history = loadHistoryForLLM('cp-rebuild', store);
+		assert.deepStrictEqual(
+			history.slice(0, 3).map((message) => message.content),
+			['新摘要', '当前会话的任务进度：\n- [进行中] implement. 实现任务面板', '保留上下文'],
+		);
 	});
 });

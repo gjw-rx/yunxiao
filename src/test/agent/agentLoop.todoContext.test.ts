@@ -33,6 +33,7 @@ describe('AgentLoop todo context', () => {
 		const store = new MessageStore();
 		const registry = new ToolRegistry();
 		const todoStore = {
+			read: () => ({ todos: [{ id: 'implement', content: '实现任务面板', status: 'in_progress' }] }),
 			formatActiveContext: () => '当前会话的任务进度：\n- [进行中] implement. 实现任务面板',
 		} as unknown as SessionTodoStore;
 		const loop = new AgentLoop(provider, store, new ToolRouter(registry), registry, new EventBus(), {

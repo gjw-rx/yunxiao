@@ -28,6 +28,8 @@ import type { CompactionConfig, CompactionResult } from './compaction';
 import { compactIfNeeded } from './compaction';
 import { estimateText, estimateRequest } from './tokenEstimator';
 import type { TokenUsageSnapshot } from '../memory/types';
+import type { Message } from '../memory/types';
+import type { TodoSnapshot, TodoItem } from '../memory/todoTypes';
 import type { SessionTodoStore } from '../memory/sessionTodoStore';
 import { randomUUID } from 'crypto';
 import { DoomLoopDetector } from './doomLoopDetector';
@@ -120,6 +122,81 @@ function toChangeSetReference(changeSet: ChangeSetSummary): { id: string; fileCo
 	};
 }
 
+/** 模型可见任务状态检测结果。 */
+interface TodoEvidence {
+	/** 决策：tool_result=有效历史含匹配当前快照的 todo_write 结果；checkpoint=当前压缩检查点携带任务上下文；recovery=需要临时恢复注入；none=无活跃任务或未配置 todo。 */
+	readonly decision: 'tool_result' | 'checkpoint' | 'recovery' | 'none';
+	/** 当前持久化快照中的活跃任务数量（pending + in_progress）。 */
+	readonly activeCount: number;
+}
+
+/**
+ * 判断有效历史中是否存在与当前任务快照一致的 todo_write 工具结果。
+ * @param messages 有效历史消息。
+ * @param snapshot 当前持久化任务快照。
+ * @returns 是否存在匹配结果。
+ */
+function hasMatchingTodoResult(messages: readonly Message[], snapshot: TodoSnapshot): boolean {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message.role !== 'tool') {
+			continue;
+		}
+		const todos = extractTodoResultTodos(message.content);
+		if (todos && todosMatch(todos, snapshot.todos)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * 从 todo_write 工具结果文本中提取任务列表。
+ * @param content 工具结果内容（JSON 序列化的 { todos, summary }）。
+ * @returns 任务列表；解析失败或结构非法时为 null。
+ */
+function extractTodoResultTodos(content: string): readonly TodoItem[] | null {
+	try {
+		const parsed = JSON.parse(content) as { todos?: unknown };
+		if (!Array.isArray(parsed.todos)) {
+			return null;
+		}
+		const valid = parsed.todos.every(
+			(item) =>
+				item &&
+				typeof item === 'object' &&
+				typeof (item as TodoItem).id === 'string' &&
+				typeof (item as TodoItem).content === 'string' &&
+				typeof (item as TodoItem).status === 'string',
+		);
+		return valid ? (parsed.todos as readonly TodoItem[]) : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * 比较两个任务列表是否完全一致（顺序敏感）。
+ * @param left 待比较任务列表。
+ * @param right 目标任务列表。
+ * @returns 是否一致。
+ */
+function todosMatch(left: readonly TodoItem[], right: readonly TodoItem[]): boolean {
+	if (left.length !== right.length) {
+		return false;
+	}
+	for (let index = 0; index < left.length; index++) {
+		if (
+			left[index].id !== right[index].id ||
+			left[index].content !== right[index].content ||
+			left[index].status !== right[index].status
+		) {
+			return false;
+		}
+	}
+	return true;
+}
+
 export class AgentLoop {
 	private abortController: AbortController | null = null;
 	private activeSessionId: string | null = null;
@@ -165,6 +242,35 @@ export class AgentLoop {
 	updateProvider(provider: LLMProvider): void {
 		this.provider = provider;
 		logger.log('[AgentLoop] LLM Provider 已替换（后续运行生效）');
+	}
+
+	/**
+	 * 检测当前会话的模型可见任务状态。
+	 * 决策规则：存在匹配当前快照的 todo_write 工具结果 → tool_result；当前压缩检查点携带任务上下文 → checkpoint；
+	 * 以上均无但存在活跃任务 → recovery（需要临时注入）；无活跃任务或未配置 todo → none。
+	 * @param sessionId 会话 ID。
+	 * @returns 任务状态证据与活跃任务数量。
+	 */
+	private detectTodoEvidence(sessionId: string): TodoEvidence {
+		const todoStore = this.config.todoStore;
+		if (!todoStore) {
+			return { decision: 'none', activeCount: 0 };
+		}
+		const snapshot = todoStore.read(sessionId);
+		const active = snapshot.todos.filter((todo) => todo.status === 'pending' || todo.status === 'in_progress');
+		if (active.length === 0) {
+			return { decision: 'none', activeCount: 0 };
+		}
+		// 有效历史中匹配当前快照的 todo_write 工具结果优先作为最新任务状态
+		const effective = this.messageStore.getEffectiveHistory(sessionId);
+		if (hasMatchingTodoResult(effective.messages, snapshot)) {
+			return { decision: 'tool_result', activeCount: active.length };
+		}
+		// 当前压缩检查点携带的任务上下文属于稳定模型可见证据
+		if (this.messageStore.getCompactionPoint(sessionId)?.todoContext) {
+			return { decision: 'checkpoint', activeCount: active.length };
+		}
+		return { decision: 'recovery', activeCount: active.length };
 	}
 
 	/** 主循环入口：追加用户消息，进入 Agent Loop。 */
@@ -224,12 +330,21 @@ export class AgentLoop {
 				});
 
 				// ── 4. 组装消息 ──
-				const todoContext = this.config.todoStore?.formatActiveContext(sessionId);
+				// 活跃任务以缓存友好的方式进入上下文：正常请求依赖历史中的 todo_write 工具结果或检查点任务上下文，
+				// 仅当两者均无模型可见证据且存在活跃任务时才临时注入恢复上下文（不写入消息历史）。
+				const todoEvidence = this.detectTodoEvidence(sessionId);
+				const todoContext =
+					todoEvidence.decision === 'recovery'
+						? this.config.todoStore?.formatActiveContext(sessionId) ?? null
+						: null;
 				const messages: LLMMessage[] = [
 					{ role: 'system', content: systemPrompt },
 					...(todoContext ? [{ role: 'system' as const, content: todoContext }] : []),
 					...history,
 				];
+				logger.log(
+					`[AgentLoop] 任务状态检测 sessionId=${sessionId} decision=${todoEvidence.decision} activeTasks=${todoEvidence.activeCount}${todoEvidence.decision === 'recovery' ? ' 恢复原因=有效历史与压缩检查点均无匹配任务状态' : ''}`,
+				);
 
 				// ── 5. Max Steps 检查 ──
 				let toolChoice: 'auto' | 'none' = 'auto';
@@ -260,6 +375,7 @@ export class AgentLoop {
 						this.messageStore,
 						this.eventBus,
 						{ reason: 'automatic', requestTokens },
+						this.config.todoStore,
 					);
 					if (compaction.status === 'compacted') {
 						continue;
@@ -352,6 +468,7 @@ export class AgentLoop {
 							this.messageStore,
 							this.eventBus,
 							{ reason: 'overflow', requestTokens: estimateRequest(systemPrompt, messages, tools) },
+							this.config.todoStore,
 						);
 						if (compacted.status === 'compacted') {
 							continue;
@@ -500,6 +617,7 @@ export class AgentLoop {
 			this.messageStore,
 			this.eventBus,
 			{ reason: 'manual', requestTokens: 0 },
+			this.config.todoStore,
 		);
 	}
 

@@ -21,6 +21,8 @@ const MAX_MESSAGES = 1000;
 export interface EffectiveHistory {
 	/** 最新检查点摘要；未压缩时为 null。 */
 	readonly summary: string | null;
+	/** 最新检查点携带的活跃任务上下文；无压缩点或旧检查点不含该字段时为 null。 */
+	readonly todoContext: string | null;
 	/** 应参与下一次请求或下一次压缩的原始消息。 */
 	readonly messages: Message[];
 }
@@ -114,14 +116,14 @@ export class MessageStore {
 		const checkpoint = this.getCompactionPoint(sessionId);
 		const allMessages = this.loadHistory(sessionId);
 		if (!checkpoint) {
-			return { summary: null, messages: allMessages };
+			return { summary: null, todoContext: null, messages: allMessages };
 		}
 		const messages = [
 			...checkpoint.recentContext,
 			...allMessages.filter((message) => message.seq > checkpoint.seq),
 		];
-		logger.log(`[MessageStore] 加载有效历史 sessionId=${sessionId} checkpointSeq=${checkpoint.seq} 消息数=${messages.length}`);
-		return { summary: checkpoint.summary, messages };
+		logger.log(`[MessageStore] 加载有效历史 sessionId=${sessionId} checkpointSeq=${checkpoint.seq} 消息数=${messages.length} todoContext=${checkpoint.todoContext ? '有' : '无'}`);
+		return { summary: checkpoint.summary, todoContext: checkpoint.todoContext ?? null, messages };
 	}
 
 	/** 清空 session 消息并持久化。 */

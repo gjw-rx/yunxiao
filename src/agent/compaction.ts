@@ -2,6 +2,7 @@
 import type { EventBus } from '../core/eventBus';
 import type { LLMMessage, LLMProvider } from '../llm/types';
 import type { MessageStore } from '../memory/messageStore';
+import type { SessionTodoStore } from '../memory/sessionTodoStore';
 import type { AssistantMessage, Message, ToolCall } from '../memory/types';
 import { estimateMessage, estimateMessages } from './tokenEstimator';
 import * as logger from '../logger';
@@ -300,6 +301,7 @@ export async function generateSummary(
  * @param messageStore 消息存储。
  * @param eventBus 事件总线。
  * @param options 触发原因与完整请求 token。
+ * @param todoStore 会话任务快照存储（可选；成功创建检查点时捕获活跃任务上下文）。
  * @returns 压缩结果。
  */
 export async function compactIfNeeded(
@@ -310,6 +312,7 @@ export async function compactIfNeeded(
 	messageStore: MessageStore,
 	eventBus: EventBus,
 	options: CompactOptions,
+	todoStore?: SessionTodoStore,
 ): Promise<CompactionResult> {
 	const thresholdTokens = calculateCompactionThreshold(config);
 	const baseResult = { reason: options.reason, requestTokens: options.requestTokens, thresholdTokens };
@@ -338,7 +341,14 @@ export async function compactIfNeeded(
 	try {
 		const startedAt = Date.now();
 		const summary = await generateSummary(split.head, effective.summary, provider, model);
-		messageStore.append(sessionId, { role: 'compaction', summary, recentContext: cleanup.messages });
+		const todoContext = todoStore?.formatActiveContext(sessionId) ?? null;
+		logger.log(`[上下文压缩] 捕获检查点任务上下文 sessionId=${sessionId} present=${todoContext ? '是' : '否'}`);
+		messageStore.append(sessionId, {
+			role: 'compaction',
+			summary,
+			recentContext: cleanup.messages,
+			...(todoContext ? { todoContext } : {}),
+		});
 		eventBus.emit({ type: 'progress', sessionId, payload: { phase: 'compacted' } });
 		if (options.reason !== 'manual') {
 			eventBus.emit({
