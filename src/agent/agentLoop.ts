@@ -177,10 +177,17 @@ export class AgentLoop {
 
 		const userMessage = this.messageStore.append(sessionId, { role: 'user', content: userText });
 		const userMsgSeq = userMessage.seq;
+		const changeWorkspaceRoot = this.config.workspaceRoots[0] ?? process.cwd();
 		// run 开始前会话累计（用于 delta 计算）
 		const baseTotal = this.aggregateSessionTokens(sessionId);
 		this.emitRunStateChange(sessionId, 'running');
 		logger.log(`[AgentLoop] run 开始 sessionId=${sessionId} 用户消息长度=${userText.length}`);
+		logger.log(`[AgentLoop] 后台准备会话代码变更基线 sessionId=${sessionId}`);
+		const changeBaselinePromise = this.config.changeJournal
+			? this.config.changeJournal.ensureSessionBaseline(sessionId, changeWorkspaceRoot).catch((error) => {
+				logger.error(`[AgentLoop] 创建会话代码变更基线失败 sessionId=${sessionId}`, error);
+			})
+			: Promise.resolve();
 
 		const doomDetector = new DoomLoopDetector();
 		// 本次 run 的唯一执行范围 ID（toolExecutionJournal 用 runId+callId 隔离回执）
@@ -380,7 +387,7 @@ export class AgentLoop {
 					logger.log(`[AgentLoop] step=${step} 循环结束 文本长度=${text.length} finish=${finishReason} tools=${hasToolCalls}`);
 					let changeSet: ChangeSetSummary | undefined;
 					try {
-						changeSet = await this.config.changeJournal?.finalize(sessionId, userMsgSeq);
+						changeSet = await this.config.changeJournal?.refreshSession(sessionId, changeWorkspaceRoot, userMsgSeq);
 					} catch (error) {
 						logger.error(`[AgentLoop] 持久化代码变更失败 sessionId=${sessionId} userSeq=${userMsgSeq}`, error);
 					}
@@ -410,6 +417,8 @@ export class AgentLoop {
 				});
 
 				const toolContext = this.buildToolContext(sessionId, runId, userMsgSeq);
+				logger.log(`[AgentLoop] 工具执行前确认会话代码变更基线 sessionId=${sessionId} step=${step}`);
+				await changeBaselinePromise;
 
 				// ── 11. 执行工具：只读+canParallel 最多 3 并发，写/执行串行，结果按模型返回顺序入库 ──
 				const { blocked } = await this.executeToolCalls(

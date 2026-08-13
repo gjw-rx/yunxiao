@@ -3,6 +3,7 @@ import * as assert from 'assert';
 import * as os from 'os';
 import * as path from 'path';
 import { promises as fs } from 'fs';
+import simpleGit from 'simple-git';
 import { ChangeJournal } from '../../core/changeJournal';
 
 describe('ChangeJournal', () => {
@@ -55,5 +56,42 @@ describe('ChangeJournal', () => {
 		await journal.clearAfterSeq('s1', 5);
 		assert.ok(await journal.getSummary('s1', '3'));
 		assert.strictEqual(await journal.getSummary('s1', '5'), undefined);
+	});
+
+	it('以会话基线累计终端等外部写入，并排除会话开始前已有内容', async () => {
+		const existing = path.join(workspace, 'existing.ts');
+		await fs.writeFile(existing, 'before-session\n', 'utf8');
+		await journal.ensureSessionBaseline('s1', workspace);
+
+		await fs.writeFile(path.join(workspace, 'created.md'), 'created\n', 'utf8');
+		let summary = await journal.refreshSession('s1', workspace, 1);
+		assert.strictEqual(summary?.id, 'session');
+		assert.strictEqual(summary?.fileCount, 1);
+		assert.strictEqual(summary?.files[0].relativePath, 'created.md');
+
+		await fs.writeFile(existing, 'changed-in-session\n', 'utf8');
+		summary = await journal.refreshSession('s1', workspace, 2);
+		assert.strictEqual(summary?.fileCount, 2);
+		const detail = await journal.getFileDetail('s1', 'session', '1');
+		assert.strictEqual(detail?.relativePath, 'existing.ts');
+		assert.strictEqual(detail?.before, 'before-session\n');
+		assert.strictEqual(detail?.after, 'changed-in-session\n');
+	});
+
+	it('Git 工作区仅扫描已跟踪和未忽略文件', async () => {
+		const git = simpleGit(workspace);
+		await git.init();
+		await fs.writeFile(path.join(workspace, '.gitignore'), 'ignored/\n', 'utf8');
+		await fs.writeFile(path.join(workspace, 'tracked.ts'), 'before\n', 'utf8');
+		await fs.mkdir(path.join(workspace, 'ignored'));
+		await fs.writeFile(path.join(workspace, 'ignored', 'cache.txt'), 'before\n', 'utf8');
+		await git.add(['.gitignore', 'tracked.ts']);
+		await journal.ensureSessionBaseline('s1', workspace);
+
+		await fs.writeFile(path.join(workspace, 'tracked.ts'), 'after\n', 'utf8');
+		await fs.writeFile(path.join(workspace, 'ignored', 'cache.txt'), 'after\n', 'utf8');
+		const summary = await journal.refreshSession('s1', workspace, 1);
+
+		assert.deepStrictEqual(summary?.files.map((file) => file.relativePath), ['tracked.ts']);
 	});
 });

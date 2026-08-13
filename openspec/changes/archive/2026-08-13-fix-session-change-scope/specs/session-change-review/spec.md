@@ -1,9 +1,5 @@
-# session-change-review Specification
+## MODIFIED Requirements
 
-## Purpose
-系统 SHALL 以会话为单位维护一份累积变更集（cumulative change set）：将当前工作区与首次 Agent run 前捕获的持久化基线对比，覆盖托管写工具、终端命令与 Git 提交产生的合格文件变更，为每次完成的助手回复提供一致的会话级代码变更审查入口。
-
-## Requirements
 ### Requirement: Per-turn managed-file change sets
 The system SHALL create one cumulative change set for each session by comparing the current workspace against a persistent baseline captured before the session's first Agent run. The change set SHALL include eligible text-file changes made through managed write tools, terminal commands, and Git commits after that baseline; it SHALL remain isolated by workspace and session ID and SHALL exclude `.git`, dependency, build, oversized, and non-text files.
 
@@ -39,4 +35,3 @@ The system SHALL delete all baseline and cumulative change records for a session
 #### Scenario: Roll back a changed turn
 - **WHEN** a user rolls back a turn that changed files
 - **THEN** the session review refreshes to the post-rollback workspace state
-

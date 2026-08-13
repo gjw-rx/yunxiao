@@ -4,7 +4,15 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { diffLines } from 'diff';
+import simpleGit from 'simple-git';
 import * as logger from '../logger';
+
+/** 会话累计变更集的固定标识。 */
+const SESSION_CHANGE_SET_ID = 'session';
+/** 非 Git 工作区兜底扫描时不纳入会话快照的目录。 */
+const EXCLUDED_WORKSPACE_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'out', '.vscode-test', '.venv', 'venv', 'coverage', '.cache', '.npm-cache']);
+/** 单个可审查文本文件的最大字节数。 */
+const MAX_SNAPSHOT_FILE_BYTES = 1_000_000;
 
 /** 变更文件状态。 */
 export type ChangeFileStatus = 'added' | 'modified' | 'deleted';
@@ -93,15 +101,126 @@ interface PendingFile {
 	after?: string | null;
 }
 
+/** 会话基线中某个文件的持久化定位信息。 */
+interface BaselineFile {
+	/** 相对工作区根路径。 */
+	readonly relativePath: string;
+	/** 快照文件名。 */
+	readonly contentFile: string;
+}
+
+/** 持久化的会话工作区基线。 */
+interface SessionBaseline {
+	/** 基线文件清单。 */
+	readonly files: readonly BaselineFile[];
+}
+
 /** 会话代码变更日志。 */
 export class ChangeJournal implements ChangeRecorder {
 	/** 正在执行中的回合变更缓存。 */
 	private readonly pending = new Map<string, Map<string, PendingFile>>();
+	/** 正在创建的会话基线任务，避免同一会话重复扫描工作区。 */
+	private readonly baselineTasks = new Map<string, Promise<void>>();
 
 	/**
 	 * @param baseDir 工作区隔离的变更日志根目录。
 	 */
 	constructor(private readonly baseDir: string) {}
+
+	/**
+	 * 在会话首次运行前持久化可审查工作区文件的基线快照；已有基线时不覆盖。
+	 * @param sessionId 会话 ID。
+	 * @param workspaceRoot 工作区根目录。
+	 * @returns 完成 Promise。
+	 */
+	async ensureSessionBaseline(sessionId: string, workspaceRoot: string): Promise<void> {
+		const existingTask = this.baselineTasks.get(sessionId);
+		if (existingTask) {
+			return existingTask;
+		}
+		if (await this.readBaseline(sessionId)) {
+			return;
+		}
+		const concurrentTask = this.baselineTasks.get(sessionId);
+		if (concurrentTask) {
+			return concurrentTask;
+		}
+		const task = this.createSessionBaseline(sessionId, workspaceRoot);
+		this.baselineTasks.set(sessionId, task);
+		try {
+			await task;
+		} finally {
+			this.baselineTasks.delete(sessionId);
+		}
+	}
+
+	/**
+	 * 创建并持久化一次会话工作区基线。
+	 * @param sessionId 会话 ID。
+	 * @param workspaceRoot 工作区根目录。
+	 * @returns 完成 Promise。
+	 */
+	private async createSessionBaseline(sessionId: string, workspaceRoot: string): Promise<void> {
+		logger.log(`[ChangeJournal] 开始创建会话工作区基线 sessionId=${sessionId}`);
+		const files = await this.scanWorkspace(workspaceRoot);
+		const baselineDir = this.baselineDir(sessionId);
+		await fs.mkdir(path.join(baselineDir, 'files'), { recursive: true });
+		const fileEntries = [...files.entries()];
+		const manifestFiles: BaselineFile[] = [];
+		for (let start = 0; start < fileEntries.length; start += 32) {
+			const batch = await Promise.all(fileEntries.slice(start, start + 32).map(async ([relativePath, content], offset) => {
+				const index = start + offset;
+				const contentFile = `files/${index}.snapshot`;
+				await fs.writeFile(path.join(baselineDir, contentFile), content, 'utf8');
+				return { relativePath, contentFile };
+			}));
+			manifestFiles.push(...batch);
+		}
+		await fs.writeFile(path.join(baselineDir, 'manifest.json'), JSON.stringify({ files: manifestFiles }, null, 2), 'utf8');
+		logger.log(`[ChangeJournal] 创建会话工作区基线 sessionId=${sessionId} files=${manifestFiles.length}`);
+	}
+
+	/**
+	 * 将当前工作区与会话基线比较，并覆盖写入该会话的累计变更集。
+	 * @param sessionId 会话 ID。
+	 * @param workspaceRoot 工作区根目录。
+	 * @param userSeq 触发本次刷新的用户消息序号。
+	 * @returns 当前会话累计变更集概览或 undefined。
+	 */
+	async refreshSession(sessionId: string, workspaceRoot: string, userSeq: number): Promise<ChangeSetSummary | undefined> {
+		await this.ensureSessionBaseline(sessionId, workspaceRoot);
+		const baseline = await this.readBaseline(sessionId);
+		if (!baseline) {
+			logger.error(`[ChangeJournal] 会话基线不可用 sessionId=${sessionId}`);
+			return undefined;
+		}
+		const beforeFiles = new Map<string, string>();
+		for (const file of baseline.files) {
+			const content = await this.readText(path.join(this.baselineDir(sessionId), file.contentFile));
+			if (content !== null) {
+				beforeFiles.set(file.relativePath, content);
+			}
+		}
+		const afterFiles = await this.scanWorkspace(workspaceRoot);
+		const paths = new Set([...beforeFiles.keys(), ...afterFiles.keys()]);
+		const entries = [...paths]
+			.sort((left, right) => left.localeCompare(right))
+			.map((relativePath) => ({
+				relativePath,
+				before: beforeFiles.get(relativePath) ?? null,
+				after: afterFiles.get(relativePath) ?? null,
+			}))
+			.filter((entry) => entry.before !== entry.after);
+		this.pending.delete(this.turnKey(sessionId, userSeq));
+		if (entries.length === 0) {
+			await fs.rm(this.changeSetDir(sessionId, SESSION_CHANGE_SET_ID), { recursive: true, force: true });
+			logger.log(`[ChangeJournal] 会话无累计变更 sessionId=${sessionId}`);
+			return undefined;
+		}
+		const summary = await this.persistChangeSet(sessionId, SESSION_CHANGE_SET_ID, userSeq, entries);
+		logger.log(`[ChangeJournal] 刷新会话累计变更 sessionId=${sessionId} files=${summary.fileCount}`);
+		return toSummary(summary);
+	}
 
 	/**
 	 * 记录文件首次修改前的内容；同一回合同一路径后续调用保持首次快照。
@@ -150,38 +269,14 @@ export class ChangeJournal implements ChangeRecorder {
 		if (!pending) {
 			return undefined;
 		}
-		const entries = [...pending.values()].filter((entry) => entry.after !== undefined && entry.before !== entry.after);
+		const entries = [...pending.values()]
+			.filter((entry) => entry.after !== undefined && entry.before !== entry.after)
+			.map((entry) => ({ ...entry, after: entry.after! }));
 		if (entries.length === 0) {
 			return undefined;
 		}
 
-		const id = String(userSeq);
-		const setDir = this.changeSetDir(sessionId, id);
-		const filesDir = path.join(setDir, 'files');
-		await fs.mkdir(filesDir, { recursive: true });
-		const files: PersistedFile[] = [];
-		for (const [index, entry] of entries.entries()) {
-			const before = entry.before ?? '';
-			const after = entry.after ?? '';
-			const beforeFile = `files/${index}.before`;
-			const afterFile = `files/${index}.after`;
-			await Promise.all([
-				fs.writeFile(path.join(setDir, beforeFile), before, 'utf8'),
-				fs.writeFile(path.join(setDir, afterFile), after, 'utf8'),
-			]);
-			const stats = calculateLineStats(before, after);
-			files.push({
-				id: String(index),
-				relativePath: entry.relativePath,
-				status: entry.before === null ? 'added' : entry.after === null ? 'deleted' : 'modified',
-				additions: stats.additions,
-				deletions: stats.deletions,
-				beforeFile,
-				afterFile,
-			});
-		}
-		const summary = buildSummary(id, userSeq, files);
-		await fs.writeFile(path.join(setDir, 'manifest.json'), JSON.stringify(summary, null, 2), 'utf8');
+		const summary = await this.persistChangeSet(sessionId, String(userSeq), userSeq, entries);
 		logger.log(`[ChangeJournal] 完成变更集 sessionId=${sessionId} userSeq=${userSeq} files=${summary.fileCount}`);
 		return toSummary(summary);
 	}
@@ -224,6 +319,7 @@ export class ChangeJournal implements ChangeRecorder {
 	 * @returns 完成 Promise。
 	 */
 	async clearSession(sessionId: string): Promise<void> {
+		this.baselineTasks.delete(sessionId);
 		for (const key of this.pending.keys()) {
 			if (key.startsWith(`${sessionId}:`)) {
 				this.pending.delete(key);
@@ -289,7 +385,7 @@ export class ChangeJournal implements ChangeRecorder {
 	 * @returns 清单或 undefined。
 	 */
 	private async readManifest(sessionId: string, changeSetId: string): Promise<PersistedChangeSet | undefined> {
-		if (!/^\d+$/.test(changeSetId)) {
+		if (!/^(?:\d+|session)$/.test(changeSetId)) {
 			return undefined;
 		}
 		try {
@@ -317,6 +413,151 @@ export class ChangeJournal implements ChangeRecorder {
 	 */
 	private changeSetDir(sessionId: string, changeSetId: string): string {
 		return path.join(this.baseDir, sessionId, changeSetId);
+	}
+
+	/**
+	 * 获取会话基线目录。
+	 * @param sessionId 会话 ID。
+	 * @returns 会话基线绝对目录。
+	 */
+	private baselineDir(sessionId: string): string {
+		return path.join(this.baseDir, sessionId, 'baseline');
+	}
+
+	/**
+	 * 读取会话基线清单。
+	 * @param sessionId 会话 ID。
+	 * @returns 基线清单或 undefined。
+	 */
+	private async readBaseline(sessionId: string): Promise<SessionBaseline | undefined> {
+		try {
+			return JSON.parse(await fs.readFile(path.join(this.baselineDir(sessionId), 'manifest.json'), 'utf8')) as SessionBaseline;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * 扫描可审查的工作区文本文件。
+	 * @param workspaceRoot 工作区根目录。
+	 * @returns 相对路径到文本内容的映射。
+	 */
+	private async scanWorkspace(workspaceRoot: string): Promise<Map<string, string>> {
+		const startedAt = Date.now();
+		const gitPaths = await this.listGitWorkspacePaths(workspaceRoot);
+		if (gitPaths) {
+			const files = await this.readWorkspaceFiles(workspaceRoot, gitPaths);
+			logger.log(`[ChangeJournal] Git 清单扫描完成 root=${workspaceRoot} candidates=${gitPaths.length} files=${files.size} duration_ms=${Date.now() - startedAt}`);
+			return files;
+		}
+		const fallbackPaths = await this.listFallbackWorkspacePaths(workspaceRoot);
+		const files = await this.readWorkspaceFiles(workspaceRoot, fallbackPaths);
+		logger.log(`[ChangeJournal] 非 Git 工作区扫描完成 root=${workspaceRoot} candidates=${fallbackPaths.length} files=${files.size} duration_ms=${Date.now() - startedAt}`);
+		return files;
+	}
+
+	/**
+	 * 使用 Git 索引与忽略规则列出已跟踪和未跟踪文件，已提交后的文件仍会保留在清单中。
+	 * @param workspaceRoot 工作区根目录。
+	 * @returns Git 文件相对路径；非 Git 工作区或命令失败时返回 undefined。
+	 */
+	private async listGitWorkspacePaths(workspaceRoot: string): Promise<string[] | undefined> {
+		try {
+			const git = simpleGit(workspaceRoot);
+			if (!await git.checkIsRepo()) {
+				return undefined;
+			}
+			const output = await git.raw(['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
+			return output.split('\0').filter(Boolean);
+		} catch (error) {
+			logger.error(`[ChangeJournal] Git 文件清单读取失败，使用目录扫描 root=${workspaceRoot}`, error);
+			return undefined;
+		}
+	}
+
+	/**
+	 * 为非 Git 工作区递归列出候选文件，并跳过常见依赖、缓存和构建目录。
+	 * @param workspaceRoot 工作区根目录。
+	 * @returns 候选文件相对路径。
+	 */
+	private async listFallbackWorkspacePaths(workspaceRoot: string): Promise<string[]> {
+		const paths: string[] = [];
+		const walk = async (directory: string): Promise<void> => {
+			const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+			for (const entry of entries) {
+				const absolutePath = path.join(directory, entry.name);
+				if (entry.isDirectory()) {
+					if (!EXCLUDED_WORKSPACE_DIRECTORIES.has(entry.name)) {
+						await walk(absolutePath);
+					}
+				} else if (entry.isFile()) {
+					paths.push(path.relative(workspaceRoot, absolutePath).split(path.sep).join('/'));
+				}
+			}
+		};
+		await walk(workspaceRoot);
+		return paths;
+	}
+
+	/**
+	 * 批量读取候选路径中的小型文本文件。
+	 * @param workspaceRoot 工作区根目录。
+	 * @param relativePaths 候选文件相对路径。
+	 * @returns 相对路径到文本内容的映射。
+	 */
+	private async readWorkspaceFiles(workspaceRoot: string, relativePaths: readonly string[]): Promise<Map<string, string>> {
+		const files = new Map<string, string>();
+		for (let start = 0; start < relativePaths.length; start += 32) {
+			const batch = relativePaths.slice(start, start + 32);
+			await Promise.all(batch.map(async (relativePath) => {
+				const absolutePath = path.join(workspaceRoot, relativePath);
+				const stat = await fs.stat(absolutePath).catch(() => undefined);
+				if (!stat?.isFile() || stat.size > MAX_SNAPSHOT_FILE_BYTES) {
+					return;
+				}
+				const content = await this.readText(absolutePath);
+				if (content === null || content.includes('\0')) {
+					return;
+				}
+				files.set(relativePath.split(path.sep).join('/'), content);
+			}));
+		}
+		return files;
+	}
+
+	/**
+	 * 将前后快照写为可供变更页读取的清单和文件内容。
+	 * @param sessionId 会话 ID。
+	 * @param id 变更集 ID。
+	 * @param userSeq 来源用户消息序号。
+	 * @param entries 文件前后内容条目。
+	 * @returns 持久化变更集清单。
+	 */
+	private async persistChangeSet(sessionId: string, id: string, userSeq: number, entries: readonly { readonly relativePath: string; readonly before: string | null; readonly after: string | null }[]): Promise<PersistedChangeSet> {
+		const setDir = this.changeSetDir(sessionId, id);
+		const filesDir = path.join(setDir, 'files');
+		await fs.rm(setDir, { recursive: true, force: true });
+		await fs.mkdir(filesDir, { recursive: true });
+		const files: PersistedFile[] = [];
+		for (const [index, entry] of entries.entries()) {
+			const before = entry.before ?? '';
+			const after = entry.after ?? '';
+			const beforeFile = `files/${index}.before`;
+			const afterFile = `files/${index}.after`;
+			await Promise.all([
+				fs.writeFile(path.join(setDir, beforeFile), before, 'utf8'),
+				fs.writeFile(path.join(setDir, afterFile), after, 'utf8'),
+			]);
+			const stats = calculateLineStats(before, after);
+			files.push({
+				id: String(index), relativePath: entry.relativePath,
+				status: entry.before === null ? 'added' : entry.after === null ? 'deleted' : 'modified',
+				additions: stats.additions, deletions: stats.deletions, beforeFile, afterFile,
+			});
+		}
+		const summary = buildSummary(id, userSeq, files);
+		await fs.writeFile(path.join(setDir, 'manifest.json'), JSON.stringify(summary, null, 2), 'utf8');
+		return summary;
 	}
 }
 

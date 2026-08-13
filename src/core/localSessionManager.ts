@@ -51,6 +51,11 @@ export class LocalSessionManager {
 	createSession(): string {
 		const sessionId = randomUUID();
 		this.currentSessionId = sessionId;
+		if (this.changeJournal && this.workspaceRoot) {
+			void this.changeJournal.ensureSessionBaseline(sessionId, this.workspaceRoot).catch((error) => {
+				logger.error(`[SessionManager] 预热会话代码变更基线失败 sessionId=${sessionId}`, error);
+			});
+		}
 		logger.log(`[SessionManager] 创建会话 sessionId=${sessionId}（空会话延迟落盘，发消息后建立记录）`);
 		return sessionId;
 	}
@@ -82,6 +87,11 @@ export class LocalSessionManager {
 
 	/** 加载会话历史，从 MessageStore 读取并转换为前端格式。 */
 	loadHistory(sessionId: string): HistoryEntry[] {
+		if (this.changeJournal && this.workspaceRoot) {
+			void this.changeJournal.ensureSessionBaseline(sessionId, this.workspaceRoot).catch((error) => {
+				logger.error(`[SessionManager] 加载会话时预热代码变更基线失败 sessionId=${sessionId}`, error);
+			});
+		}
 		const messages = this.messageStore.loadHistory(sessionId);
 		return messages
 			.filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
@@ -174,6 +184,9 @@ export class LocalSessionManager {
 		}
 		if (this.changeJournal) {
 			await this.changeJournal.clearAfterSeq(sessionId, seq);
+			if (this.workspaceRoot) {
+				await this.changeJournal.refreshSession(sessionId, this.workspaceRoot, seq);
+			}
 		}
 		this.messageStore.deleteMessagesAfter(sessionId, seq - 1);
 		return target.content;
