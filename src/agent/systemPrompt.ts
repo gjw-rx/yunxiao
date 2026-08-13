@@ -105,9 +105,9 @@ export interface SystemPromptContext {
 	readonly modelId?: string;
 	/** Provider ID（如 "openai"） */
 	readonly providerId?: string;
-	/** 项目级规范（用户级全局 + 项目级 AGENTS.md / CLAUDE.md 拼接内容）；trae 来源下与 traeRules 并存注入 */
+	/** 项目级规范（CLAUDE.md / AGENTS.md 内容）；与 traeRules 二选一注入（由调用方按配置来源保证只传其一） */
 	readonly projectRules?: ProjectRules | null;
-	/** Trae 项目规则（.trae/rules 与 .trae-cn/rules 内容）；trae 来源下注入，与 projectRules 并存 */
+	/** Trae 项目规则（.trae/rules 与 .trae-cn/rules 内容）；与 projectRules 二选一注入（由调用方按配置来源保证只传其一） */
 	readonly traeRules?: TraeRules | null;
 }
 
@@ -173,7 +173,7 @@ function buildProjectRulesSection(rules: ProjectRules | null | undefined): strin
 	}
 	return [
 		'# 项目级规范',
-		`以下内容为项目级规范（来源：${rules.sources.join('、')}），做任何开发工作都必须遵循：`,
+		`以下内容为项目级规范（来源：${rules.source}），做任何开发工作都必须遵循：`,
 		'<project_rules>',
 		rules.content,
 		'</project_rules>',
@@ -224,7 +224,7 @@ export function buildSystemPrompt(context: SystemPromptContext): string {
 
 	const systemPrompt = sections.join('\n\n');
 
-	logger.log(`[SystemPrompt] 构建完成 length=${systemPrompt.length} 自定义=${context.agentPrompt?.trim() ? 'yes' : 'no'} skills=${context.skills.length} projectRules=${context.projectRules?.sources.join('、') ?? 'none'} traeRules=${context.traeRules?.sources.length ?? 0}`);
+	logger.log(`[SystemPrompt] 构建完成 length=${systemPrompt.length} 自定义=${context.agentPrompt?.trim() ? 'yes' : 'no'} skills=${context.skills.length} projectRules=${context.projectRules?.source ?? 'none'} traeRules=${context.traeRules?.sources.length ?? 0}`);
 
 	return systemPrompt;
 }
