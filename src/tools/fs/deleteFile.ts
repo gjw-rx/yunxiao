@@ -116,10 +116,26 @@ export class DeleteFileTool extends BaseTool {
 				existedBefore: true,
 			});
 		}
+		if (context.sessionId && context.turnUserSeq !== undefined && context.changeRecorder) {
+			await context.changeRecorder.recordBefore({
+				sessionId: context.sessionId,
+				userSeq: context.turnUserSeq,
+				fsPath: resolved.fsPath,
+				relativePath: resolved.relativePath,
+			});
+		}
 
 		// 3. 删除
 		try {
 			const result = await this.deleteFn(resolved.fsPath, recursive);
+			if (context.sessionId && context.turnUserSeq !== undefined && context.changeRecorder) {
+				await context.changeRecorder.recordAfter({
+					sessionId: context.sessionId,
+					userSeq: context.turnUserSeq,
+					fsPath: resolved.fsPath,
+					relativePath: resolved.relativePath,
+				});
+			}
 			logger.log(`[fs_delete_file] 完成 - path=${inputPath}, permanent=${result.permanent}, duration_ms=${Date.now() - startedAt}`);
 			return {
 				status: 'success',

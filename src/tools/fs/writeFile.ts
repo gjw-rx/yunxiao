@@ -80,6 +80,14 @@ export class WriteFileTool extends BaseTool {
 				existedBefore: overwritten,
 			});
 		}
+		if (context.sessionId && context.turnUserSeq !== undefined && context.changeRecorder) {
+			await context.changeRecorder.recordBefore({
+				sessionId: context.sessionId,
+				userSeq: context.turnUserSeq,
+				fsPath: resolved.fsPath,
+				relativePath: resolved.relativePath,
+			});
+		}
 		// 3. 自动建父目录 + 原子写入（临时文件 + rename）
 		const dir = path.dirname(resolved.fsPath);
 		const tmpPath = path.join(
@@ -98,6 +106,14 @@ export class WriteFileTool extends BaseTool {
 				status: 'error',
 				error: `写入文件失败: ${inputPath}（${err instanceof Error ? err.message : String(err)}）`,
 			};
+		}
+		if (context.sessionId && context.turnUserSeq !== undefined && context.changeRecorder) {
+			await context.changeRecorder.recordAfter({
+				sessionId: context.sessionId,
+				userSeq: context.turnUserSeq,
+				fsPath: resolved.fsPath,
+				relativePath: resolved.relativePath,
+			});
 		}
 
 		logger.log(`[fs_write_file] 完成 - path=${inputPath}, overwritten=${overwritten}, duration_ms=${Date.now() - startedAt}`);

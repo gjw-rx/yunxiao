@@ -23,6 +23,7 @@ import { loadProjectRules } from './projectRules';
 import { loadTraeRules } from './traeRules';
 import type { SyncSource } from '../config/syncConfig';
 import type { RollbackRecorder } from '../core/rollbackJournal';
+import type { ChangeJournal, ChangeSetSummary } from '../core/changeJournal';
 import type { CompactionConfig, CompactionResult } from './compaction';
 import { compactIfNeeded } from './compaction';
 import { estimateText, estimateRequest } from './tokenEstimator';
@@ -79,6 +80,8 @@ export interface AgentLoopConfig {
 	readonly todoStore?: SessionTodoStore;
 	/** 回滚快照记录器（写文件工具在执行前记录改动前状态）。 */
 	readonly rollbackRecorder?: RollbackRecorder;
+	/** 会话代码变更日志（写文件工具在成功前后记录快照）。 */
+	readonly changeJournal?: ChangeJournal;
 }
 
 const MAX_STEPS_PROMPT =
@@ -102,6 +105,20 @@ const MAX_EMPTY_REPLY_RETRIES = 2;
 
 /** 同一轮中只读可并行工具的最大并发数（参照 langchain maxConcurrency / Anthropic 并行 tool use 建议）。 */
 const MAX_PARALLEL_TOOLS = 3;
+
+/**
+ * 将完整变更集概览转换为可持久化在助手消息中的轻量引用。
+ * @param changeSet 完整变更集概览。
+ * @returns 助手消息变更集引用。
+ */
+function toChangeSetReference(changeSet: ChangeSetSummary): { id: string; fileCount: number; additions: number; deletions: number } {
+	return {
+		id: changeSet.id,
+		fileCount: changeSet.fileCount,
+		additions: changeSet.additions,
+		deletions: changeSet.deletions,
+	};
+}
 
 export class AgentLoop {
 	private abortController: AbortController | null = null;
@@ -361,11 +378,21 @@ export class AgentLoop {
 					}
 					// 无工具调用，或 LLM 明确表示完成 → 保存 assistant 消息，退出循环
 					logger.log(`[AgentLoop] step=${step} 循环结束 文本长度=${text.length} finish=${finishReason} tools=${hasToolCalls}`);
+					let changeSet: ChangeSetSummary | undefined;
+					try {
+						changeSet = await this.config.changeJournal?.finalize(sessionId, userMsgSeq);
+					} catch (error) {
+						logger.error(`[AgentLoop] 持久化代码变更失败 sessionId=${sessionId} userSeq=${userMsgSeq}`, error);
+					}
 					this.messageStore.append(sessionId, {
 						role: 'assistant',
 						content: text,
 						tokenUsage: tokenSnapshot ?? undefined,
+						...(changeSet ? { changeSet: toChangeSetReference(changeSet) } : {}),
 					});
+					if (changeSet) {
+						this.eventBus.emit({ type: 'turn_change_set', sessionId, payload: changeSet });
+					}
 					break;
 				}
 
@@ -497,6 +524,7 @@ export class AgentLoop {
 			runId,
 			turnUserSeq: userSeq,
 			rollbackRecorder: this.config.rollbackRecorder,
+			changeRecorder: this.config.changeJournal,
 			terminalOutputLimit: this.config.terminalOutputLimit,
 			abortSignal: this.abortController?.signal,
 			toolResultLimit: this.config.toolResultLimit,

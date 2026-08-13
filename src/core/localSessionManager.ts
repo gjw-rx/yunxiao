@@ -9,6 +9,7 @@ import type { AgentLoop } from '../agent/agentLoop';
 import type { MessageStore } from '../memory/messageStore';
 import type { SessionMeta } from '../memory/sessionFileStore';
 import type { RollbackJournal } from './rollbackJournal';
+import type { ChangeJournal } from './changeJournal';
 import type { Message } from '../memory/types';
 import type { CompactionResult } from '../agent/compaction';
 import * as logger from '../logger';
@@ -27,6 +28,8 @@ export interface HistoryEntry {
 	tokenUsage?: import('../memory/types').TokenUsageSnapshot;
 	/** user 消息的输入 token 分摊值（估算），供历史重载后聚合展示 */
 	inputTokens?: number;
+	/** 助手最终回复关联的代码变更概览。 */
+	changeSet?: import('../memory/types').ChangeSetReference;
 }
 
 export class LocalSessionManager {
@@ -37,6 +40,7 @@ export class LocalSessionManager {
 		private readonly messageStore: MessageStore,
 		private readonly rollbackJournal?: RollbackJournal,
 		private readonly workspaceRoot?: string,
+		private readonly changeJournal?: ChangeJournal,
 	) {}
 
 	/**
@@ -89,10 +93,14 @@ export class LocalSessionManager {
 						seq: m.seq,
 						toolCalls: m.toolCalls,
 						tokenUsage: m.tokenUsage,
+						...(m.changeSet ? { changeSet: m.changeSet } : {}),
 					};
 				}
 				if (m.role === 'assistant' && 'tokenUsage' in m && m.tokenUsage) {
-					return { role: m.role, content: m.content, seq: m.seq, tokenUsage: m.tokenUsage };
+					return { role: m.role, content: m.content, seq: m.seq, tokenUsage: m.tokenUsage, ...(m.changeSet ? { changeSet: m.changeSet } : {}) };
+				}
+				if (m.role === 'assistant' && 'changeSet' in m && m.changeSet) {
+					return { role: m.role, content: m.content, seq: m.seq, changeSet: m.changeSet };
 				}
 				if (m.role === 'tool' && 'toolCallId' in m) {
 					return { role: m.role, content: m.content, seq: m.seq, toolCallId: (m as { toolCallId: string }).toolCallId };
@@ -129,6 +137,9 @@ export class LocalSessionManager {
 		if (this.rollbackJournal) {
 			void this.rollbackJournal.clearSession(sessionId);
 		}
+		if (this.changeJournal) {
+			void this.changeJournal.clearSession(sessionId);
+		}
 	}
 
 	/**
@@ -160,6 +171,9 @@ export class LocalSessionManager {
 		}
 		if (this.workspaceRoot && this.rollbackJournal) {
 			await this.rollbackJournal.restoreTurn(sessionId, seq, this.workspaceRoot);
+		}
+		if (this.changeJournal) {
+			await this.changeJournal.clearAfterSeq(sessionId, seq);
 		}
 		this.messageStore.deleteMessagesAfter(sessionId, seq - 1);
 		return target.content;

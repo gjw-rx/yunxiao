@@ -100,16 +100,6 @@ describe('协议映射 hostToAction', () => {
 			summary: '写入 a.ts',
 			filePath: 'a.ts',
 		});
-		expect(
-			hostToAction({ command: 'diffResult', call_id: 'c2', file_path: 'a.ts', diff_html: '<table></table>', additions: 1, deletions: 2 })
-		).toEqual({
-			type: 'diffResult',
-			callId: 'c2',
-			filePath: 'a.ts',
-			diffHtml: '<table></table>',
-			additions: 1,
-			deletions: 2,
-		});
 	});
 
 	it('triggerNewSession 需要副作用，映射为 null', () => {
@@ -162,6 +152,19 @@ describe('reducer 状态转换', () => {
 		expect(state.liveAssistantId).toBeNull();
 	});
 
+	it('最终回复结束后仍能关联本轮代码变更集', () => {
+		let state = activeState({ isStreaming: true });
+		state = chatReducer(state, { type: 'replyChunk', text: '已完成修改' });
+		state = chatReducer(state, { type: 'stepEnd' });
+		state = chatReducer(state, {
+			type: 'replyChangeSet',
+			changeSet: { id: '3', fileCount: 2, additions: 8, deletions: 1 },
+		});
+		expect(state.messages.find((message) => message.kind === 'assistant')).toMatchObject({
+			changeSet: { id: '3', fileCount: 2, additions: 8, deletions: 1 },
+		});
+	});
+
 	it('thought 增量合并（mergeStreamText 语义：增量或累计取较全者）', () => {
 		let state = activeState();
 		state = chatReducer(state, { type: 'thought', text: 'The ' });
@@ -179,15 +182,6 @@ describe('reducer 状态转换', () => {
 
 		expect(state.toolEntries['c1']).toMatchObject({ state: 'success', output: 'ok', args: { path: 'a.ts' } });
 		expect(state.messages.filter((m) => m.kind === 'tool' && m.callId === 'c1')).toHaveLength(1);
-	});
-
-	it('diffResult 添加卡片；同一 call_id 再次到达时替换内容不重复添加', () => {
-		let state = activeState();
-		state = chatReducer(state, { type: 'diffResult', callId: 'c2', filePath: 'a.ts', diffHtml: '<table>v1</table>', additions: 1, deletions: 2 });
-		state = chatReducer(state, { type: 'diffResult', callId: 'c2', filePath: 'a.ts', diffHtml: '<table>v2</table>', additions: 3, deletions: 4 });
-
-		expect(state.diffs['c2'].diff_html).toBe('<table>v2</table>');
-		expect(state.messages.filter((m) => m.kind === 'diff' && m.callId === 'c2')).toHaveLength(1);
 	});
 
 	it('审批决定后移除卡片与消息条目，不保留不可见占位', () => {

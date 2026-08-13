@@ -8,7 +8,7 @@
 import type {
 	ApprovalEntry,
 	ApprovalMode,
-	DiffEntry,
+	ChangeSetReference,
 	HistoryEntry,
 	ModelPickerItem,
 	RuntimeStatus,
@@ -27,12 +27,11 @@ import type {
 /** 消息流条目（扁平渲染顺序数组，按 turn 分组渲染）。 */
 export type MessageItem =
 	| { id: string; kind: 'user'; text: string; turn: number; seq?: number; injected?: boolean }
-	| { id: string; kind: 'assistant'; text: string; streaming: boolean; tokenUsage?: TokenUsageDetail; turn: number; seq?: number }
+	| { id: string; kind: 'assistant'; text: string; streaming: boolean; tokenUsage?: TokenUsageDetail; changeSet?: ChangeSetReference; turn: number; seq?: number }
 	| { id: string; kind: 'thought'; text: string; turn: number }
 	| { id: string; kind: 'tool'; callId: string; turn: number; seq?: number }
 	| { id: string; kind: 'plan'; steps: readonly string[]; turn: number }
 	| { id: string; kind: 'approval'; callId: string; turn: number }
-	| { id: string; kind: 'diff'; callId: string; turn: number }
 	| { id: string; kind: 'compaction'; active: boolean; turn: number };
 
 /** Webview 全局界面状态。 */
@@ -78,7 +77,6 @@ export interface ChatState {
 	/** 审批卡：call_id → 条目 */
 	approvals: Record<string, ApprovalEntry>;
 	/** Diff 卡：call_id → 条目 */
-	diffs: Record<string, DiffEntry>;
 	/** 当前回合计数器（用户消息时递增） */
 	turnCounter: number;
 	/** 当前流式 assistant 消息 id（replyChunk 目标） */
@@ -111,7 +109,6 @@ export const initialState: ChatState = {
 	messages: [],
 	toolEntries: {},
 	approvals: {},
-	diffs: {},
 	turnCounter: 0,
 	liveAssistantId: null,
 	liveThoughtId: null,
@@ -170,7 +167,7 @@ export type ChatAction =
 	| { type: 'toolCall'; callId: string; tool: string; args?: unknown }
 	| { type: 'toolState'; callId: string; tool: string; state: ToolState; error?: string; args?: unknown; output?: unknown }
 	| { type: 'toolResult'; callId: string; status: string; result?: unknown; error?: string }
-	| { type: 'diffResult'; callId: string; filePath: string; diffHtml: string; additions: number; deletions: number }
+	| { type: 'replyChangeSet'; changeSet: ChangeSetReference }
 	| { type: 'approvalRequest'; callId: string; toolName: string; summary: string; filePath?: string }
 	| { type: 'approvalResolved'; callId: string }
 	| { type: 'error'; message: string }
@@ -194,7 +191,6 @@ export type ChatAction =
 	| { type: 'rollbackRestored'; text: string }
 	| { type: 'clearPendingDraft' }
 	| { type: 'toggleToolExpand'; callId: string }
-	| { type: 'toggleDiffExpand'; callId: string }
 	| { type: 'clearError' };
 
 /** 清空当前会话的对话内容（新建/切换/删除会话后调用），保留会话指针。 */
@@ -204,7 +200,6 @@ function resetConversation(state: ChatState): ChatState {
 		messages: [],
 		toolEntries: {},
 		approvals: {},
-		diffs: {},
 		turnCounter: 0,
 		liveAssistantId: null,
 		liveThoughtId: null,
@@ -391,19 +386,19 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 			const withEntry = upsertToolEntry(state, action.callId, 'tool', { state: 'success', output: action.result, error: action.error });
 			return ensureToolStep(withEntry, action.callId);
 		}
-		case 'diffResult': {
-			const diff: DiffEntry = {
-				call_id: action.callId,
-				file_path: action.filePath,
-				diff_html: action.diffHtml,
-				additions: action.additions,
-				deletions: action.deletions,
-				expanded: false,
+		case 'replyChangeSet': {
+			const targetId = state.liveAssistantId ?? [...state.messages]
+				.reverse()
+				.find((message) => message.kind === 'assistant' && message.turn === currentTurn(state))?.id;
+			if (!targetId) return state;
+			return {
+				...state,
+				messages: state.messages.map((message) =>
+					message.id === targetId && message.kind === 'assistant'
+						? { ...message, changeSet: action.changeSet }
+						: message,
+				),
 			};
-			const messages = state.messages.some((m) => m.kind === 'diff' && m.callId === action.callId)
-				? state.messages
-				: [...state.messages, { id: nextId('diff'), kind: 'diff' as const, callId: action.callId, turn: currentTurn(state) }];
-			return { ...state, diffs: { ...state.diffs, [action.callId]: diff }, messages };
 		}
 		case 'approvalRequest': {
 			const approval: ApprovalEntry = {
@@ -501,7 +496,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 					// 含工具调用的 assistant 消息：先渲染回复文本，再渲染工具步骤（与实时交错顺序一致）
 					turnCounter += 1;
 					if (m.content) {
-						messages = [...messages, { id: nextId('assistant'), kind: 'assistant', text: m.content, streaming: false, tokenUsage: m.tokenUsage, turn: turnCounter, seq: m.seq }];
+						messages = [...messages, { id: nextId('assistant'), kind: 'assistant', text: m.content, streaming: false, tokenUsage: m.tokenUsage, ...(m.changeSet ? { changeSet: m.changeSet } : {}), turn: turnCounter, seq: m.seq }];
 					}
 					for (const tc of m.toolCalls) {
 						let parsedArgs: unknown;
@@ -521,7 +516,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 					}
 				} else if (m.role === 'assistant') {
 					turnCounter += 1;
-					messages = [...messages, { id: nextId('assistant'), kind: 'assistant', text: m.content, streaming: false, tokenUsage: m.tokenUsage, turn: turnCounter, seq: m.seq }];
+					messages = [...messages, { id: nextId('assistant'), kind: 'assistant', text: m.content, streaming: false, tokenUsage: m.tokenUsage, ...(m.changeSet ? { changeSet: m.changeSet } : {}), turn: turnCounter, seq: m.seq }];
 				} else if (m.role === 'user') {
 					turnCounter += 1;
 					messages = [...messages, { id: nextId('user'), kind: 'user', text: m.content, turn: turnCounter, seq: m.seq, ...(m.injected ? { injected: true } : {}) }];
@@ -594,12 +589,6 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 			if (!entry) return state;
 			const toolEntries = { ...state.toolEntries, [action.callId]: { ...entry, expanded: !entry.expanded } };
 			return { ...state, toolEntries };
-		}
-		case 'toggleDiffExpand': {
-			const diff = state.diffs[action.callId];
-			if (!diff) return state;
-			const diffs = { ...state.diffs, [action.callId]: { ...diff, expanded: !diff.expanded } };
-			return { ...state, diffs };
 		}
 		case 'clearError':
 			return { ...state, error: '' };

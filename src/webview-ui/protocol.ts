@@ -191,6 +191,48 @@ export interface HistoryEntry {
 	readonly inputTokens?: number;
 	/** 是否为系统注入消息（step 预警等）；仅 user 消息可能为 true */
 	readonly injected?: boolean;
+	/** 助手最终回复关联的会话代码变更概览。 */
+	readonly changeSet?: ChangeSetReference;
+}
+
+/** 回复关联的会话代码变更概览。 */
+export interface ChangeSetReference {
+	/** 变更集 ID。 */
+	readonly id: string;
+	/** 受影响文件数量。 */
+	readonly fileCount: number;
+	/** 累计新增行数。 */
+	readonly additions: number;
+	/** 累计删除行数。 */
+	readonly deletions: number;
+}
+
+/** 变更页文件概览。 */
+export interface ChangeReviewFile {
+	/** 文件稳定标识。 */
+	readonly id: string;
+	/** 相对工作区根路径。 */
+	readonly relativePath: string;
+	/** 文件状态。 */
+	readonly status: 'added' | 'modified' | 'deleted';
+	/** 新增行数。 */
+	readonly additions: number;
+	/** 删除行数。 */
+	readonly deletions: number;
+}
+
+/** 变更页摘要。 */
+export interface ChangeReviewSummary extends ChangeSetReference {
+	/** 文件变更列表。 */
+	readonly files: readonly ChangeReviewFile[];
+}
+
+/** 变更页文件详情。 */
+export interface ChangeReviewFileDetail extends ChangeReviewFile {
+	/** 修改前文本。 */
+	readonly before: string;
+	/** 修改后文本。 */
+	readonly after: string;
 }
 
 /** 单次 LLM 调用的 token 用量明细（tokenUsage 事件 payload.token_usage）。 */
@@ -281,15 +323,6 @@ export interface ApprovalEntry {
 }
 
 /** Diff 卡片条目。 */
-export interface DiffEntry {
-	readonly call_id: string;
-	readonly file_path: string;
-	readonly diff_html: string;
-	readonly additions: number;
-	readonly deletions: number;
-	readonly expanded: boolean;
-}
-
 // ── Host → Webview 消息 ──
 
 /** 宿主推送模型名（webviewReady 握手后发送）。 */
@@ -375,13 +408,28 @@ export interface ToolStateMessage {
 }
 
 /** Diff 结果（code_edit 成功且含 diff 数据时额外发送）。 */
-export interface DiffResultMessage {
-	readonly command: 'diffResult';
-	readonly call_id: string;
-	readonly file_path: string;
-	readonly diff_html: string;
-	readonly additions: number;
-	readonly deletions: number;
+/** 最终回复的会话变更集已就绪。 */
+export interface ReplyChangeSetMessage {
+	/** 消息命令名。 */
+	readonly command: 'replyChangeSet';
+	/** 变更集概览。 */
+	readonly changeSet: ChangeSetReference;
+}
+
+/** 宿主回推独立变更页的摘要。 */
+export interface ChangeReviewSummaryMessage {
+	/** 消息命令名。 */
+	readonly command: 'changeReviewSummary';
+	/** 变更集概览。 */
+	readonly summary?: ChangeReviewSummary;
+}
+
+/** 宿主回推独立变更页的文件详情。 */
+export interface ChangeReviewFileMessage {
+	/** 消息命令名。 */
+	readonly command: 'changeReviewFile';
+	/** 文件详情。 */
+	readonly file?: ChangeReviewFileDetail;
 }
 
 /** 工具调用开始（pending）。 */
@@ -528,7 +576,9 @@ export type HostToWebviewMessage =
 	| ReplyEndMessage
 	| ErrorMessage
 	| ToolStateMessage
-	| DiffResultMessage
+	| ReplyChangeSetMessage
+	| ChangeReviewSummaryMessage
+	| ChangeReviewFileMessage
 	| ToolCallMessage
 	| ToolResultMessage
 	| ThoughtMessage
@@ -594,9 +644,28 @@ export interface ApprovalDecisionMessage {
 }
 
 /** 在差异编辑器中打开文件。 */
-export interface OpenDiffMessage {
-	readonly command: 'openDiff';
-	readonly file_path: string;
+/** 打开某条回复的独立代码变更页。 */
+export interface OpenChangeReviewMessage {
+	/** 消息命令名。 */
+	readonly command: 'openChangeReview';
+	/** 会话 ID。 */
+	readonly sessionId: string;
+	/** 变更集 ID。 */
+	readonly changeSetId: string;
+}
+
+/** 独立变更页请求摘要。 */
+export interface RequestChangeReviewMessage {
+	/** 消息命令名。 */
+	readonly command: 'requestChangeReview';
+}
+
+/** 独立变更页请求某文件详情。 */
+export interface RequestChangeReviewFileMessage {
+	/** 消息命令名。 */
+	readonly command: 'requestChangeReviewFile';
+	/** 文件稳定标识。 */
+	readonly fileId: string;
 }
 
 /** 打开文件选择对话框。 */
@@ -751,7 +820,9 @@ export type WebviewToHostMessage =
 	| StopStreamMessage
 	| LoadHistoryMessage
 	| ApprovalDecisionMessage
-	| OpenDiffMessage
+	| OpenChangeReviewMessage
+	| RequestChangeReviewMessage
+	| RequestChangeReviewFileMessage
 	| OpenFileMessage
 	| RequestSlashCommandsMessage
 	| RequestWorkspaceFilesMessage

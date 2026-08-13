@@ -103,6 +103,20 @@ export class MoveFileTool extends BaseTool {
 				});
 			}
 		}
+		if (context.sessionId && context.turnUserSeq !== undefined && context.changeRecorder) {
+			await context.changeRecorder.recordBefore({
+				sessionId: context.sessionId,
+				userSeq: context.turnUserSeq,
+				fsPath: fromResolved.fsPath,
+				relativePath: fromResolved.relativePath,
+			});
+			await context.changeRecorder.recordBefore({
+				sessionId: context.sessionId,
+				userSeq: context.turnUserSeq,
+				fsPath: toResolved.fsPath,
+				relativePath: toResolved.relativePath,
+			});
+		}
 
 		// 5. 移动（跨设备回退 copy+delete）
 		try {
@@ -122,6 +136,20 @@ export class MoveFileTool extends BaseTool {
 				status: 'error',
 				error: `移动失败: ${fromInput} -> ${toInput}（${err instanceof Error ? err.message : String(err)}）`,
 			};
+		}
+		if (context.sessionId && context.turnUserSeq !== undefined && context.changeRecorder) {
+			await context.changeRecorder.recordAfter({
+				sessionId: context.sessionId,
+				userSeq: context.turnUserSeq,
+				fsPath: fromResolved.fsPath,
+				relativePath: fromResolved.relativePath,
+			});
+			await context.changeRecorder.recordAfter({
+				sessionId: context.sessionId,
+				userSeq: context.turnUserSeq,
+				fsPath: toResolved.fsPath,
+				relativePath: toResolved.relativePath,
+			});
 		}
 
 		logger.log(`[fs_move_file] 完成 - from=${fromInput}, to=${toInput}, overwritten=${overwritten}, duration_ms=${Date.now() - startedAt}`);

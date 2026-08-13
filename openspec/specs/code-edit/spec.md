@@ -45,13 +45,13 @@ The system SHALL support a patch mode invoked with `{ path, patch }` where `patc
 - **THEN** `code.edit` applies the approved proposed content and returns success metadata containing `base_version` and `applied_version`
 
 ### Requirement: Diff preview before apply
-`code.edit` SHALL present a diff preview (original vs proposed content via the VSCode diff editor) and require user approval through the approval gateway before writing. The approval prompt SHALL indicate the file path and that a code edit is being applied.
+`code.edit` SHALL compute a unified diff for its approval summary and SHALL require user approval through the approval gateway before writing. It SHALL NOT automatically open the VS Code diff editor or create editor-preview temporary files. The approval prompt SHALL indicate the file path and that a code edit is being applied.
 
-#### Scenario: Preview shown then approved
-- **WHEN** `code.edit` computes the proposed content
-- **THEN** a diff editor opens showing original vs proposed, and an approval prompt is shown; on approval the file is written
+#### Scenario: Approved edit without editor interruption
+- **WHEN** `code.edit` computes a proposed content change
+- **THEN** no VS Code diff editor opens, an approval prompt is shown, and approval writes the file
 
-#### Scenario: Preview shown then denied
+#### Scenario: Denied edit remains unchanged
 - **WHEN** the user denies the approval prompt for a `code.edit`
 - **THEN** the file is not written and the tool returns `status: 'cancelled'`
 
@@ -68,3 +68,4 @@ On success, `code.edit` SHALL return metadata containing the `diff` (unified dif
 #### Scenario: Traversal path rejected
 - **WHEN** `code.edit` is called with `path: '../../../etc/passwd'`
 - **THEN** the path guard rejects it and the tool returns `status: 'error'` without reading or writing
+

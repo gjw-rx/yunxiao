@@ -56,6 +56,18 @@ export interface TokenUsageSnapshot {
 	readonly source: TokenSource;
 }
 
+/** 助手最终回复关联的会话代码变更概览。 */
+export interface ChangeSetReference {
+	/** 变更集 ID。 */
+	readonly id: string;
+	/** 受影响文件数量。 */
+	readonly fileCount: number;
+	/** 累计新增行数。 */
+	readonly additions: number;
+	/** 累计删除行数。 */
+	readonly deletions: number;
+}
+
 // ── 消息类型 ──
 
 /** 系统消息 */
@@ -85,6 +97,8 @@ export interface AssistantMessage {
 	readonly seq: number;
 	/** 本步 token 账快照（真实 usage + 四类拆分 + 来源） */
 	readonly tokenUsage?: TokenUsageSnapshot;
+	/** 最终回复对应的会话代码变更概览。 */
+	readonly changeSet?: ChangeSetReference;
 }
 
 /** 工具结果消息 */

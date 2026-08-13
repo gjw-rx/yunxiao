@@ -11,17 +11,35 @@ import type { SyncSource } from './config/syncConfig';
 import type { SkillInstallResult } from './skill/skillInstaller';
 import type { RuntimeStatus } from './webview-ui/protocol';
 import type { SessionTodoStore } from './memory/sessionTodoStore';
+import type { ChangeJournal } from './core/changeJournal';
 import { summarizeTodos, type TodoStateUpdate } from './memory/todoTypes';
 import { buildSlashCommandGroups } from './chat/slashCommands';
 import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
 import { APPROVAL_MODE_CONFIG_KEY, isApprovalMode, type ApprovalMode } from './core/approvalGateway';
 import * as logger from './logger';
 
+/** 单个前后快照向 Webview 发送的最大字符数。 */
+const MAX_CHANGE_REVIEW_FILE_CHARS = 100_000;
+
+/**
+ * 截断过大的文件快照，避免独立变更页消息超过 Webview 可承载范围。
+ * @param text 原始快照文本。
+ * @returns 可安全发送到 Webview 的文本。
+ */
+function truncateChangeReviewText(text: string): string {
+  if (text.length <= MAX_CHANGE_REVIEW_FILE_CHARS) {
+    return text;
+  }
+  return `${text.slice(0, MAX_CHANGE_REVIEW_FILE_CHARS)}\n\n… 内容已截断，仅展示前 ${MAX_CHANGE_REVIEW_FILE_CHARS} 个字符。`;
+}
+
 interface ChatViewDeps {
   readonly sessionManager: LocalSessionManager;
   readonly registry: ToolRegistry;
   readonly eventBus: EventBus;
   readonly todoStore?: SessionTodoStore;
+  /** 会话代码变更日志。 */
+  readonly changeJournal?: ChangeJournal;
 }
 
 /** 设置面板依赖：模型存储、配置来源、Skill 安装与模型保存回调。 */
@@ -57,6 +75,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly _sessionManager: LocalSessionManager;
   private readonly _eventBus: EventBus;
   private readonly _todoStore?: SessionTodoStore;
+  private readonly _changeJournal?: ChangeJournal;
+  /** 独立代码变更查看面板。 */
+  private _changeReviewPanel?: vscode.WebviewPanel;
+  /** 当前独立变更页所查看的会话与变更集。 */
+  private _changeReviewTarget?: { readonly sessionId: string; readonly changeSetId: string };
   private _currentSessionId?: string;
   private _createSessionRequest = 0;
   private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
@@ -75,6 +98,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._sessionManager = deps.sessionManager;
     this._eventBus = deps.eventBus;
     this._todoStore = deps.todoStore;
+    this._changeJournal = deps.changeJournal;
   }
 
   /**
@@ -374,20 +398,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           output?: unknown;
         };
         webview.postMessage({ command: 'toolState', ...p });
-        // code_edit 成功且有 diff 数据时，额外发送 diffResult 命令
-        if (p.tool === 'code_edit' && p.state === 'success' && p.output) {
-          const out = p.output as Record<string, unknown>;
-          if (out.diff) {
-            webview.postMessage({
-              command: 'diffResult',
-              call_id: p.call_id,
-              file_path: out.file_path ?? out.path ?? '',
-              diff_html: out.diff_html ?? out.diff ?? '',
-              additions: out.additions ?? 0,
-              deletions: out.deletions ?? 0,
-            });
-          }
-        }
         break;
       }
       case 'tool_call': {
@@ -413,6 +423,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         webview.postMessage({ command: 'plan', steps: p.steps });
         break;
       }
+      case 'turn_change_set':
+        webview.postMessage({ command: 'replyChangeSet', changeSet: e.payload });
+        break;
       default:
         break;
     }
@@ -852,10 +865,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
-      case 'openDiff': {
-        const filePath = msg.file_path as string;
-        if (filePath) {
-          vscode.commands.executeCommand('vscode.open', vscode.Uri.file(filePath));
+      case 'openChangeReview': {
+        const sessionId = msg.sessionId as string;
+        const changeSetId = msg.changeSetId as string;
+        if (sessionId && changeSetId) {
+          this._openChangeReview(sessionId, changeSetId);
         }
         break;
       }
@@ -1077,7 +1091,86 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * @param webview 目标 Webview（用于生成可加载的资源 URI）
    * @returns Webview HTML 字符串
    */
-  private _getHtml(webview: vscode.Webview, page: 'chat' | 'settings' = 'chat'): string {
+  /**
+   * 打开或复用独立的代码变更查看面板。
+   * @param sessionId 来源会话 ID。
+   * @param changeSetId 要查看的变更集 ID。
+   * @returns void。
+   */
+  private _openChangeReview(sessionId: string, changeSetId: string): void {
+    this._changeReviewTarget = { sessionId, changeSetId };
+    if (this._changeReviewPanel) {
+      this._changeReviewPanel.reveal(vscode.ViewColumn.Active);
+      void this._pushChangeReviewSummary(this._changeReviewPanel.webview);
+      return;
+    }
+    const panel = vscode.window.createWebviewPanel(
+      'yunxiaoAgent.changeReviewPanel',
+      '代码变更',
+      vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [
+          vscode.Uri.file(path.join(this._context.extensionPath, 'dist')),
+          vscode.Uri.file(path.join(this._context.extensionPath, 'media')),
+        ],
+      },
+    );
+    panel.iconPath = vscode.Uri.file(path.join(this._context.extensionPath, 'media', 'icon.png'));
+    panel.webview.html = this._getHtml(panel.webview, 'change-review');
+    panel.webview.onDidReceiveMessage(async (msg: { command: string; fileId?: string }) => {
+      if (msg.command === 'requestChangeReview') {
+        await this._pushChangeReviewSummary(panel.webview);
+      } else if (msg.command === 'requestChangeReviewFile' && msg.fileId) {
+        await this._pushChangeReviewFile(panel.webview, msg.fileId);
+      }
+    }, undefined, this._context.subscriptions);
+    panel.onDidDispose(() => {
+      if (this._changeReviewPanel === panel) {
+        this._changeReviewPanel = undefined;
+      }
+      logger.log('[ChatPanel] 代码变更面板已关闭');
+    }, undefined, this._context.subscriptions);
+    this._changeReviewPanel = panel;
+    logger.log(`[ChatPanel] 打开代码变更面板 sessionId=${sessionId} changeSetId=${changeSetId}`);
+  }
+
+  /**
+   * 向独立代码变更面板发送当前目标的文件概览。
+   * @param webview 接收消息的 Webview。
+   * @returns 完成 Promise。
+   */
+  private async _pushChangeReviewSummary(webview: vscode.Webview): Promise<void> {
+    const target = this._changeReviewTarget;
+    const summary = target && this._changeJournal
+      ? await this._changeJournal.getSummary(target.sessionId, target.changeSetId)
+      : undefined;
+    webview.postMessage({ command: 'changeReviewSummary', summary });
+  }
+
+  /**
+   * 向独立代码变更面板发送一个文件的前后快照。
+   * @param webview 接收消息的 Webview。
+   * @param fileId 文件稳定标识。
+   * @returns 完成 Promise。
+   */
+  private async _pushChangeReviewFile(webview: vscode.Webview, fileId: string): Promise<void> {
+    const target = this._changeReviewTarget;
+    const file = target && this._changeJournal
+      ? await this._changeJournal.getFileDetail(target.sessionId, target.changeSetId, fileId)
+      : undefined;
+    webview.postMessage({
+      command: 'changeReviewFile',
+      file: file ? {
+        ...file,
+        before: truncateChangeReviewText(file.before),
+        after: truncateChangeReviewText(file.after),
+      } : undefined,
+    });
+  }
+
+  private _getHtml(webview: vscode.Webview, page: 'chat' | 'settings' | 'change-review' = 'chat'): string {
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.file(path.join(this._context.extensionPath, 'dist', 'webview-ui', 'index.js'))
     );
@@ -1091,7 +1184,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource}; img-src ${webview.cspSource} data:; font-src ${webview.cspSource};">
-  <title>${page === 'settings' ? '云效 Agent 设置' : '云效 Agent'}</title>
+    <title>${page === 'settings' ? '云效 Agent 设置' : page === 'change-review' ? '代码变更' : '云效 Agent'}</title>
   <link rel="stylesheet" href="${styleUri}">
 </head>
 <body data-view="${page}">

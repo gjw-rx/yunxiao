@@ -1,6 +1,6 @@
 ## 1.Think Before Coding
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+* [ ] 
 
 Before implementing:
 
@@ -66,6 +66,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 ## 5. RTK命令执行规范
+
 可以用RTK命令替代原生命令的时候，优先考虑RTK命令节省token
 
 ---
@@ -95,17 +96,17 @@ npm test              # vscode-test（pretest 自动 compile-tests + compile + l
 
 ## 8. 架构（核心模块）
 
-| 模块 | 职责 |
-|------|------|
-| `src/extension.ts` | 激活入口：装配所有依赖（ToolRegistry、ApprovalGateway、SecurityAudit、AgentLoop、LocalSessionManager、Provider），注册命令与 Webview |
-| `src/chatPanel.ts` | 对话面板（编辑区 WebviewPanel，侧边栏图标入口自动在编辑区打开）：消息流式渲染、Markdown、新建会话、审批卡片（requestApproval） |
-| `src/agent/` | Agent 主循环（`agentLoop.ts`：每轮重载历史 → LLM 调用 → 工具执行 → doom loop 检测/上下文压缩）、`compaction.ts` 压缩、`tokenEstimator.ts` 估算、`systemPrompt.ts`、`toolAdapter.ts` schema 转换 |
-| `src/core/` | 基础设施：`toolRegistry` 注册表、`toolRouter` 路由（审批 + 执行 + 结果治理）、`approvalGateway` 审批、`securityAudit` 安全审计、`eventBus` 事件总线、`toolExecutionJournal` 执行台账、`localSessionManager` 会话、`errors.ts` 错误类型、`types.ts` 共享契约 |
-| `src/tools/` | 本地工具层（均继承 `BaseTool`，经 `schema`/`validate`/`execute` 契约）：`fs/` 文件读写与路径守卫（pathGuard）、`code/` 代码智能（editFile 需 diff 预览审批）、`git/`、`terminal/`（白名单 + 超时）、`diff/` |
-| `src/llm/` | `provider.ts` 工厂 + `openaiProvider.ts`（OpenAI 兼容 /v1/chat/completions）+ `streamParser.ts` SSE 流解析 |
-| `src/memory/` | `messageStore.ts` 会话消息持久化（workspaceState）、`historyLoader.ts` 历史加载供 LLM 使用 |
-| `src/skill/` | Skill 扫描加载（`skillLoader`）、注册（`skillRegistry`）、工具化（`skillTool`） |
-| `src/config/modelConfig.ts` | 从 `yunxiaoAgent.model.*` 读取并校验模型配置 |
+| 模块                          | 职责                                                                                                                                                                                                                                                                          |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/extension.ts`          | 激活入口：装配所有依赖（ToolRegistry、ApprovalGateway、SecurityAudit、AgentLoop、LocalSessionManager、Provider），注册命令与 Webview                                                                                                                                          |
+| `src/chatPanel.ts`          | 对话面板（编辑区 WebviewPanel，侧边栏图标入口自动在编辑区打开）：消息流式渲染、Markdown、新建会话、审批卡片（requestApproval）                                                                                                                                                                                |
+| `src/agent/`                | Agent 主循环（`agentLoop.ts`：每轮重载历史 → LLM 调用 → 工具执行 → doom loop 检测/上下文压缩）、`compaction.ts` 压缩、`tokenEstimator.ts` 估算、`systemPrompt.ts`、`toolAdapter.ts` schema 转换                                                                  |
+| `src/core/`                 | 基础设施：`toolRegistry` 注册表、`toolRouter` 路由（审批 + 执行 + 结果治理）、`approvalGateway` 审批、`securityAudit` 安全审计、`eventBus` 事件总线、`toolExecutionJournal` 执行台账、`localSessionManager` 会话、`errors.ts` 错误类型、`types.ts` 共享契约 |
+| `src/tools/`                | 本地工具层（均继承`BaseTool`，经 `schema`/`validate`/`execute` 契约）：`fs/` 文件读写与路径守卫（pathGuard）、`code/` 代码智能（editFile 需 diff 预览审批）、`git/`、`terminal/`（白名单 + 超时）、`diff/`                                                  |
+| `src/llm/`                  | `provider.ts` 工厂 + `openaiProvider.ts`（OpenAI 兼容 /v1/chat/completions）+ `streamParser.ts` SSE 流解析                                                                                                                                                              |
+| `src/memory/`               | `messageStore.ts` 会话消息持久化（workspaceState）、`historyLoader.ts` 历史加载供 LLM 使用                                                                                                                                                                                |
+| `src/skill/`                | Skill 扫描加载（`skillLoader`）、注册（`skillRegistry`）、工具化（`skillTool`）                                                                                                                                                                                         |
+| `src/config/modelConfig.ts` | 从`yunxiaoAgent.model.*` 读取并校验模型配置                                                                                                                                                                                                                                 |
 
 数据流：`chatPanel`（用户输入）→ `localSessionManager` → `agentLoop`（循环）→ `llmProvider`（SSE 流）→ 工具调用经 `toolRouter` → `approvalGateway` 审批 → `tools/*` 执行 → 结果回传 LLM → 事件经 `eventBus` 推送 UI。
 
@@ -131,6 +132,12 @@ npm test              # vscode-test（pretest 自动 compile-tests + compile + l
 - TypeScript strict 全开；接口字段用 `readonly`；类型契约集中在 `src/core/types.ts`、`llm/types.ts`、`memory/types.ts`。
 - 新工具开发模式：继承 `tools/baseTool.ts` 的 `BaseTool`，声明 `schema`（工具名 snake_case 如 `fs_read_file`、权限级别 `read/write/execute/destructive`），可选覆盖 `validate`，实现 `execute(args, context)` 返回结构化 `ToolExecutionResult`，然后到 `extension.ts` 注册。
 - 安全红线：路径必须经 `pathGuard.resolveWithinRoots` 校验；写/执行类工具走审批网关；返回云端前结果会自动脱敏/截断（`BaseTool.governResult`），工具内不自行打印密钥。
+
+### 9.4 Git 提交规范
+
+- 提交信息必须使用 `type(功能名): 具体描述` 格式；功能名应准确指向本次变更范围，具体描述使用中文并说明实际改动。
+- `type` 仅可使用：`feat`（新功能）、`fix`（修复 bug）、`docs`（文档）、`style`（不影响逻辑的格式）、`refactor`（重构）、`perf`（性能优化）、`test`（测试）、`chore`（构建或辅助工具）、`ci`（CI/CD）、`build`（构建系统或外部依赖）、`revert`（回滚）。
+- 创建或修改提交前，必须确认提交类型与描述和暂存变更一致。
 
 ## 10. Notes
 

@@ -9,6 +9,7 @@ import { ReliabilityMetrics } from './core/reliabilityMetrics';
 import { EventBus } from './core/eventBus';
 import { ToolExecutionJournal } from './core/toolExecutionJournal';
 import { RollbackJournal } from './core/rollbackJournal';
+import { ChangeJournal } from './core/changeJournal';
 import { ApprovalGateway } from './core/approvalGateway';
 import { LocalSessionManager } from './core/localSessionManager';
 import { ReadFileTool, DEFAULT_MAX_FILE_SIZE } from './tools/fs/readFile';
@@ -24,7 +25,6 @@ import { FindReferencesTool } from './tools/code/findReferences';
 import { GoToDefinitionTool } from './tools/code/goToDefinition';
 import { WebSearchTool } from './tools/web/webSearch';
 import { TavilyWebSearchProvider } from './tools/web/tavilyProvider';
-import { DiffViewer } from './tools/diff/diffViewer';
 import { TerminalExecTool } from './tools/terminal/terminalExec';
 import { ShellWhitelist } from './tools/terminal/shellWhitelist';
 import { GitStatusTool } from './tools/git/gitStatus';
@@ -113,6 +113,7 @@ async function _activate(context: vscode.ExtensionContext) {
 	const todoStore = new SessionTodoStore(fileStore);
 	// 回滚快照：与会话存储同 workspace 隔离目录，记录写文件工具改动前的状态
 	const rollbackJournal = new RollbackJournal(path.join(fileStore.sessionDirPath, 'rollback'));
+	const changeJournal = new ChangeJournal(path.join(fileStore.sessionDirPath, 'changes'));
 
 	// 本地工具注册表
 	const registry = new ToolRegistry();
@@ -123,6 +124,7 @@ async function _activate(context: vscode.ExtensionContext) {
 		registry,
 		eventBus,
 		todoStore,
+		changeJournal,
 	});
 
 	// 审批网关：使用 webview 内嵌审批卡片
@@ -154,9 +156,7 @@ async function _activate(context: vscode.ExtensionContext) {
 	registry.register(new SearchFilesTool());
 	registry.register(new DeleteFileTool());
 	registry.register(new MoveFileTool());
-	registry.register(
-		new CodeEditTool({ approval, diffViewer: new DiffViewer() })
-	);
+	registry.register(new CodeEditTool({ approval }));
 
 	// 代码智能工具（只读，无需审批）
 	registry.register(new GetDiagnosticsTool());
@@ -321,11 +321,12 @@ async function _activate(context: vscode.ExtensionContext) {
 			compaction: compactionConfig,
 			todoStore,
 			rollbackRecorder: rollbackJournal,
+			changeJournal,
 		}
 	);
 
 	// 本地会话管理器
-	const sessionManager = new LocalSessionManager(agentLoop, messageStore, rollbackJournal, workspaceRoot);
+	const sessionManager = new LocalSessionManager(agentLoop, messageStore, rollbackJournal, workspaceRoot, changeJournal);
 
 	// 回填 provider 的依赖（解决循环依赖：provider -> approval -> provider）
 	(provider as unknown as { _sessionManager: LocalSessionManager })._sessionManager = sessionManager;

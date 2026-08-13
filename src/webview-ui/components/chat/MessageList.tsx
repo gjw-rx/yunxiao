@@ -6,12 +6,12 @@
  * 复制/点赞/删除操作与 token 用量展示。
  */
 import { useLayoutEffect, useRef, useState, type JSX, type UIEvent } from 'react';
-import type { ApprovalEntry, DiffEntry, TokenUsageDetail, ToolEntry } from '../../protocol';
+import type { ApprovalEntry, TokenUsageDetail, ToolEntry } from '../../protocol';
+import { post } from '../../bridge/vscode';
 import type { ChatState, MessageItem } from '../../state/reducer';
 import { isNearScrollBottom } from '../../utils/chatBehavior';
 import { formatTokenUsage } from '../../utils/format';
 import { ApprovalCard } from '../approval/ApprovalCard';
-import { DiffCard } from '../diff/DiffCard';
 import { Markdown } from '../shared/Markdown';
 import { ThoughtIcon, PlanIcon } from '../shared/icons';
 import { ToolStep } from '../tools/ToolStep';
@@ -87,9 +87,10 @@ async function copyText(text: string): Promise<void> {
 }
 
 /** 助手回复行（含操作栏与 token 用量）。 */
-function AssistantMessage({ message, onDelete }: {
-	message: { id: string; text: string; streaming: boolean; tokenUsage?: TokenUsageDetail; seq?: number };
+function AssistantMessage({ message, onDelete, onOpenChange }: {
+	message: { id: string; text: string; streaming: boolean; tokenUsage?: TokenUsageDetail; changeSet?: import('../../protocol').ChangeSetReference; seq?: number };
 	onDelete: () => void;
+	onOpenChange: () => void;
 }): JSX.Element {
 	const [copied, setCopied] = useState(false);
 	const [liked, setLiked] = useState(false);
@@ -154,6 +155,17 @@ function AssistantMessage({ message, onDelete }: {
 						</svg>
 					</button>
 				)}
+				<button
+					type="button"
+					className="msg-action-btn change-review-btn"
+					title={message.changeSet ? '查看本次代码变更' : '本次回复没有代码变更'}
+					aria-label={message.changeSet ? '查看本次代码变更' : '本次回复没有代码变更'}
+					disabled={!message.changeSet}
+					onClick={onOpenChange}
+				>
+					<span aria-hidden="true">▣</span>
+					代码变更{message.changeSet ? ` ${message.changeSet.fileCount}` : ' 0'}
+				</button>
 			</div>
 		</div>
 	);
@@ -220,14 +232,13 @@ export interface MessageListProps {
 	/** 展开/收起工具步骤 */
 	onToggleTool: (callId: string) => void;
 	/** 展开/收起 Diff 卡 */
-	onToggleDiff: (callId: string) => void;
 	/** 审批已决定（标记退场） */
 	onResolveApproval: (callId: string) => void;
 }
 
 /** 消息流列表：按回合分组渲染。 */
-export function MessageList({ state, onDeleteUser, onDeleteAssistant, onDeleteTool, onRollbackUser, onToggleTool, onToggleDiff, onResolveApproval }: MessageListProps): JSX.Element {
-	const { messages, toolEntries, approvals, diffs } = state;
+export function MessageList({ state, onDeleteUser, onDeleteAssistant, onDeleteTool, onRollbackUser, onToggleTool, onResolveApproval }: MessageListProps): JSX.Element {
+	const { messages, toolEntries, approvals } = state;
 	const messagesRef = useRef<HTMLDivElement>(null);
 	const shouldFollowRef = useRef(true);
 
@@ -241,7 +252,7 @@ export function MessageList({ state, onDeleteUser, onDeleteAssistant, onDeleteTo
 		if (container && shouldFollowRef.current) {
 			container.scrollTop = container.scrollHeight;
 		}
-	}, [messages, toolEntries, approvals, diffs]);
+	}, [messages, toolEntries, approvals]);
 
 	/**
 	 * 记录用户是否主动离开底部；离开后不再强制滚动。
@@ -266,8 +277,13 @@ export function MessageList({ state, onDeleteUser, onDeleteAssistant, onDeleteTo
 				return (
 					<AssistantMessage
 						key={m.id}
-						message={{ id: m.id, text: m.text, streaming: m.streaming, tokenUsage: m.tokenUsage, seq: m.seq }}
+						message={{ id: m.id, text: m.text, streaming: m.streaming, tokenUsage: m.tokenUsage, changeSet: m.changeSet, seq: m.seq }}
 						onDelete={() => onDeleteAssistant(m.id, m.seq)}
+						onOpenChange={() => {
+							if (state.currentSessionId && m.changeSet) {
+								post({ command: 'openChangeReview', sessionId: state.currentSessionId, changeSetId: m.changeSet.id });
+							}
+						}}
 					/>
 				);
 			case 'thought':
@@ -290,11 +306,6 @@ export function MessageList({ state, onDeleteUser, onDeleteAssistant, onDeleteTo
 				const entry: ApprovalEntry | undefined = approvals[m.callId];
 				if (!entry) return <span key={m.id} />;
 				return <ApprovalCard key={m.id} entry={entry} onResolve={() => onResolveApproval(m.callId)} />;
-			}
-			case 'diff': {
-				const entry: DiffEntry | undefined = diffs[m.callId];
-				if (!entry) return <span key={m.id} />;
-				return <DiffCard key={m.id} entry={entry} onToggle={() => onToggleDiff(m.callId)} />;
 			}
 			case 'compaction':
 				return <CompactionStep key={m.id} active={m.active} />;

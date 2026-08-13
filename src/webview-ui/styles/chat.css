@@ -2377,3 +2377,146 @@
 .todo-panel__item--cancelled .todo-panel__status {
 	border-color: var(--muted);
 }
+
+/* ── 会话代码变更 ── */
+.change-review-btn {
+	width: auto;
+	padding: 0 5px;
+	border-radius: 4px;
+	color: var(--muted);
+	font-size: 11px;
+	gap: 3px;
+}
+.change-review-btn:not(:disabled):hover {
+	color: var(--accent);
+	background: var(--hover-bg);
+}
+.change-review-btn:disabled {
+	opacity: .48;
+	cursor: default;
+}
+.change-review-page {
+	min-height: 100vh;
+	box-sizing: border-box;
+	padding: 34px 40px;
+	background: var(--bg);
+	color: var(--fg);
+}
+.change-review-empty {
+	display: grid;
+	place-items: center;
+	color: var(--muted);
+}
+.change-review-header {
+	display: flex;
+	align-items: end;
+	justify-content: space-between;
+	gap: 20px;
+	padding-bottom: 22px;
+}
+.change-review-kicker {
+	display: block;
+	margin-bottom: 5px;
+	color: var(--muted);
+	font-size: 12px;
+}
+.change-review-header h1 {
+	margin: 0;
+	font-size: 24px;
+	letter-spacing: -.02em;
+}
+.change-review-total,
+.change-file-stats {
+	font-family: var(--mono);
+	font-size: 12px;
+	white-space: nowrap;
+}
+.change-review-total em,
+.change-file-stats em {
+	color: var(--success, #3fb950);
+	font-style: normal;
+}
+.change-review-total i,
+.change-file-stats i {
+	color: var(--error, #f85149);
+	font-style: normal;
+}
+.change-file-list {
+	display: grid;
+	gap: 8px;
+}
+.change-file-row {
+	display: grid;
+	grid-template-columns: 44px minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 14px;
+	width: 100%;
+	padding: 13px 15px;
+	border: 1px solid var(--border);
+	border-radius: 7px;
+	background: var(--code-bg);
+	color: var(--fg);
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+.change-file-row:hover {
+	border-color: var(--accent);
+	background: var(--hover-bg);
+}
+.change-file-status {
+	padding: 3px 6px;
+	border-radius: 3px;
+	font-size: 11px;
+	text-align: center;
+}
+.change-file-status.added { color: var(--success, #3fb950); background: color-mix(in srgb, var(--success, #3fb950) 15%, transparent); }
+.change-file-status.deleted { color: var(--error, #f85149); background: color-mix(in srgb, var(--error, #f85149) 15%, transparent); }
+.change-file-status.modified { color: var(--accent); background: var(--hover-bg); }
+.change-file-path,
+.change-detail-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.change-detail-toolbar {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 14px;
+	margin-bottom: 12px;
+}
+.change-back {
+	padding: 6px 9px;
+	border: 1px solid var(--border);
+	border-radius: 5px;
+	background: var(--code-bg);
+	color: var(--fg);
+	cursor: pointer;
+}
+.change-back:hover { background: var(--hover-bg); }
+.change-diff-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 10px;
+	min-height: calc(100vh - 150px);
+}
+.change-diff-column {
+	overflow: hidden;
+	border: 1px solid var(--border);
+	border-radius: 7px;
+	background: var(--code-bg);
+}
+.change-diff-title {
+	padding: 9px 13px;
+	border-bottom: 1px solid var(--border);
+	color: var(--muted);
+	font-size: 12px;
+}
+.change-diff-column pre { margin: 0; overflow: auto; padding: 10px 0; font-family: var(--mono); font-size: 12px; line-height: 20px; }
+.change-diff-column code { display: block; min-width: max-content; padding-right: 14px; white-space: pre; }
+.change-diff-column code span { display: inline-block; width: 38px; margin-right: 12px; color: var(--muted); text-align: right; user-select: none; }
+.change-diff-column.before code { background: color-mix(in srgb, var(--error, #f85149) 9%, transparent); }
+.change-diff-column.after code { background: color-mix(in srgb, var(--success, #3fb950) 9%, transparent); }
+.change-diff-empty { padding: 24px; color: var(--muted); font-size: 12px; }
+@media (max-width: 700px) {
+	.change-review-page { padding: 22px 16px; }
+	.change-diff-grid { grid-template-columns: 1fr; }
+	.change-review-header { align-items: start; flex-direction: column; }
+}

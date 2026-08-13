@@ -5,6 +5,7 @@
 import type { ToolSchema, ToolResult } from '../core/types';
 import { ToolValidationError } from '../core/errors';
 import type { RollbackRecorder } from '../core/rollbackJournal';
+import type { ChangeRecorder } from '../core/changeJournal';
 import * as logger from '../logger';
 
 /** 结果治理：默认最大行数（超出截断并标注）。 */
@@ -59,6 +60,8 @@ export interface ToolContext {
 	readonly turnUserSeq?: number;
 	/** 回滚快照记录器（写文件工具在执行前注入改动前状态）。 */
 	readonly rollbackRecorder?: RollbackRecorder;
+	/** 会话代码变更记录器（写文件工具在成功前后记录可回放快照）。 */
+	readonly changeRecorder?: ChangeRecorder;
 	/** 用户警告回调（如敏感文件访问），由会话层桥接到 UI。 */
 	readonly warn?: (message: string) => void;
 	/** 终端输出截断上限（字符），保留尾部。 */

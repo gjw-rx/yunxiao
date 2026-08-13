@@ -17,17 +17,19 @@ import { MessageInput } from './components/chat/MessageInput';
 import { TodoPanel } from './components/chat/TodoPanel';
 import { ErrorBar } from './components/shared/ErrorBar';
 import { SettingsPage } from './components/settings/SettingsPage';
+import { ChangeReviewPage } from './components/changes/ChangeReviewPage';
 
 /** Webview 根应用。 */
 export function App(): JSX.Element {
 	const [state, dispatch] = useReducer(chatReducer, initialState);
 	const isSettingsView = document.body.dataset.view === 'settings';
+	const isChangeReviewView = document.body.dataset.view === 'change-review';
 	const dispatchRef = useRef(dispatch);
 	const initialDataRequestedRef = useRef(false);
 	dispatchRef.current = dispatch;
 
 	useEffect(() => {
-		if (isSettingsView) {
+		if (isSettingsView || isChangeReviewView) {
 			return;
 		}
 		const dispose = subscribe((msg: HostToWebviewMessage) => {
@@ -56,6 +58,9 @@ export function App(): JSX.Element {
 
 	if (isSettingsView) {
 		return <SettingsPage />;
+	}
+	if (isChangeReviewView) {
+		return <ChangeReviewPage />;
 	}
 
 	if (state.runtimeStatus !== 'ready') {
@@ -148,7 +153,6 @@ export function App(): JSX.Element {
 					}
 				}}
 				onToggleTool={(callId) => dispatchRef.current({ type: 'toggleToolExpand', callId })}
-				onToggleDiff={(callId) => dispatchRef.current({ type: 'toggleDiffExpand', callId })}
 				onResolveApproval={(callId) => dispatchRef.current({ type: 'approvalResolved', callId })}
 			/>
 			<TodoPanel snapshot={state.todoSnapshot} summary={state.todoSummary} />

@@ -51,15 +51,8 @@ export function hostToAction(msg: HostToWebviewMessage): ChatAction | null {
 				args: msg.args,
 				output: msg.output,
 			};
-		case 'diffResult':
-			return {
-				type: 'diffResult',
-				callId: msg.call_id,
-				filePath: msg.file_path,
-				diffHtml: msg.diff_html,
-				additions: msg.additions,
-				deletions: msg.deletions,
-			};
+		case 'replyChangeSet':
+			return { type: 'replyChangeSet', changeSet: msg.changeSet };
 		case 'toolCall':
 			return { type: 'toolCall', callId: msg.call_id, tool: msg.tool, args: msg.args };
 		case 'toolResult':
