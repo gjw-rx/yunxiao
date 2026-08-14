@@ -123,7 +123,14 @@ export class TerminalExecTool extends BaseTool {
 		args: Record<string, unknown>,
 		context: ToolContext
 	): Promise<ToolExecutionResult> {
+		// 最终命令（可能已由受信任 Hook 改写）；原始命令与转换来源由路由层经 callTransform 注入
 		const command = args.command as string;
+		const transform = context.callTransform;
+		const originalCommand =
+			typeof transform?.originalArgs.command === 'string'
+				? transform.originalArgs.command
+				: command;
+		const transformSources = (transform?.transforms ?? []).map((entry) => entry.hookId);
 		const startedAt = Date.now();
 
 		// 1. 解析 cwd
@@ -145,23 +152,47 @@ export class TerminalExecTool extends BaseTool {
 			cwd = context.workspaceRoots[0] ?? process.cwd();
 		}
 
-		// 2. 命令分类
-		const classifyResult = this.shellWhitelist.classify(command);
-
-		if (classifyResult.category === 'dangerous') {
-			logger.log(`# [Terminal] 危险命令已拦截 - command=${command.slice(0, 100)}, reason=${classifyResult.reason}`);
+		// 2. 命令分类：危险检查对原始与最终命令均执行（任一命中即拦截，不弹审批）；
+		//    白名单与删除意图基于原始命令判断，保留用户原有的自动允许与 destructive 语义。
+		const originalClassify = this.shellWhitelist.classify(originalCommand);
+		const transformed = command !== originalCommand;
+		const finalClassify = transformed ? this.shellWhitelist.classify(command) : originalClassify;
+		if (originalClassify.category === 'dangerous' || finalClassify.category === 'dangerous') {
+			const reason =
+				originalClassify.category === 'dangerous'
+					? originalClassify.reason
+					: finalClassify.reason;
+			logger.log(`# [Terminal] 危险命令已拦截 - command=${command.slice(0, 100)}, reason=${reason}`);
 			return {
 				status: 'cancelled',
-				error: `危险命令已被拦截: ${classifyResult.reason}`,
+				error: `危险命令已被拦截: ${reason}`,
 				metadata: { duration_ms: Date.now() - startedAt },
 			};
 		}
 
-		// 3. 删除命令始终走 destructive 审批；其他未知命令由审批模式决定。
-		if (classifyResult.category !== 'whitelisted') {
-			const summary = `terminal_exec 将执行：\n${command}`;
-			const scope = { workspaceId: context.workspaceRoots.join('|'), resourcePattern: 'command', commandPattern: command };
-			const decision = this.shellWhitelist.isDeletionCommand(command)
+		// 3. 审批判断：白名单基于原始命令；但发生转换时最终命令必须重新走完整分类——
+		//    若最终命令去掉 `rtk ` 前缀后仍是白名单命令（等价改写），保持自动允许；
+		//    否则按最终命令实际分类处理（unknown 需审批、删除意图走 destructive），
+		//    防止转换把白名单命令替换为未审批的任意命令（如 `rm x`）。
+		let effectiveClassify = originalClassify;
+		if (transformed) {
+			const withoutRtk = command.trim().startsWith('rtk ')
+				? command.trim().slice(4).trim()
+				: command.trim();
+			effectiveClassify = withoutRtk !== originalCommand.trim()
+				? finalClassify
+				: this.shellWhitelist.classify(withoutRtk);
+		}
+		if (effectiveClassify.category !== 'whitelisted') {
+			const summary = this.buildApprovalSummary(originalCommand, command, transformSources);
+			const scope = {
+				workspaceId: context.workspaceRoots.join('|'),
+				resourcePattern: 'command',
+				commandPattern: originalCommand,
+			};
+			const isDeletion = this.shellWhitelist.isDeletionCommand(originalCommand)
+				|| (transformed && this.shellWhitelist.isDeletionCommand(command));
+			const decision = isDeletion
 				? await this.approval.requestDestructiveApproval(
 					'terminal_exec', summary, context.sessionId, undefined, scope
 				)
@@ -177,11 +208,11 @@ export class TerminalExecTool extends BaseTool {
 			}
 		}
 
-		// 4. 执行命令
+		// 4. 执行最终命令（改写后命令由实际 Shell 执行）
 		const timeoutMs = (args.timeoutMs as number) ?? this.terminalTimeoutMs;
 		const outputLimit = context.terminalOutputLimit ?? this.terminalOutputLimit;
 
-		logger.log(`# [Terminal] 开始执行 - command=${command.slice(0, 100)}, cwd=${cwd}`);
+		logger.log(`# [Terminal] 开始执行 - command=${command.slice(0, 100)}, cwd=${cwd}${originalCommand !== command ? `, 原始命令=${originalCommand.slice(0, 100)}` : ''}`);
 
 		const runResult = await this.runCommand(command, cwd, timeoutMs, outputLimit, context.abortSignal);
 
@@ -225,6 +256,24 @@ export class TerminalExecTool extends BaseTool {
 				truncated: runResult.truncated || undefined,
 			},
 		};
+	}
+
+	/**
+	 * 构造审批提示摘要：发生转换时同时展示原始命令、改写后命令与全部转换来源。
+	 *
+	 * @param originalCommand 原始命令
+	 * @param finalCommand 最终（可能已改写）命令
+	 * @param transformSources 转换来源 Hook ID 列表（无转换时为空）
+	 * @returns 审批摘要文本
+	 */
+	private buildApprovalSummary(originalCommand: string, finalCommand: string, transformSources: readonly string[]): string {
+		if (originalCommand === finalCommand) {
+			return `terminal_exec 将执行：\n${originalCommand}`;
+		}
+		const source = transformSources.length > 0
+			? `\n转换来源：${transformSources.join(', ')}`
+			: '';
+		return `terminal_exec 将执行：\n原始命令：${originalCommand}\n改写后命令：${finalCommand}${source}`;
 	}
 
 	/** 执行命令并捕获输出，处理超时与取消。 */

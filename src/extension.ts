@@ -58,6 +58,9 @@ import { TodoWriteTool } from './tools/todo/todoWrite';
 import { McpClientManager } from './mcp/manager';
 import { McpConfigStore } from './mcp/configStore';
 import type { McpServerRuntimeConfig, McpServerView } from './mcp/types';
+import { HooksConfigStore, MementoHooksConfigStorage } from './hook/hooksConfigStore';
+import { HookManager } from './hook/hookManager';
+import { RtkTransformHook } from './hook/rtkAdapter';
 import * as logger from './logger';
 
 /**
@@ -369,7 +372,16 @@ async function _activate(context: vscode.ExtensionContext) {
 	// 工具路由
 	const metrics = new ReliabilityMetrics();
 	const journal = new ToolExecutionJournal(context.workspaceState);
-	const router = new ToolRouter(registry, approval, new SecurityAudit(metrics), journal);
+
+	// Hooks 运行时：配置 Store（私有用户级持久化，缺失时 RTK 默认禁用）+ HookManager。
+	// 只注册扩展内置的受信任 Hook；不从工作区、网络、脚本路径或 npm 包加载第三方 Hook。
+	const hooksConfigStore = new HooksConfigStore(new MementoHooksConfigStorage(context.globalState));
+	const hookManager = new HookManager(hooksConfigStore);
+	// RTK Transform Hook：仅优化本地 terminal_exec 命令，不调用 rtk init、不安装/升级 RTK、不注入模型提示词
+	const rtkTransformHook = new RtkTransformHook(hooksConfigStore);
+	hookManager.register(rtkTransformHook);
+
+	const router = new ToolRouter(registry, approval, new SecurityAudit(metrics), journal, hookManager);
 
 	// 模型配置与 LLM Provider（非敏感字段保存在用户全局 .yunForce/modelConfig，密钥仅存 SecretStorage）
 	const modelStore = new ModelConfigStore(context, undefined, workspaceRoot);
@@ -424,6 +436,7 @@ async function _activate(context: vscode.ExtensionContext) {
 			rollbackRecorder: rollbackJournal,
 			changeJournal,
 			mcpInstructionsProvider: () => mcpManager.getInstructions(),
+			hooks: hookManager,
 		}
 	);
 
@@ -515,6 +528,8 @@ async function _activate(context: vscode.ExtensionContext) {
 		onMcpReconnect: async (serverId: string): Promise<void> => {
 			await mcpManager.reconnect(serverId);
 		},
+		hooksConfigStore,
+		rtkTransformHook,
 	});
 
 	/**

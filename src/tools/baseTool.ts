@@ -74,6 +74,21 @@ export interface ToolContext {
 	readonly governMaxLines?: number;
 	/** 结果治理：最大字节数（默认 50KB，UTF-8，超出截断并标注）。 */
 	readonly governMaxBytes?: number;
+	/**
+	 * 工具调用参数转换信息：受信任 Hook 改写参数后由路由层注入，
+	 * 工具（如 terminal_exec）据此展示原始/最终参数与转换来源。
+	 */
+	readonly callTransform?: {
+		/** 不可变原始参数（初始校验后快照）。 */
+		readonly originalArgs: Record<string, unknown>;
+		/** 转换后的最终参数。 */
+		readonly finalArgs: Record<string, unknown>;
+		/** 转换轨迹（Hook ID 与转换后参数，按应用顺序）。 */
+		readonly transforms: readonly {
+			readonly hookId: string;
+			readonly args: Record<string, unknown>;
+		}[];
+	};
 	/** 未来扩展：审批网关回调等（Phase 2+）。 */
 }
 

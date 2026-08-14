@@ -17,11 +17,13 @@ import type {
 	McpSaveMode,
 	SkillInfo,
 	SyncSource,
+	HooksConfigView,
+	RtkStatusView,
 } from '../../protocol';
 import { MCP_SECRET_PLACEHOLDER } from '../../protocol';
 
 /** 设置分类标识。 */
-type SettingsSection = 'model' | 'skill' | 'mcp' | 'usage';
+type SettingsSection = 'model' | 'skill' | 'mcp' | 'hooks' | 'usage';
 
 /** 设置分类导航项。 */
 interface SettingsNavItem {
@@ -31,11 +33,12 @@ interface SettingsNavItem {
 	readonly label: string;
 }
 
-/** 设置页分类列表（顺序：模型、Skill、MCP、使用情况）。 */
+/** 设置页分类列表（顺序：模型、Skill、MCP、Hooks、使用情况）。 */
 const SETTINGS_NAV_ITEMS: readonly SettingsNavItem[] = [
 	{ id: 'model', label: '模型' },
 	{ id: 'skill', label: 'Skill' },
 	{ id: 'mcp', label: 'MCP' },
+	{ id: 'hooks', label: 'Hooks' },
 	{ id: 'usage', label: '使用情况' },
 ];
 
@@ -57,6 +60,9 @@ function SettingsSectionIcon({ section }: { section: SettingsSection }): JSX.Ele
 	}
 	if (section === 'mcp') {
 		return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35"><path d="M2 4.5 8 2l6 2.5v7L8 14 2 11.5z" /><path d="M2 4.5 8 7l6-2.5M8 7v7" /></svg>;
+	}
+	if (section === 'hooks') {
+		return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35"><path d="M8 2v5m0 0a3 3 0 0 1 3 3v1a3 3 0 0 1-6 0v-1a3 3 0 0 1 3-3Z" /><path d="M5.5 12.5h5" /></svg>;
 	}
 	return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35"><path d="M3 12V8m5 4V4m5 8V6" /><path d="M2 13.5h12" /></svg>;
 }
@@ -430,6 +436,218 @@ function UsageSettings(): JSX.Element {
 	);
 }
 
+/** Hooks 分类固定样例改写测试结果（本地展示，不持久化）。 */
+type HooksTestView = { readonly rewritten?: string; readonly error?: string } | null;
+
+/** Hooks 生命周期节点的静态展示信息。 */
+interface HooksLifecycleNode {
+	/** 运行时事件名称。 */
+	readonly event: 'session_start' | 'pre_tool_call' | 'post_tool_call' | 'session_end';
+	/** 面向用户的事件名称。 */
+	readonly label: string;
+	/** 面向用户的事件说明。 */
+	readonly description: string;
+}
+
+/** 第一版 Hooks 的固定生命周期顺序。 */
+const HOOKS_LIFECYCLE: readonly HooksLifecycleNode[] = [
+	{ event: 'session_start', label: '会话开始', description: '准备本次运行环境' },
+	{ event: 'pre_tool_call', label: '工具执行前', description: '校验与转换调用参数' },
+	{ event: 'post_tool_call', label: '工具执行后', description: '观察受治理的工具结果' },
+	{ event: 'session_end', label: '会话结束', description: '收束本次运行状态' },
+];
+
+/**
+ * Hooks 分类：运行状态、生命周期轨道、RTK 自动化卡片与折叠高级配置。
+ * @param config 宿主返回的 Hooks 配置快照。
+ * @param rtk 宿主返回的 RTK 检测状态。
+ * @param testResult 固定样例改写测试结果。
+ * @param saving 是否正在保存、检测或测试。
+ * @param onSave 保存 Hooks 配置回调。
+ * @param onDetect 重新检测 RTK 回调。
+ * @param onTest 测试固定样例改写回调。
+ * @returns Hooks 设置页内容。
+ */
+function HooksSettings({
+	config,
+	rtk,
+	testResult,
+	saving,
+	onSave,
+	onDetect,
+	onTest,
+}: {
+	config: HooksConfigView | null;
+	rtk?: RtkStatusView;
+	testResult: HooksTestView;
+	saving: boolean;
+	onSave: (enabled: boolean, rtkEnabled: boolean, rtkExecutablePath?: string) => void;
+	onDetect: () => void;
+	onTest: () => void;
+}): JSX.Element {
+	const [enabled, setEnabled] = useState(config?.enabled ?? true);
+	const [rtkEnabled, setRtkEnabled] = useState(config?.rtkEnabled ?? false);
+	const [path, setPath] = useState(config?.rtkExecutablePath ?? '');
+	// 上次同步的配置快照：仅配置实质变化（enabled/rtkEnabled/path）时回填表单，
+	// 检测/测试等推送相同配置时不覆盖用户正在编辑的草稿。
+	const lastConfigRef = useRef<HooksConfigView | null>(null);
+
+	// 宿主推送新快照时同步本地表单（仅实质变化；不影响模型/Skill/MCP 草稿）
+	useEffect(() => {
+		if (!config) {
+			return;
+		}
+		const last = lastConfigRef.current;
+		lastConfigRef.current = config;
+		if (
+			!last ||
+			last.enabled !== config.enabled ||
+			last.rtkEnabled !== config.rtkEnabled ||
+			last.rtkExecutablePath !== config.rtkExecutablePath
+		) {
+			setEnabled(config.enabled);
+			setRtkEnabled(config.rtkEnabled);
+			setPath(config.rtkExecutablePath ?? '');
+		}
+	}, [config]);
+
+	/** 保存 Hooks 配置。 @returns void */
+	const handleSave = (): void => {
+		onSave(enabled, rtkEnabled, path.trim() || undefined);
+	};
+	const rtkIsActive = enabled && rtkEnabled;
+	const rtkState = rtk?.available
+		? '已就绪'
+		: rtkEnabled
+			? '等待检测'
+			: '未启用';
+	const rtkStateClass = rtk?.available
+		? 'ready'
+		: rtkEnabled
+			? 'warning'
+			: 'idle';
+
+	return (
+		<>
+			<div className="settings-heading hooks-heading">
+				<span className="settings-eyebrow">自动化控制台</span>
+				<h1>Hooks</h1>
+				<p>在关键运行节点执行受信任自动化。当前仅加载扩展内置 Hook，不从工作区、网络或第三方 npm 包加载。</p>
+			</div>
+			<section className={`settings-card hooks-runtime-card${enabled ? ' is-running' : ' is-paused'}`} aria-label="Hooks 运行状态">
+				<div className="hooks-runtime-copy">
+					<span className={`hooks-runtime-status ${enabled ? 'is-running' : 'is-paused'}`}><i aria-hidden="true" />{enabled ? '运行中' : '已暂停'}</span>
+					<strong>{enabled ? '自动化已接入本次运行' : '自动化不会在后续运行中执行'}</strong>
+					<span>{enabled ? '生命周期事件与已启用的集成会按既定顺序运行。' : '重新启用后，已保存的 Hook 配置会恢复生效。'}</span>
+				</div>
+				<div className="hooks-runtime-control">
+					<span>Hooks 运行时</span>
+					<button
+						type="button"
+						role="switch"
+						aria-checked={enabled}
+						aria-label="Hooks 总开关"
+						className={`settings-toggle${enabled ? ' on' : ''}`}
+						onClick={() => setEnabled(!enabled)}
+						disabled={saving}
+					><span /></button>
+				</div>
+			</section>
+			<section className="hooks-lifecycle" aria-labelledby="hooks-lifecycle-title">
+				<div className="hooks-section-heading">
+					<div>
+						<span className="hooks-section-kicker">运行轨道</span>
+						<h2 id="hooks-lifecycle-title">生命周期</h2>
+					</div>
+					<span>4 个基础事件</span>
+				</div>
+				<ol className="hooks-lifecycle-track">
+					{HOOKS_LIFECYCLE.map((node, index) => {
+						const configuredCount = node.event === 'pre_tool_call' && rtkEnabled ? 1 : 0;
+						const active = node.event === 'pre_tool_call' && rtkIsActive;
+						const state = !enabled ? '已暂停' : active ? '已启用' : '待命';
+						return (
+							<li key={node.event} className={`hooks-lifecycle-node${active ? ' is-active' : ''}${!enabled ? ' is-paused' : ''}`}>
+								<span className="hooks-lifecycle-step">0{index + 1}</span>
+								<div>
+									<strong>{node.label}</strong>
+									<span>{node.description}</span>
+								</div>
+								<footer><span>{configuredCount} 个 Hook</span><em>{state}</em></footer>
+							</li>
+						);
+					})}
+				</ol>
+			</section>
+			<section className={`settings-card hooks-automation-card${rtkIsActive ? ' is-active' : ''}`} aria-label="已启用自动化">
+				<header className="hooks-automation-header">
+					<div className="hooks-automation-identity">
+						<span className="hooks-automation-mark" aria-hidden="true">R</span>
+						<div>
+							<span className="hooks-section-kicker">已启用自动化</span>
+							<h2>RTK · 终端输出优化</h2>
+							<p>在工具执行前透明改写支持的终端命令，减少进入上下文的冗余输出。</p>
+						</div>
+					</div>
+					<div className="hooks-automation-controls">
+						<span className={`hooks-rtk-state ${rtkStateClass}`}>{rtkState}</span>
+						<button
+							type="button"
+							role="switch"
+							aria-checked={rtkEnabled}
+							aria-label="RTK 集成开关"
+							className={`settings-toggle${rtkEnabled ? ' on' : ''}`}
+							onClick={() => setRtkEnabled(!rtkEnabled)}
+							disabled={saving}
+						><span /></button>
+					</div>
+				</header>
+				<div className="hooks-automation-body">
+					<div className="hooks-automation-meta">
+						<span>作用范围</span><code>terminal_exec</code>
+						{rtk?.version ? <><span>版本</span><code>{rtk.version}</code></> : null}
+					</div>
+					<div className="hooks-rewrite-flow" aria-label="RTK 改写流程">
+						<code>git status</code><span aria-hidden="true">→</span><code>RTK rewrite</code><span aria-hidden="true">→</span><strong>紧凑输出</strong>
+					</div>
+					{rtk?.error ? <p className="hooks-rtk-error" role="alert">{rtk.error}</p> : null}
+					{testResult ? (
+						<div className={`hooks-rewrite-result${testResult.error ? ' is-error' : ' is-success'}`} role={testResult.error ? 'alert' : 'status'}>
+							<span>改写预览</span>
+							{testResult.error ? <strong>{testResult.error}</strong> : <strong><code>git status</code><i aria-hidden="true">→</i><code>{testResult.rewritten}</code></strong>}
+						</div>
+					) : null}
+				</div>
+				<details className="hooks-advanced">
+					<summary><span>高级配置</span><small>路径、检测与无副作用预览</small></summary>
+					<div className="hooks-advanced-content">
+						<label className="settings-field">
+							<span className="settings-field-label">RTK 可执行文件路径</span>
+							<input
+								value={path}
+								onChange={(e) => setPath(e.target.value)}
+								placeholder="例如 C:\\tools\\rtk.exe"
+								aria-label="RTK 可执行文件路径"
+								disabled={saving}
+							/>
+							<span className="settings-field-help">未配置时 RTK 不会自动安装；改写失败时会执行原命令。</span>
+						</label>
+						<footer className="hooks-advanced-actions">
+							<button type="button" className="settings-secondary-button" onClick={onDetect} disabled={saving}>重新检测</button>
+							<button type="button" className="settings-secondary-button" onClick={onTest} disabled={saving}>测试改写</button>
+						</footer>
+					</div>
+				</details>
+			</section>
+			<div className="hooks-guardrail" role="note"><i aria-hidden="true" /><span>仅改写 <code>terminal_exec</code>；RTK 不可用或没有等价命令时，系统会执行原命令。</span></div>
+			<footer className="hooks-save-bar">
+				<span>配置变更会在保存后应用于后续运行。</span>
+				<button type="button" className="settings-primary-button" onClick={handleSave} disabled={saving}>保存</button>
+			</footer>
+		</>
+	);
+}
+
 /** MCP 设置页反馈（含可选字段路径，与模型/Skill 反馈隔离，推送不清空其他草稿）。 */
 type McpFeedback = { readonly kind: 'success' | 'error'; readonly message: string; readonly fieldPath?: string } | null;
 
@@ -717,6 +935,10 @@ function SettingsContent({
 	mcpServers,
 	mcpSaving,
 	mcpFeedback,
+	hooksConfig,
+	rtkStatus,
+	hooksTestResult,
+	hooksSaving,
 	onSaveModel,
 	onSetDefaultModel,
 	onSetModelEnabled,
@@ -728,6 +950,9 @@ function SettingsContent({
 	onSetMcpEnabled,
 	onReconnectMcp,
 	onDeleteMcp,
+	onSaveHooks,
+	onDetectRtk,
+	onTestRtkRewrite,
 }: {
 	section: SettingsSection;
 	model: ModelSettingsView | null;
@@ -739,6 +964,10 @@ function SettingsContent({
 	mcpServers: readonly McpServerView[] | null;
 	mcpSaving: boolean;
 	mcpFeedback: McpFeedback;
+	hooksConfig: HooksConfigView | null;
+	rtkStatus?: RtkStatusView;
+	hooksTestResult: HooksTestView;
+	hooksSaving: boolean;
 	onSaveModel: (input: ModelSettingsInput) => void;
 	/** 设置默认模型回调。 */
 	onSetDefaultModel: (modelId: string) => void;
@@ -756,6 +985,12 @@ function SettingsContent({
 	onReconnectMcp: (serverId: string) => void;
 	/** 删除 MCP Server 回调。 */
 	onDeleteMcp: (serverId: string) => void;
+	/** 保存 Hooks 配置回调。 */
+	onSaveHooks: (enabled: boolean, rtkEnabled: boolean, rtkExecutablePath?: string) => void;
+	/** 重新检测 RTK 回调。 */
+	onDetectRtk: () => void;
+	/** 固定样例改写测试回调。 */
+	onTestRtkRewrite: () => void;
 }): JSX.Element {
 	if (section === 'skill') {
 		return (
@@ -784,6 +1019,19 @@ function SettingsContent({
 			/>
 		);
 	}
+	if (section === 'hooks') {
+		return (
+			<HooksSettings
+				config={hooksConfig}
+				rtk={rtkStatus}
+				testResult={hooksTestResult}
+				saving={hooksSaving}
+				onSave={onSaveHooks}
+				onDetect={onDetectRtk}
+				onTest={onTestRtkRewrite}
+			/>
+		);
+	}
 	if (section === 'usage') {
 		return <UsageSettings />;
 	}
@@ -804,6 +1052,13 @@ export function SettingsPage(): JSX.Element {
 	const [mcpServers, setMcpServers] = useState<readonly McpServerView[] | null>(null);
 	const [mcpSaving, setMcpSaving] = useState(false);
 	const [mcpFeedback, setMcpFeedback] = useState<McpFeedback>(null);
+	// Hooks 状态与模型/Skill/MCP 隔离：快照推送不清空其他分类草稿
+	const [hooksConfig, setHooksConfig] = useState<HooksConfigView | null>(null);
+	const [rtkStatus, setRtkStatus] = useState<RtkStatusView | undefined>(undefined);
+	const [hooksTestResult, setHooksTestResult] = useState<HooksTestView>(null);
+	const [hooksSaving, setHooksSaving] = useState(false);
+	// 首个快照是挂载时请求的初始化响应，不应结束其间已发起的 Hooks 操作。
+	const hooksInitialSnapshotPendingRef = useRef(true);
 	// 当前待确认的异步动作：install=安装后等待新快照，source=来源切换后等待新快照（用 ref 供订阅闭包读取最新值）
 	const pendingActionRef = useRef<'archive' | 'source' | 'directories' | 'modelAction' | null>(null);
 
@@ -823,6 +1078,7 @@ export function SettingsPage(): JSX.Element {
 		post({ command: 'requestModelSettings' });
 		post({ command: 'requestSkills' });
 		post({ command: 'requestMcpSettings' });
+		post({ command: 'requestHooksSnapshot' });
 		return subscribe((msg: HostToWebviewMessage) => {
 			switch (msg.command) {
 				case 'modelSettings':
@@ -852,6 +1108,7 @@ export function SettingsPage(): JSX.Element {
 					break;
 				case 'settingsError':
 					setSaving(false);
+					setHooksSaving(false);
 					pendingActionRef.current = null;
 					setFeedback({ kind: 'error', message: msg.message });
 					break;
@@ -871,6 +1128,20 @@ export function SettingsPage(): JSX.Element {
 				case 'mcpSettingsError':
 					setMcpSaving(false);
 					setMcpFeedback({ kind: 'error', message: msg.message, ...(msg.fieldPath ? { fieldPath: msg.fieldPath } : {}) });
+					break;
+				case 'hooksSnapshot':
+					// 状态推送只更新 Hooks 快照，不影响模型/Skill/MCP 草稿
+					setHooksConfig(msg.config);
+					setRtkStatus(msg.rtk);
+					if (hooksInitialSnapshotPendingRef.current) {
+						hooksInitialSnapshotPendingRef.current = false;
+					} else {
+						setHooksSaving(false);
+					}
+					break;
+				case 'hooksTestResult':
+					setHooksSaving(false);
+					setHooksTestResult({ ...(msg.rewritten ? { rewritten: msg.rewritten } : {}), ...(msg.error ? { error: msg.error } : {}) });
 					break;
 			}
 		});
@@ -959,6 +1230,24 @@ export function SettingsPage(): JSX.Element {
 		post({ command: 'deleteMcpServer', serverId });
 	};
 
+	/** 保存 Hooks 配置（总开关 + RTK 启用 + 可选路径）。 */
+	const handleSaveHooks = (enabled: boolean, rtkEnabled: boolean, rtkExecutablePath?: string): void => {
+		setHooksSaving(true);
+		post({ command: 'saveHooksConfig', enabled, rtkEnabled, rtkExecutablePath });
+	};
+
+	/** 请求重新检测配置的 RTK 可执行文件。 */
+	const handleDetectRtk = (): void => {
+		setHooksSaving(true);
+		post({ command: 'detectRtk' });
+	};
+
+	/** 请求固定样例（git status）改写测试。 */
+	const handleTestRtkRewrite = (): void => {
+		setHooksSaving(true);
+		post({ command: 'testRtkRewrite' });
+	};
+
 	return (
 		<section className="settings-page" aria-label="设置">
 			<aside className="settings-nav" aria-label="设置分类">
@@ -997,6 +1286,10 @@ export function SettingsPage(): JSX.Element {
 						mcpServers={mcpServers}
 						mcpSaving={mcpSaving}
 						mcpFeedback={mcpFeedback}
+						hooksConfig={hooksConfig}
+						rtkStatus={rtkStatus}
+						hooksTestResult={hooksTestResult}
+						hooksSaving={hooksSaving}
 						onSaveModel={handleSaveModel}
 						onSetDefaultModel={handleSetDefaultModel}
 						onSetModelEnabled={handleSetModelEnabled}
@@ -1008,6 +1301,9 @@ export function SettingsPage(): JSX.Element {
 						onSetMcpEnabled={handleSetMcpEnabled}
 						onReconnectMcp={handleReconnectMcp}
 						onDeleteMcp={handleDeleteMcp}
+						onSaveHooks={handleSaveHooks}
+						onDetectRtk={handleDetectRtk}
+						onTestRtkRewrite={handleTestRtkRewrite}
 					/>
 				</div>
 			</main>

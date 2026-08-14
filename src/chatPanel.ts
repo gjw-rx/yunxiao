@@ -14,7 +14,10 @@ import type { SessionTodoStore } from './memory/sessionTodoStore';
 import type { ChangeJournal } from './core/changeJournal';
 import type { McpConfigStore } from './mcp/configStore';
 import type { McpServerView } from './mcp/types';
-import type { McpSaveMode, McpOperation } from './webview-ui/protocol';
+import type { McpSaveMode, McpOperation, HooksConfigView, RtkStatusView } from './webview-ui/protocol';
+import type { HooksConfigStore } from './hook/hooksConfigStore';
+import type { RtkTransformHook } from './hook/rtkAdapter';
+import { detectRtk, type RtkDetectionResult } from './hook/rtkDetector';
 import { summarizeTodos, type TodoStateUpdate } from './memory/todoTypes';
 import { buildSlashCommandGroups } from './chat/slashCommands';
 import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
@@ -71,6 +74,12 @@ interface SettingsPanelDeps {
   readonly onMcpConfigChanged?: () => void | Promise<void>;
   /** 请求重连指定 Server（Manager 重建 Connection，不改配置）。 */
   readonly onMcpReconnect?: (serverId: string) => void | Promise<void>;
+  /** Hooks 配置 Store（未装配时 Hooks 写操作返回未就绪错误）。 */
+  readonly hooksConfigStore?: HooksConfigStore;
+  /** RTK 检测函数（默认 detectRtk；可注入供测试）。 */
+  readonly detectRtk?: (executablePath: string) => Promise<RtkDetectionResult>;
+  /** RTK Transform Hook（提供固定样例改写测试）。 */
+  readonly rtkTransformHook?: RtkTransformHook;
 }
 
 /** 待处理的审批请求：call_id -> resolve 回调 */
@@ -96,6 +105,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
   private _skillRegistry?: SkillRegistry;
   private _settingsDeps?: SettingsPanelDeps;
+  /** 最近一次 RTK 检测状态缓存（设置页快照复用）。 */
+  private _rtkStatus?: RtkStatusView;
   /** 当前扩展运行时状态；未就绪时拒绝聊天业务消息。 */
   private _runtimeStatus: RuntimeStatus = 'initializing';
   /** 运行时失败时可显示的简要错误信息。 */
@@ -662,6 +673,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this._handleDeleteMcpServer(panel, msg, deps);
         break;
       }
+      case 'requestHooksSnapshot': {
+        await this._postHooksSnapshot(panel, deps);
+        break;
+      }
+      case 'saveHooksConfig': {
+        await this._handleSaveHooksConfig(panel, msg, deps);
+        break;
+      }
+      case 'detectRtk': {
+        await this._handleDetectRtk(panel, deps);
+        break;
+      }
+      case 'testRtkRewrite': {
+        await this._handleTestRtkRewrite(panel, deps);
+        break;
+      }
     }
   }
 
@@ -825,6 +852,130 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     const servers = await deps.getMcpSnapshot();
     panel.webview.postMessage({ command: 'mcpSettings', servers });
+  }
+
+  /**
+   * 向设置面板推送 Hooks 快照（配置 + RTK 运行状态）。
+   *
+   * @param panel 设置面板
+   * @param deps 设置面板依赖
+   * @returns Promise<void>
+   */
+  private async _postHooksSnapshot(
+    panel: vscode.WebviewPanel,
+    deps: SettingsPanelDeps
+  ): Promise<void> {
+    const config = this._buildHooksConfigView(deps);
+    panel.webview.postMessage({ command: 'hooksSnapshot', config, rtk: this._rtkStatus });
+  }
+
+  /**
+   * 处理 Hooks 配置保存：运行时校验所有入站字段（enabled/rtkEnabled 必须为 boolean，
+   * rtkExecutablePath 必须为字符串或缺失），保存后清除过期 RTK 检测缓存并回推快照。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息（enabled/rtkEnabled/rtkExecutablePath）
+   * @param deps 设置面板依赖
+   * @returns Promise<void>
+   */
+  private async _handleSaveHooksConfig(
+    panel: vscode.WebviewPanel,
+    msg: { command: string;[key: string]: unknown },
+    deps: SettingsPanelDeps
+  ): Promise<void> {
+    if (!deps.hooksConfigStore) {
+      panel.webview.postMessage({ command: 'settingsError', message: 'Hooks 配置存储未就绪' });
+      return;
+    }
+    if (typeof msg.enabled !== 'boolean' || typeof msg.rtkEnabled !== 'boolean') {
+      panel.webview.postMessage({ command: 'settingsError', message: 'Hooks 配置字段非法' });
+      return;
+    }
+    const pathValue =
+      typeof msg.rtkExecutablePath === 'string' && msg.rtkExecutablePath.trim().length > 0
+        ? msg.rtkExecutablePath.trim()
+        : undefined;
+    await deps.hooksConfigStore.save({
+      enabled: msg.enabled,
+      rtk: {
+        enabled: msg.rtkEnabled,
+        ...(pathValue ? { executablePath: pathValue } : {}),
+      },
+    });
+    logger.log(`[ChatPanel] Hooks 配置已保存 enabled=${msg.enabled} rtkEnabled=${msg.rtkEnabled} rtkPath=${pathValue ? '已配置' : '未配置'}`);
+    // 路径变更后旧检测结果失效
+    this._rtkStatus = undefined;
+    await this._postHooksSnapshot(panel, deps);
+  }
+
+  /**
+   * 处理 RTK 重新检测：读取当前配置路径并调用检测函数，缓存有界状态后回推快照。
+   *
+   * @param panel 设置面板
+   * @param deps 设置面板依赖
+   * @returns Promise<void>
+   */
+  private async _handleDetectRtk(
+    panel: vscode.WebviewPanel,
+    deps: SettingsPanelDeps
+  ): Promise<void> {
+    const path = deps.hooksConfigStore?.get().rtk.executablePath;
+    if (!path) {
+      panel.webview.postMessage({ command: 'settingsError', message: '请先配置 RTK 可执行文件路径' });
+      return;
+    }
+    logger.log(`[ChatPanel] 开始检测 RTK path=${path}`);
+    const result = await (deps.detectRtk ?? detectRtk)(path);
+    this._rtkStatus = {
+      available: result.available,
+      version: result.version,
+      error: result.error,
+      lastDetectedAt: Date.now(),
+    };
+    logger.log(`[ChatPanel] RTK 检测完成 available=${result.available} version=${result.version ?? 'unknown'} error=${result.error ?? '无'}`);
+    await this._postHooksSnapshot(panel, deps);
+  }
+
+  /**
+   * 处理固定样例改写测试：调用 RTK Transform Hook 的 testRewrite（仅请求改写 git status，
+   * 不执行实际 Git 命令），回推测试结果消息。
+   *
+   * @param panel 设置面板
+   * @param deps 设置面板依赖
+   * @returns Promise<void>
+   */
+  private async _handleTestRtkRewrite(
+    panel: vscode.WebviewPanel,
+    deps: SettingsPanelDeps
+  ): Promise<void> {
+    if (!deps.rtkTransformHook) {
+      panel.webview.postMessage({ command: 'settingsError', message: 'RTK Hook 未就绪' });
+      return;
+    }
+    const result = await deps.rtkTransformHook.testRewrite();
+    logger.log(`[ChatPanel] RTK 样例测试完成 sample=${result.sample} rewritten=${result.rewritten ?? '无'} error=${result.error ?? '无'}`);
+    panel.webview.postMessage({
+      command: 'hooksTestResult',
+      sample: result.sample,
+      ...(result.rewritten ? { rewritten: result.rewritten } : {}),
+      ...(result.error ? { error: result.error } : {}),
+    });
+  }
+
+  /**
+   * 从配置 Store 构造设置页非敏感 Hooks 配置视图。
+   *
+   * @param deps 设置面板依赖
+   * @returns Hooks 配置视图（未装配 Store 时返回安全默认值）
+   */
+  private _buildHooksConfigView(deps: SettingsPanelDeps): HooksConfigView {
+    const config = deps.hooksConfigStore?.get();
+    const view: HooksConfigView = {
+      enabled: config?.enabled ?? true,
+      rtkEnabled: config?.rtk.enabled ?? false,
+      ...(config?.rtk.executablePath ? { rtkExecutablePath: config.rtk.executablePath } : {}),
+    };
+    return view;
   }
 
   /**

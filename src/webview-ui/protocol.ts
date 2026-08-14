@@ -617,6 +617,47 @@ export interface McpSettingsErrorMessage {
 	readonly fieldPath?: string;
 }
 
+/** Hooks 设置页非敏感配置视图（不含秘密与完整命令输出）。 */
+export interface HooksConfigView {
+	/** Hooks 运行时总开关。 */
+	readonly enabled: boolean;
+	/** RTK 集成启用状态。 */
+	readonly rtkEnabled: boolean;
+	/** RTK 可执行文件绝对路径（可选，仅展示路径本身，非秘密）。 */
+	readonly rtkExecutablePath?: string;
+}
+
+/** RTK 运行状态视图：有界，不含环境变量、完整命令输出或秘密。 */
+export interface RtkStatusView {
+	/** 是否可用（版本与 rewrite 能力均验证通过）。 */
+	readonly available: boolean;
+	/** RTK 版本（可用时存在）。 */
+	readonly version?: string;
+	/** 有界错误摘要（不可用时存在）。 */
+	readonly error?: string;
+	/** 最近一次检测时间戳（毫秒）。 */
+	readonly lastDetectedAt?: number;
+}
+
+/** 固定样例改写测试结果（响应 testRtkRewrite）。 */
+export interface HooksTestResultMessage {
+	readonly command: 'hooksTestResult';
+	/** 固定样例命令。 */
+	readonly sample: string;
+	/** 改写后的命令（成功时存在）。 */
+	readonly rewritten?: string;
+	/** 有界错误摘要（失败时存在）。 */
+	readonly error?: string;
+}
+
+/** 设置页 Hooks 快照（响应 requestHooksSnapshot / 保存或检测成功后推送）。 */
+export interface HooksSnapshotMessage {
+	readonly command: 'hooksSnapshot';
+	readonly config: HooksConfigView;
+	/** RTK 运行状态（无检测记录时为 undefined）。 */
+	readonly rtk?: RtkStatusView;
+}
+
 /** 扩展运行时初始化状态。 */
 export type RuntimeStatus = 'initializing' | 'ready' | 'failed';
 
@@ -666,7 +707,9 @@ export type HostToWebviewMessage =
 	| McpSettingsMessage
 	| McpSettingsSavedMessage
 	| McpOperationAcceptedMessage
-	| McpSettingsErrorMessage;
+	| McpSettingsErrorMessage
+	| HooksSnapshotMessage
+	| HooksTestResultMessage;
 
 // ── Webview → Host 消息 ──
 
@@ -917,6 +960,32 @@ export interface DeleteMcpServerMessage {
 	readonly serverId: string;
 }
 
+/** 设置页请求 Hooks 配置与运行状态快照。 */
+export interface RequestHooksSnapshotMessage {
+	readonly command: 'requestHooksSnapshot';
+}
+
+/** 设置页保存 Hooks 配置（总开关 + RTK 启用状态 + 可选可执行文件路径）。 */
+export interface SaveHooksConfigMessage {
+	readonly command: 'saveHooksConfig';
+	/** Hooks 运行时总开关。 */
+	readonly enabled: boolean;
+	/** RTK 集成启用状态。 */
+	readonly rtkEnabled: boolean;
+	/** RTK 可执行文件绝对路径（可选；空字符串视为清除）。 */
+	readonly rtkExecutablePath?: string;
+}
+
+/** 设置页请求重新检测配置的 RTK 可执行文件。 */
+export interface DetectRtkMessage {
+	readonly command: 'detectRtk';
+}
+
+/** 设置页请求固定样例（git status）改写测试。 */
+export interface TestRtkRewriteMessage {
+	readonly command: 'testRtkRewrite';
+}
+
 /** Webview → Host 判别联合。 */
 export type WebviewToHostMessage =
 	| WebviewReadyMessage
@@ -956,7 +1025,11 @@ export type WebviewToHostMessage =
 	| SaveMcpServersJsonMessage
 	| SetMcpServerEnabledMessage
 	| ReconnectMcpServerMessage
-	| DeleteMcpServerMessage;
+	| DeleteMcpServerMessage
+	| RequestHooksSnapshotMessage
+	| SaveHooksConfigMessage
+	| DetectRtkMessage
+	| TestRtkRewriteMessage;
 
 /** 任一方向消息的命令名（用于日志与调试）。 */
 export type MessageCommand = HostToWebviewMessage['command'] | WebviewToHostMessage['command'];

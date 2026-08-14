@@ -34,6 +34,7 @@ import type { SessionTodoStore } from '../memory/sessionTodoStore';
 import { randomUUID } from 'crypto';
 import { DoomLoopDetector } from './doomLoopDetector';
 import { ToolValidationError } from '../core/errors';
+import type { HookManager } from '../hook/hookManager';
 import * as logger from '../logger';
 
 /** AgentLoop 配置 */
@@ -86,6 +87,8 @@ export interface AgentLoopConfig {
 	readonly changeJournal?: ChangeJournal;
 	/** MCP instructions 快照读取函数（为 null/空时系统提示词不含 MCP 段）。 */
 	readonly mcpInstructionsProvider?: () => readonly { readonly serverId: string; readonly content: string }[];
+	/** Hooks 运行时（可选；未装配时跳过 session 事件派发）。 */
+	readonly hooks?: HookManager;
 }
 
 const MAX_STEPS_PROMPT =
@@ -300,6 +303,18 @@ export class AgentLoop {
 		const doomDetector = new DoomLoopDetector();
 		// 本次 run 的唯一执行范围 ID（toolExecutionJournal 用 runId+callId 隔离回执）
 		const runId = randomUUID();
+		const runStartedAt = Date.now();
+		// session_start：仅含会话、运行和工作区元数据，不含完整会话历史；派发失败被 HookManager 隔离
+		try {
+			await this.config.hooks?.dispatch('session_start', {
+				sessionId,
+				runId,
+				workspaceRoots: this.config.workspaceRoots,
+				startedAt: runStartedAt,
+			});
+		} catch (error) {
+			logger.error(`[AgentLoop] session_start 派发失败 sessionId=${sessionId}`, error);
+		}
 		let step = 0;
 		let stepWarned = false;
 		let emptyReplyRetries = 0;
@@ -584,6 +599,17 @@ export class AgentLoop {
 			this.emitRunStateChange(sessionId, 'failed', msg);
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 		} finally {
+			// session_end：无论正常完成、失败还是取消都在唯一公共出口派发，保证 start/end 配对
+			try {
+				await this.config.hooks?.dispatch('session_end', {
+					sessionId,
+					runId,
+					workspaceRoots: this.config.workspaceRoots,
+					startedAt: runStartedAt,
+				});
+			} catch (error) {
+				logger.error(`[AgentLoop] session_end 派发失败 sessionId=${sessionId}`, error);
+			}
 			if (this.activeSessionId === sessionId) {
 				this.activeSessionId = null;
 				this.abortController = null;

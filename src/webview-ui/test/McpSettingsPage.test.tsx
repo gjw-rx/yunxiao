@@ -112,10 +112,10 @@ describe('MCP 设置页 - 导航与挂载（5.1）', () => {
 		expect(screen.getByText('1 个服务已连接')).toBeTruthy();
 	});
 
-	it('导航顺序为 模型/Skill/MCP/使用情况', () => {
+	it('导航顺序为 模型/Skill/MCP/Hooks/使用情况', () => {
 		const { container } = render(<SettingsPage />);
 		const labels = Array.from(container.querySelectorAll('.settings-nav-item')).map((el) => el.textContent ?? '');
-		expect(labels).toEqual(['模型', 'Skill', 'MCP', '使用情况']);
+		expect(labels).toEqual(['模型', 'Skill', 'MCP', 'Hooks', '使用情况']);
 	});
 
 	it('挂载时请求 MCP 快照', () => {

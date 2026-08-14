@@ -9,6 +9,8 @@ import type { ToolContext, BaseTool } from '../tools/baseTool';
 import type { ApprovalGateway } from './approvalGateway';
 import { SecurityAudit } from './securityAudit';
 import { ToolExecutionJournal, type ToolExecutionIdentity } from './toolExecutionJournal';
+import type { HookManager } from '../hook/hookManager';
+import type { HookTransformEntry } from '../hook/types';
 import * as logger from '../logger';
 
 export class ToolRouter {
@@ -17,6 +19,7 @@ export class ToolRouter {
 		private readonly approval?: ApprovalGateway,
 		private readonly audit = new SecurityAudit(),
 		private readonly journal?: ToolExecutionJournal,
+		private readonly hooks?: HookManager,
 	) {}
 
 	/** 路由并执行一个工具调用。 */
@@ -30,22 +33,71 @@ export class ToolRouter {
 		} catch (error) {
 			return this.toErrorResult(call, context, error);
 		}
-		const audit = this.audit.audit(call, tool, context);
-		if (!audit.allowed) {
-			logger.notifyError(`[ToolRouter] 安全审计拒绝工具 ${call.tool}`, audit.rejection?.error);
-			return audit.rejection!;
+
+		// 原始调用不可变快照（初始校验通过后；JSON 深拷贝，Hook 无法篡改审计对象）
+		const originalArgs: Record<string, unknown> = JSON.parse(JSON.stringify(call.args)) as Record<string, unknown>;
+
+		// ── 集中安全审计（原始调用）：在 Hook 执行前完成，防止转换篡改绕过 ──
+		const auditOriginal = this.audit.audit({ ...call, args: originalArgs }, tool, context);
+		if (!auditOriginal.allowed) {
+			logger.notifyError(`[ToolRouter] 安全审计拒绝工具 ${call.tool}（原始参数）`, auditOriginal.rejection?.error);
+			return auditOriginal.rejection!;
 		}
-		if (audit.warning) {
-			context.warn?.(audit.warning);
+
+		// ── pre_tool_call：受信任转换链 + 守卫链（转换后重新校验）──
+		let finalArgs = originalArgs;
+		let transforms: readonly HookTransformEntry[] = [];
+		if (this.hooks) {
+			const pre = await this.hooks.dispatchPreToolCall({
+				sessionId: context.sessionId,
+				runId: context.runId,
+				tool: call.tool,
+				callId: call.call_id,
+				args: originalArgs,
+				originalArgs,
+			});
+			if (pre.blocked) {
+				logger.log(`[ToolRouter] Hook 显式阻断工具 ${call.tool} call_id=${call.call_id} reason=${pre.reason}`);
+				return {
+					call_id: call.call_id,
+					status: 'cancelled',
+					error: pre.reason ?? '工具调用已被 Hook 阻断',
+				};
+			}
+			if (pre.args !== originalArgs) {
+				// 转换发生：重新执行既有校验，失败则保留原始参数继续（fail-open）
+				try {
+					this.registry.validateArgs(call.tool, pre.args);
+					finalArgs = pre.args;
+					transforms = pre.transforms;
+					logger.log(`[ToolRouter] Hook 转换参数已通过重新校验 tool=${call.tool} transforms=${transforms.length}`);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					logger.log(`[ToolRouter] Hook 转换参数未通过重新校验，保留原始参数 tool=${call.tool} error=${message}`);
+				}
+			}
+		}
+
+		// ── 集中安全审计（最终调用）：原始与最终各自独立审计，任一拒绝均禁止执行 ──
+		const auditFinal = this.audit.audit({ ...call, args: finalArgs }, tool, context);
+		if (!auditFinal.allowed) {
+			logger.notifyError(`[ToolRouter] 安全审计拒绝工具 ${call.tool}（最终参数）`, auditFinal.rejection?.error);
+			return auditFinal.rejection!;
+		}
+		if (auditOriginal.warning && auditOriginal.warning !== auditFinal.warning) {
+			context.warn?.(auditOriginal.warning);
+		}
+		if (auditFinal.warning) {
+			context.warn?.(auditFinal.warning);
 		}
 
 		// 审批门：write/execute/destructive 须经用户确认（read 直通）。
-		// handlesOwnApproval 的工具（如 code_edit 需先 diff 预览）由其在 execute 内自行审批，路由层跳过。
+		// handlesOwnApproval 的工具（如 code_edit、terminal_exec）由其在 execute 内自行审批，路由层跳过。
 		if (
 			this.approval?.shouldGate(tool.permission) &&
 			!tool.handlesOwnApproval
 		) {
-			const summary = this.buildApprovalSummary(call, tool.permission);
+			const summary = this.buildApprovalSummary(call, tool.permission, finalArgs);
 			const decision = tool.permission === 'destructive'
 				? await this.approval.requestDestructiveApproval(
 					call.tool, summary, context.sessionId, call.call_id, this.approvalScope(call, context)
@@ -67,9 +119,38 @@ export class ToolRouter {
 			}
 		}
 
+		// 执行上下文：发生转换时注入原始/最终参数与转换轨迹，供工具展示与安全判断
+		const execContext: ToolContext = transforms.length > 0
+			? { ...context, callTransform: { originalArgs, finalArgs, transforms } }
+			: context;
+
+		const result = await this.runExecution(tool, finalArgs, execContext, call, context);
+
+		// ── post_tool_call：治理后的受治理结果，只读观察 ──
+		await this.dispatchPostToolCall(call, context, result);
+		return result;
+	}
+
+	/**
+	 * 执行并治理工具结果（含执行台账事务），统一返回带 call_id 的结果。
+	 *
+	 * @param tool 已查找到的工具
+	 * @param args 最终参数（可能经 Hook 转换）
+	 * @param execContext 注入转换轨迹后的执行上下文
+	 * @param call 原始工具调用
+	 * @param context 原始路由上下文（用于 journal 与中断判断）
+	 * @returns 工具执行结果
+	 */
+	private async runExecution(
+		tool: BaseTool,
+		args: Record<string, unknown>,
+		execContext: ToolContext,
+		call: ToolCall,
+		context: ToolContext,
+	): Promise<ToolResult> {
 		if (tool.permission === 'read' || !this.journal) {
 			try {
-				const partial = tool.governResult(await tool.execute(call.args, context), context);
+				const partial = tool.governResult(await tool.execute(args, execContext), context);
 				return { ...partial, call_id: call.call_id };
 			} catch (error) {
 				return this.toErrorResult(call, context, error);
@@ -91,7 +172,7 @@ export class ToolRouter {
 		}
 
 		try {
-			const partial = tool.governResult(await tool.execute(call.args, context), context);
+			const partial = tool.governResult(await tool.execute(args, execContext), context);
 			const result = { ...partial, call_id: call.call_id };
 			if (!context.abortSignal?.aborted) {
 				await this.journal.complete(identity, result);
@@ -104,6 +185,32 @@ export class ToolRouter {
 				await this.journal.complete(identity, result);
 			}
 			return result;
+		}
+	}
+
+	/**
+	 * 派发只读 post_tool_call：Hook 看到的是受治理结果而非原始无界输出。
+	 * 派发失败被 HookManager 隔离，不影响工具结果返回。
+	 *
+	 * @param call 原始工具调用
+	 * @param context 路由上下文
+	 * @param result 受治理后的工具结果
+	 * @returns Promise<void>
+	 */
+	private async dispatchPostToolCall(call: ToolCall, context: ToolContext, result: ToolResult): Promise<void> {
+		if (!this.hooks) {
+			return;
+		}
+		try {
+			await this.hooks.dispatch('post_tool_call', {
+				sessionId: context.sessionId,
+				runId: context.runId,
+				tool: call.tool,
+				callId: call.call_id,
+				result,
+			});
+		} catch (error) {
+			logger.error(`[ToolRouter] post_tool_call 派发失败 tool=${call.tool}`, error);
 		}
 	}
 
@@ -144,12 +251,13 @@ export class ToolRouter {
 		return this.registry.has(name);
 	}
 
-	/** 构造审批提示摘要：工具名 + 权限 + 参数。 */
+	/** 构造审批提示摘要：工具名 + 权限 + 最终参数（可能经 Hook 转换）。 */
 	private buildApprovalSummary(
 		call: ToolCall,
-		permission: string
+		permission: string,
+		args: Record<string, unknown>
 	): string {
-		const argsJson = JSON.stringify(call.args);
+		const argsJson = JSON.stringify(args);
 		return `工具 ${call.tool}（${permission} 权限）将执行：\n${argsJson}`;
 	}
 
