@@ -7,6 +7,44 @@
  * 完全兼容；仅新增 `webviewReady` 握手消息。
  */
 
+// ── MCP 设置协议共享类型（复用 mcp/types 的非敏感视图，单一事实来源）──
+
+/**
+ * MCP 设置页非敏感视图类型，与 Extension Host 侧 `src/mcp/types.ts` 共享。
+ * 仅 type-only 导入/重导出：不把 mcp 运行时代码引入 Webview bundle，且保证两侧
+ * `McpServerView`/`McpToolView`/状态枚举不发生定义漂移。Host 永不在此类视图中
+ * 携带 env/header 明文。
+ */
+import type {
+	McpServerView,
+	McpToolView,
+	McpServerStatus,
+	McpActualTransport,
+	McpServerConfigView,
+	McpSettingsSnapshot,
+} from '../mcp/types';
+
+export type {
+	McpServerView,
+	McpToolView,
+	McpServerStatus,
+	McpActualTransport,
+	McpServerConfigView,
+	McpSettingsSnapshot,
+};
+
+/**
+ * 秘密占位常量（编辑现有 Server 时替代 env/header 明文）。
+ * 运行时从 mcp/types 重导出，保证 Webview 与 Host 使用同一占位值。
+ */
+export { MCP_SECRET_PLACEHOLDER } from '../mcp/types';
+
+/** MCP JSON 保存模式：add=新增/批量导入，edit=编辑单个 Server。 */
+export type McpSaveMode = 'add' | 'edit';
+
+/** MCP 操作类别（用于“操作已接受”与错误反馈，区分异步操作来源）。 */
+export type McpOperation = 'save' | 'setEnabled' | 'reconnect' | 'delete';
+
 // ── 共享界面状态类型 ──
 
 /** 配置来源（生态 Skill 与项目规则加载来源）。 */
@@ -550,6 +588,35 @@ export interface SettingsErrorMessage {
 	readonly message: string;
 }
 
+/** 设置页 MCP 配置快照（响应 requestMcpSettings / 运行时状态变化主动推送）。 */
+export interface McpSettingsMessage {
+	readonly command: 'mcpSettings';
+	/** 全部 Server 的非敏感视图（不含 env/header 明文）。 */
+	readonly servers: readonly McpServerView[];
+}
+
+/** MCP 配置保存成功（携带保存后的最新快照）。 */
+export interface McpSettingsSavedMessage {
+	readonly command: 'mcpSettingsSaved';
+	readonly servers: readonly McpServerView[];
+}
+
+/** MCP 异步操作已被 Host 接受（仅代表已入队，最终状态以后续 mcpSettings 快照为准）。 */
+export interface McpOperationAcceptedMessage {
+	readonly command: 'mcpOperationAccepted';
+	readonly serverId: string;
+	readonly operation: McpOperation;
+}
+
+/** MCP 设置操作错误（含可读消息与可选字段路径 fieldPath）。 */
+export interface McpSettingsErrorMessage {
+	readonly command: 'mcpSettingsError';
+	readonly operation: McpOperation;
+	readonly message: string;
+	/** 定位到 `mcpServers.<id>.<field>` 的精确字段路径（校验失败时提供）。 */
+	readonly fieldPath?: string;
+}
+
 /** 扩展运行时初始化状态。 */
 export type RuntimeStatus = 'initializing' | 'ready' | 'failed';
 
@@ -595,7 +662,11 @@ export type HostToWebviewMessage =
 	| ModelSettingsMessage
 	| ModelSettingsSavedMessage
 	| SkillsListMessage
-	| SettingsErrorMessage;
+	| SettingsErrorMessage
+	| McpSettingsMessage
+	| McpSettingsSavedMessage
+	| McpOperationAcceptedMessage
+	| McpSettingsErrorMessage;
 
 // ── Webview → Host 消息 ──
 
@@ -811,6 +882,41 @@ export interface UploadSkillArchiveMessage {
 	readonly command: 'uploadSkillArchive';
 }
 
+/** 设置页请求 MCP 配置快照（MCP 分类挂载时发送）。 */
+export interface RequestMcpSettingsMessage {
+	readonly command: 'requestMcpSettings';
+}
+
+/** 设置页提交 MCP JSON 文本（新增/批量导入或编辑单个 Server）。 */
+export interface SaveMcpServersJsonMessage {
+	readonly command: 'saveMcpServersJson';
+	/** `{ mcpServers: { ... } }` JSON 文本（env/header 明文仅在此单次消息中传输）。 */
+	readonly json: string;
+	/** 保存模式：add=新增/批量导入，edit=编辑 editingServerId。 */
+	readonly mode: McpSaveMode;
+	/** 编辑模式下的目标 Server ID；新增模式缺省。 */
+	readonly editingServerId?: string;
+}
+
+/** 设置页切换 Server 启用状态（异步，Host 接受后推送最终状态）。 */
+export interface SetMcpServerEnabledMessage {
+	readonly command: 'setMcpServerEnabled';
+	readonly serverId: string;
+	readonly enabled: boolean;
+}
+
+/** 设置页请求重连指定 Server（不改配置，仅重建 Connection）。 */
+export interface ReconnectMcpServerMessage {
+	readonly command: 'reconnectMcpServer';
+	readonly serverId: string;
+}
+
+/** 设置页请求删除指定 Server（前端二次确认后发送）。 */
+export interface DeleteMcpServerMessage {
+	readonly command: 'deleteMcpServer';
+	readonly serverId: string;
+}
+
 /** Webview → Host 判别联合。 */
 export type WebviewToHostMessage =
 	| WebviewReadyMessage
@@ -845,7 +951,12 @@ export type WebviewToHostMessage =
 	| RequestSkillsMessage
 	| SetSyncSourceMessage
 	| SetSkillDirectoriesMessage
-	| UploadSkillArchiveMessage;
+	| UploadSkillArchiveMessage
+	| RequestMcpSettingsMessage
+	| SaveMcpServersJsonMessage
+	| SetMcpServerEnabledMessage
+	| ReconnectMcpServerMessage
+	| DeleteMcpServerMessage;
 
 /** 任一方向消息的命令名（用于日志与调试）。 */
 export type MessageCommand = HostToWebviewMessage['command'] | WebviewToHostMessage['command'];

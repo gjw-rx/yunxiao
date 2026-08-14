@@ -13,6 +13,7 @@
         "sourceMap": true,
         "rootDir": "src",
         "strict": true, /* enable all strict type-checking options */
+        "skipLibCheck": true, /* 跳过 node_modules 声明文件内部检查（MCP SDK CJS .d.ts 与 ESM-only json-schema-typed 不兼容） */
         /* Additional Checks */
         // "noImplicitReturns": true, /* Report error when not all code paths in function return a value. */
         // "noFallthroughCasesInSwitch": true, /* Report errors for fallthrough cases in switch statement. */

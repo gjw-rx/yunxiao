@@ -55,6 +55,9 @@ import type { Message } from './memory/types';
 import { AgentLoop } from './agent/agentLoop';
 import type { CompactionConfig } from './agent/compaction';
 import { TodoWriteTool } from './tools/todo/todoWrite';
+import { McpClientManager } from './mcp/manager';
+import { McpConfigStore } from './mcp/configStore';
+import type { McpServerRuntimeConfig, McpServerView } from './mcp/types';
 import * as logger from './logger';
 
 /**
@@ -192,6 +195,102 @@ async function _activate(context: vscode.ExtensionContext) {
 	const skillRegistry = new SkillRegistry();
 	registry.register(new SkillTool(skillRegistry));
 
+	// MCP Client Manager：后台渐进连接 MCP Server，工具动态注册到 ToolRegistry。
+	// MCP 失败不得阻塞 Webview、本地工具或 Skill 初始化。
+	const mcpStore = new McpConfigStore(context);
+	const workspaceTrusted = vscode.workspace.isTrusted ?? true;
+	const mcpManager = new McpClientManager({
+		registry,
+		workspaceTrusted,
+		workspaceCwd: workspaceRoot,
+		callbacks: {
+			onStatusChange: (serverId, status, error) => {
+				logger.log(`[Extension] MCP 状态变更 serverId=${serverId} status=${status}${error ? ` error=${error.message}` : ''}`);
+				void provider.pushMcpSnapshot().catch((err) => {
+					logger.error(`[Extension] 推送 MCP 状态快照失败 serverId=${serverId}: ${err instanceof Error ? err.message : String(err)}`);
+				});
+			},
+			onInstructions: (serverId, instructions) => {
+				logger.log(`[Extension] MCP instructions ${instructions ? '发布' : '移除'} serverId=${serverId}`);
+			},
+		},
+	});
+	context.subscriptions.push({ dispose: () => { void mcpManager.dispose(); } });
+
+	/**
+	 * 读取当前启用的 MCP Server，并装配运行时所需的 SecretStorage 值。
+	 *
+	 * @returns 持久化 revision 与可连接 Server 配置
+	 */
+	const loadEnabledMcpConfigs = async (): Promise<{ readonly revision: number; readonly configs: Map<string, McpServerRuntimeConfig> }> => {
+		const doc = await mcpStore.getDocument();
+		const configs = new Map<string, McpServerRuntimeConfig>();
+		for (const serverId of Object.keys(doc.servers)) {
+			const config = doc.servers[serverId];
+			if (!config.enabled) {
+				continue;
+			}
+			const runtime = await mcpStore.getRuntimeConfig(serverId);
+			if (runtime) {
+				configs.set(serverId, runtime);
+			}
+		}
+		return { revision: doc.revision, configs };
+	};
+
+	/**
+	 * 将最新私有 MCP 配置应用到 Manager；失败仅记录诊断，不能阻塞主流程。
+	 *
+	 * @returns 运行时应用完成后的 Promise
+	 */
+	const applyMcpConfig = async (): Promise<void> => {
+		try {
+			const { revision, configs } = await loadEnabledMcpConfigs();
+			await mcpManager.applyConfig(revision, configs);
+			logger.log(`[Extension] MCP 配置已应用 revision=${revision} serverCount=${configs.size}`);
+		} catch (err) {
+			logger.error(`[Extension] MCP 配置应用失败（不阻塞主流程）: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	};
+
+	/**
+	 * 合并 Store 配置与 Manager 运行时状态，构造设置页所需的完整非敏感快照。
+	 *
+	 * @returns 所有已保存 MCP Server 的设置视图
+	 */
+	const getMcpSnapshot = async (): Promise<readonly McpServerView[]> => {
+		const configured = await mcpStore.getSettingsView();
+		const runtimeById = new Map(mcpManager.getSettingsSnapshot().servers.map((server) => [server.id, server]));
+		return configured.map(({ id, config }) => {
+			const runtime = runtimeById.get(id);
+			if (runtime) {
+				return { ...runtime, configuredTransport: config.type, enabled: config.enabled, config };
+			}
+			return {
+				id,
+				configuredTransport: config.type,
+				enabled: config.enabled,
+				status: config.enabled ? (workspaceTrusted ? 'connecting' : 'waiting_workspace_trust') : 'disabled',
+				toolCount: 0,
+				tools: [],
+				config,
+			};
+		});
+	};
+
+	/**
+	 * 应用最新 MCP 配置后主动刷新已打开的设置页快照。
+	 *
+	 * @returns 配置应用与快照推送完成后的 Promise
+	 */
+	const applyMcpConfigAndPushSnapshot = async (): Promise<void> => {
+		await applyMcpConfig();
+		await provider.pushMcpSnapshot();
+	};
+
+	// 后台渐进连接 MCP Server（不阻塞激活）
+	void applyMcpConfig();
+
 	// 将 skillRegistry 注入 provider，供斜杠命令数据组装
 	provider.setSkillRegistry(skillRegistry);
 
@@ -324,6 +423,7 @@ async function _activate(context: vscode.ExtensionContext) {
 			todoStore,
 			rollbackRecorder: rollbackJournal,
 			changeJournal,
+			mcpInstructionsProvider: () => mcpManager.getInstructions(),
 		}
 	);
 
@@ -409,6 +509,12 @@ async function _activate(context: vscode.ExtensionContext) {
 			return result;
 		},
 		onModelConfigSaved: applyModelConfig,
+		mcpStore,
+		getMcpSnapshot,
+		onMcpConfigChanged: applyMcpConfigAndPushSnapshot,
+		onMcpReconnect: async (serverId: string): Promise<void> => {
+			await mcpManager.reconnect(serverId);
+		},
 	});
 
 	/**

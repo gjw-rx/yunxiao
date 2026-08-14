@@ -139,6 +139,12 @@ npm test              # vscode-test（pretest 自动 compile-tests + compile + l
 - `type` 仅可使用：`feat`（新功能）、`fix`（修复 bug）、`docs`（文档）、`style`（不影响逻辑的格式）、`refactor`（重构）、`perf`（性能优化）、`test`（测试）、`chore`（构建或辅助工具）、`ci`（CI/CD）、`build`（构建系统或外部依赖）、`revert`（回滚）。
 - 创建或修改提交前，必须确认提交类型与描述和暂存变更一致。
 
-## 10. Notes
+## 10. CodeGraph
+<!-- CODEGRAPH_START -->
+In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the repo root), reach for it BEFORE grep/find or reading files when you need to understand or locate code:
 
-（后续补充）
+- **MCP tool** (when available): `codegraph_explore` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If it's listed but deferred, load it by name via tool search.
+- **Shell** (always works): `codegraph explore "<symbol names or question>"` prints the same output.
+
+If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.
+<!-- CODEGRAPH_END -->

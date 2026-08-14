@@ -5,6 +5,9 @@ node_modules
 .vscode-test/
 *.vsix
 
+# 代码索引
+.codegraph
+
 # 系统变量
 /.vscode
 /$PWD

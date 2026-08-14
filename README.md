@@ -11,6 +11,7 @@
 - **多会话管理** — 新建、历史切换、重命名、删除；会话按工作区隔离本地持久化
 - **上下文自动压缩** — 对话接近模型上下文窗口时自动生成摘要压缩，保留近期关键信息
 - **Skill 系统** — 从 `.vscode/skills` 或 Claude / Trae 的 SKILL 目录加载技能，支持 `/skill-name` 斜杠命令
+- **MCP 工具** — 在设置页配置本地 STDIO 或远程 Streamable HTTP 的 MCP Server，动态发现的工具自动桥接为 Function Calling，经同一审批与结果治理链执行
 - **斜杠命令** — `/new` 新会话、`/stop` 停止生成、`/help` 帮助；输入框 `@` 引用文件自动注入上下文
 - **Markdown 渲染** — 代码块、列表、链接、表格等完整渲染
 
@@ -58,6 +59,51 @@
 | Git | `git_commit` / `git_branch` / `git_stash` | 提交、分支管理、stash 操作 | 需审批 |
 | 终端 | `terminal_exec` | 执行 shell 命令并捕获输出；白名单命令自动放行，危险命令需审批 | 需审批 |
 | Skill | `skill` | 按名称加载 Skill，返回 Markdown 指令 | 只读 |
+
+## MCP 工具配置
+
+MCP（Model Context Protocol）Server 在插件设置页的「MCP」分类中管理，**配置由插件私有保存，不读取项目 `.mcp.json`**。支持两类 Transport：
+
+- **STDIO** — 通过 `command` / `args` 启动本地子进程（如 `codegraph serve --mcp`），不经 shell；`cwd` 缺省按当前主工作区解析，绝对/越界路径拒绝
+- **Streamable HTTP** — 连接远程 `url`，仅允许 HTTPS（loopback 地址允许 HTTP）；静态 `headers` 绑定配置 URL 的 origin，跨 origin redirect 被拒绝；可勾选「兼容旧版 SSE」作为 legacy HTTP+SSE 回退
+
+### 配置示例
+
+```json
+{
+  "mcpServers": {
+    "codegraph": {
+      "type": "stdio",
+      "command": "codegraph",
+      "args": ["serve", "--mcp"],
+      "env": {},
+      "enabled": true
+    },
+    "remote-docs": {
+      "type": "streamable-http",
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer token"
+      },
+      "legacySseFallback": true,
+      "enabled": true
+    }
+  }
+}
+```
+
+### 秘密存储与占位语义
+
+- 非敏感配置保存在用户级 `~/.yunForce/mcp/servers.json`；所有 `env` / `headers` 的**值**存入 VS Code `SecretStorage`，普通文件与设置页永不回显明文
+- 编辑已保存的 Server 时，已有秘密显示为占位值 `<已安全保存>`：保留占位 = 保留原秘密；输入新值 = 替换；删除 key = 删除对应秘密；新 Server 使用占位或空秘密会被拒绝
+- 模型无法新增、修改或删除 MCP Server，也无法通过工具参数指定 endpoint、URL、command 或 headers——全部由设置页用户操作决定
+
+### 运行时行为
+
+- 设置页可查看每个 Server 的配置/实际 Transport、状态（`disabled / waiting_workspace_trust / connecting / ready / reconnecting / error / stopping`）、工具数与错误摘要，并执行启停、重连、编辑与删除
+- ready Server 的 MCP 工具以 `mcp__<server>__<tool>` 命名注册为 Function Calling，工具结果继续经过脱敏与截断治理
+- 工作区不可信时保留配置但停止连接（`waiting_workspace_trust`）；恢复可信后自动重连
+- 远程 Server 仅当配置 `legacySseFallback` 且错误被判定为 Transport/协议不匹配（404/405）时回退 legacy SSE；401/403、TLS/DNS、超时与 5xx 不回退
 
 ## 安全模型
 

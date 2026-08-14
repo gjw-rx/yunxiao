@@ -4,37 +4,49 @@
 TBD - created by archiving change phase1-local-tool-calling. Update Purpose after archive.
 ## Requirements
 ### Requirement: Tool registration
-The registry SHALL provide `register(schema: ToolSchema, executor: ToolExecutor)` that stores a tool keyed by its unique name. A tool name MUST follow the namespaced convention (`<namespace>.<verb>`, e.g. `fs.read_file`) to avoid collisions with cloud tools. Registering a duplicate name SHALL raise a clear error rather than silently overwriting.
+The registry SHALL provide `register(tool)` for static local tools and an owner-scoped dynamic registration operation for MCP adapters. Every tool SHALL be keyed by a unique model-visible name. Owner-scoped replacement SHALL validate the complete candidate set before atomically replacing that owner's previous tools. Registering a duplicate name across static or dynamic owners SHALL raise a clear error rather than silently overwriting any existing tool.
 
-#### Scenario: Register a new tool
-- **WHEN** the registry registers a tool named `fs.read_file` with a valid schema and executor
-- **THEN** `lookup('fs.read_file')` returns that schema and executor
+#### Scenario: Register a static local tool
+- **WHEN** the registry registers a local BaseTool named `fs_read_file`
+- **THEN** lookup returns that tool
 
-#### Scenario: Duplicate registration rejected
-- **WHEN** the registry already contains `fs.read_file` and a second registration with the same name is attempted
-- **THEN** the registry raises an error and the original registration is unchanged
+#### Scenario: Register an MCP owner snapshot
+- **WHEN** owner `mcp:codegraph` registers `mcp__codegraph__codegraph_explore`
+- **THEN** lookup returns the MCP adapter and the owner can later replace or remove its complete set
+
+#### Scenario: Duplicate registration rejected across owners
+- **WHEN** a dynamic owner attempts to register a name held by another owner
+- **THEN** the registry raises an error and all existing tools remain unchanged
+
+#### Scenario: Invalid replacement is atomic
+- **WHEN** one candidate in an owner replacement conflicts
+- **THEN** none of the candidates is published and the prior owner snapshot remains
 
 ### Requirement: Tool lookup and listing
-The registry SHALL provide `lookup(name)` returning the schema and executor for a registered tool, or a not-found error. It SHALL provide `list()` returning the schemas of all registered tools for conversion to `ToolDefinition[]` by `AgentLoop`.
+The registry SHALL provide `lookup(name)` returning the registered BaseTool or a not-found error. It SHALL provide `list()` returning a consistent snapshot of all static and currently published MCP schemas for AgentLoop conversion. It SHALL remove all tools for one MCP owner without affecting other owners.
 
 #### Scenario: Lookup unknown tool
-- **WHEN** `lookup('fs.nonexistent')` is called
+- **WHEN** lookup is called for an unknown exposed name
 - **THEN** the registry returns a not-found error
 
-#### Scenario: List all tools
-- **WHEN** `list()` is called after registering `fs.read_file`
-- **THEN** the returned array contains the `fs.read_file` schema
+#### Scenario: List static and MCP tools
+- **WHEN** a local file tool and a ready remote MCP tool are registered
+- **THEN** one list snapshot contains both exactly once
+
+#### Scenario: Remove stopped Server owner
+- **WHEN** Manager unregisters an MCP Server owner
+- **THEN** only that Server tools disappear
 
 ### Requirement: Tool schema shape
-Each `ToolSchema` SHALL declare: `name` (namespaced), `description`, `parameters` (JSON Schema for arguments), and `permissions` (permission level: read/write/execute/destructive). The `site` field SHALL be removed as all tools are local. The schema SHALL be serializable to JSON for conversion to `ToolDefinition` for LLM requests.
+Each registered schema SHALL declare name, description, JSON Schema parameters and permissions read/write/execute/destructive. Registry owner/source metadata SHALL remain outside model-controlled serialized arguments. Static tools and MCP adapters SHALL share the same schema contract so Function Calling conversion and ToolRouter policy require no source-specific branch.
 
-#### Scenario: Schema contains permission metadata
-- **WHEN** the `fs.read_file` schema is registered
-- **THEN** its `permissions` is `read`
+#### Scenario: MCP schema serializable
+- **WHEN** an MCP adapter is registered
+- **THEN** its schema is JSON-serializable and includes mapped permission metadata
 
-#### Scenario: Schema is JSON-serializable
-- **WHEN** a schema is serialized via `JSON.stringify`
-- **THEN** the output is valid JSON containing name, description, parameters, and permissions
+#### Scenario: Source cannot be spoofed
+- **WHEN** the model includes owner or Transport fields in arguments
+- **THEN** routing still uses trusted registry metadata
 
 ### Requirement: Approval gating for write/destructive tools
 The router SHALL consult the `ApprovalGateway` before executing any tool whose `permissions` is `write`, `execute`, or `destructive`. When approval is denied, the router SHALL return a `ToolResult` with `status: 'cancelled'` and SHALL NOT invoke the tool's `execute`. Tools with `permissions: read` SHALL execute without consultation. The router SHALL base this decision on the tool's declared `permissions`, not on any inbound flag (defense in depth: local is the security boundary). The router SHALL NOT check a `site` field on the `ToolCall` as all tools are local.
@@ -50,4 +62,3 @@ The router SHALL consult the `ApprovalGateway` before executing any tool whose `
 #### Scenario: Read tool not gated
 - **WHEN** the router routes a `tool_call` for `fs.read_file` (permission `read`)
 - **THEN** the gateway is not consulted and `execute` runs immediately
-

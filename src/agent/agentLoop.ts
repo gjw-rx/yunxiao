@@ -84,6 +84,8 @@ export interface AgentLoopConfig {
 	readonly rollbackRecorder?: RollbackRecorder;
 	/** 会话代码变更日志（写文件工具在成功前后记录快照）。 */
 	readonly changeJournal?: ChangeJournal;
+	/** MCP instructions 快照读取函数（为 null/空时系统提示词不含 MCP 段）。 */
+	readonly mcpInstructionsProvider?: () => readonly { readonly serverId: string; readonly content: string }[];
 }
 
 const MAX_STEPS_PROMPT =
@@ -328,6 +330,7 @@ export class AgentLoop {
 					projectRules: syncSource === 'claude' ? await loadProjectRules(workspaceRoot) : null,
 					traeRules: syncSource === 'trae' ? await loadTraeRules(workspaceRoot) : null,
 					agentProjectRules: syncSource === 'agent' ? await loadAgentProjectRules(workspaceRoot) : null,
+					mcpInstructions: this.config.mcpInstructionsProvider?.(),
 				});
 
 				// ── 4. 组装消息 ──

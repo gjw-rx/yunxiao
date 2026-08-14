@@ -76,7 +76,13 @@ function ChangeDetail({ file, onBack }: { file: ChangeReviewFileDetail; onBack: 
 					<span className="change-file-stats"><em>+{file.additions}</em> <i>-{file.deletions}</i></span>
 				</div>
 			</div>
-			<div className="change-diff" role="table" aria-label={`${file.relativePath} 的代码差异`}>
+			<div
+				className="change-diff"
+				role="table"
+				tabIndex={0}
+				data-testid="change-diff-scroll-area"
+				aria-label={`${file.relativePath} 的代码差异，可上下及左右滚动`}
+			>
 				<div className="change-diff-body" role="rowgroup">
 					{rows.map((row, index) => row.kind === 'separator' ? (
 						<div key={`separator-${index}`} className="change-diff-separator" role="row" data-testid="change-diff-hidden-lines">

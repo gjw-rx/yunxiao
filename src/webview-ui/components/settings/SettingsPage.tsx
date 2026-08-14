@@ -6,18 +6,22 @@
  * - Skill 分类：展示已加载 Skill 列表与来源，切换配置来源，安装项目 Skill 并展示反馈
  * - 使用情况分类：保持静态占位（不请求真实 token、费用或账户数据）
  */
-import { useEffect, useRef, useState, type JSX } from 'react';
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { post, subscribe } from '../../bridge/vscode';
 import type {
 	HostToWebviewMessage,
 	ModelSettingsInput,
 	ModelSettingsView,
+	McpServerView,
+	McpServerStatus,
+	McpSaveMode,
 	SkillInfo,
 	SyncSource,
 } from '../../protocol';
+import { MCP_SECRET_PLACEHOLDER } from '../../protocol';
 
 /** 设置分类标识。 */
-type SettingsSection = 'model' | 'skill' | 'usage';
+type SettingsSection = 'model' | 'skill' | 'mcp' | 'usage';
 
 /** 设置分类导航项。 */
 interface SettingsNavItem {
@@ -27,10 +31,11 @@ interface SettingsNavItem {
 	readonly label: string;
 }
 
-/** 设置页分类列表。 */
+/** 设置页分类列表（顺序：模型、Skill、MCP、使用情况）。 */
 const SETTINGS_NAV_ITEMS: readonly SettingsNavItem[] = [
 	{ id: 'model', label: '模型' },
 	{ id: 'skill', label: 'Skill' },
+	{ id: 'mcp', label: 'MCP' },
 	{ id: 'usage', label: '使用情况' },
 ];
 
@@ -49,6 +54,9 @@ function SettingsSectionIcon({ section }: { section: SettingsSection }): JSX.Ele
 	}
 	if (section === 'skill') {
 		return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35"><path d="M8 1.7 9.4 5l3.4 1.4-3.4 1.4L8 11.1 6.6 7.8 3.2 6.4 6.6 5 8 1.7Z" /><path d="m12.1 10.2.7 1.7 1.7.7-1.7.7-.7 1.7-.7-1.7-1.7-.7 1.7-.7.7-1.7Z" /></svg>;
+	}
+	if (section === 'mcp') {
+		return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35"><path d="M2 4.5 8 2l6 2.5v7L8 14 2 11.5z" /><path d="M2 4.5 8 7l6-2.5M8 7v7" /></svg>;
 	}
 	return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35"><path d="M3 12V8m5 4V4m5 8V6" /><path d="M2 13.5h12" /></svg>;
 }
@@ -318,19 +326,19 @@ function SkillSettings({
 					<div className="settings-source-field">
 						<span className="settings-field-label">生态配置来源</span>
 						<div className="settings-radio-group" role="radiogroup" aria-label="配置来源">
-						{SOURCE_OPTIONS.map((opt) => (
-							<label key={opt.value} className="settings-radio">
-								<input
-									type="radio"
-									name="syncSource"
-									value={opt.value}
-									checked={source === opt.value}
-									disabled={saving}
-									onChange={() => onSourceChange(opt.value)}
-								/>
-								<span>{opt.label}</span>
-							</label>
-						))}
+							{SOURCE_OPTIONS.map((opt) => (
+								<label key={opt.value} className="settings-radio">
+									<input
+										type="radio"
+										name="syncSource"
+										value={opt.value}
+										checked={source === opt.value}
+										disabled={saving}
+										onChange={() => onSourceChange(opt.value)}
+									/>
+									<span>{opt.label}</span>
+								</label>
+							))}
 						</div>
 						<span className="settings-field-help">来源之间互斥，切换后会立即重新加载。Agent 来源加载全局 ~/.agents/skills 目录；Skill 列表中会显示其来源路径。</span>
 					</div>
@@ -422,6 +430,281 @@ function UsageSettings(): JSX.Element {
 	);
 }
 
+/** MCP 设置页反馈（含可选字段路径，与模型/Skill 反馈隔离，推送不清空其他草稿）。 */
+type McpFeedback = { readonly kind: 'success' | 'error'; readonly message: string; readonly fieldPath?: string } | null;
+
+/** MCP 成功反馈的可见时长（毫秒）。 */
+const MCP_SUCCESS_FEEDBACK_DURATION_MS = 3_000;
+
+/** 新增 JSON 模板（含 STDIO 与 Streamable HTTP 两类示例，用户按需修改）。 */
+const MCP_TEMPLATE = `{
+  "mcpServers": {
+    "my-server": {
+      "type": "stdio",
+      "command": "your-command",
+      "args": [],
+      "env": {},
+      "enabled": true
+    }
+  }
+}`;
+
+/** Transport 中文标签（配置/实际均使用，legacy-sse 仅作为实际 Transport 出现）。 */
+function transportLabel(t: 'stdio' | 'streamable-http' | 'legacy-sse'): string {
+	if (t === 'stdio') { return 'STDIO'; }
+	if (t === 'streamable-http') { return 'Streamable HTTP'; }
+	return 'Legacy SSE';
+}
+
+/** MCP Server 状态中文标签（不只依赖颜色，便于无障碍识别）。 */
+function mcpStatusLabel(status: McpServerStatus): string {
+	switch (status) {
+		case 'disabled': return '已停用';
+		case 'waiting_workspace_trust': return '等待信任工作区';
+		case 'connecting': return '连接中';
+		case 'ready': return '就绪';
+		case 'reconnecting': return '重连中';
+		case 'error': return '错误';
+		case 'stopping': return '停止中';
+	}
+}
+
+/** 由非敏感 Server 视图构建编辑预填 JSON（env/header 值替换为秘密占位）。 */
+function buildEditJson(server: McpServerView): string {
+	const cfg = server.config;
+	if (cfg.type === 'stdio') {
+		const env: Record<string, string> = {};
+		for (const k of cfg.envKeys) { env[k] = MCP_SECRET_PLACEHOLDER; }
+		const entry: Record<string, unknown> = {
+			type: 'stdio',
+			command: cfg.command,
+			args: cfg.args,
+			env,
+			enabled: cfg.enabled,
+			connectTimeoutMs: cfg.connectTimeoutMs,
+			callTimeoutMs: cfg.callTimeoutMs,
+		};
+		if (cfg.cwd !== undefined) { entry.cwd = cfg.cwd; }
+		return JSON.stringify({ mcpServers: { [server.id]: entry } }, null, 2);
+	}
+	const headers: Record<string, string> = {};
+	for (const n of cfg.headerNames) { headers[n] = MCP_SECRET_PLACEHOLDER; }
+	const entry = {
+		type: 'streamable-http',
+		url: cfg.url,
+		headers,
+		legacySseFallback: cfg.legacySseFallback,
+		enabled: cfg.enabled,
+		connectTimeoutMs: cfg.connectTimeoutMs,
+		callTimeoutMs: cfg.callTimeoutMs,
+	};
+	return JSON.stringify({ mcpServers: { [server.id]: entry } }, null, 2);
+}
+
+/**
+ * MCP 分类：JSON 新增/批量导入与编辑、Server 列表、启停/重连/删除。
+ * 秘密明文永不出现在页面或反馈中：编辑预填使用占位值，列表只展示 envKeys/headerNames。
+ *
+ * @param servers 宿主返回的非敏感 Server 快照（加载中为 null）
+ * @param saving JSON 保存中（仅禁用保存按钮，不阻塞其他操作）
+ * @param feedback 操作反馈（含可选 fieldPath）
+ * @param onSaveJson 提交 JSON 保存（mode/editingServerId）
+ * @param onSetEnabled 切换 Server 启用状态
+ * @param onReconnect 请求重连 Server
+ * @param onDelete 请求删除 Server
+ * @returns MCP 分类 JSX
+ */
+function McpSettings({
+	servers,
+	saving,
+	feedback,
+	onSaveJson,
+	onSetEnabled,
+	onReconnect,
+	onDelete,
+}: {
+	servers: readonly McpServerView[] | null;
+	saving: boolean;
+	feedback: McpFeedback;
+	onSaveJson: (json: string, mode: McpSaveMode, editingServerId?: string) => void;
+	onSetEnabled: (serverId: string, enabled: boolean) => void;
+	onReconnect: (serverId: string) => void;
+	onDelete: (serverId: string) => void;
+}): JSX.Element {
+	const [editorOpen, setEditorOpen] = useState(false);
+	const [mode, setMode] = useState<McpSaveMode>('add');
+	const [editingServerId, setEditingServerId] = useState<string | undefined>(undefined);
+	const [jsonText, setJsonText] = useState('');
+	const [expandedId, setExpandedId] = useState<string | undefined>(undefined);
+	const [confirmDeleteId, setConfirmDeleteId] = useState<string | undefined>(undefined);
+	const [searchText, setSearchText] = useState('');
+	const [setupTab, setSetupTab] = useState<'quick' | 'manual' | 'json'>('quick');
+	const visibleServers = useMemo(() => {
+		const keyword = searchText.trim().toLocaleLowerCase();
+		if (!keyword || !servers) {
+			return servers ?? [];
+		}
+		return servers.filter((server) => [server.id, server.configuredTransport, server.actualTransport ?? '']
+			.join(' ').toLocaleLowerCase().includes(keyword));
+	}, [searchText, servers]);
+	const readyServerCount = servers?.filter((server) => server.status === 'ready').length ?? 0;
+	const totalToolCount = servers?.reduce((total, server) => total + server.toolCount, 0) ?? 0;
+
+	/** 打开新增/批量导入 JSON 编辑器并预填模板。 */
+	const handleOpenAdd = (): void => {
+		setMode('add');
+		setEditingServerId(undefined);
+		setEditorOpen(true);
+		setSetupTab('quick');
+		setJsonText(MCP_TEMPLATE);
+	};
+
+	/** 打开编辑 JSON 编辑器，由 Server 视图预填（env/header 为占位）。 @param server 待编辑 Server。 */
+	const handleOpenEdit = (server: McpServerView): void => {
+		setMode('edit');
+		setEditingServerId(server.id);
+		setEditorOpen(true);
+		setSetupTab('json');
+		setJsonText(buildEditJson(server));
+	};
+
+	/** 关闭编辑器并清空明文输入引用。 */
+	const handleClose = (): void => {
+		setEditorOpen(false);
+		setJsonText('');
+		setEditingServerId(undefined);
+	};
+
+	/** 提交保存并把明文输入交给宿主。 */
+	const handleSave = (): void => {
+		onSaveJson(jsonText, mode, editingServerId);
+	};
+
+	/** 请求宿主刷新 MCP Server 状态快照。 @returns 无返回值。 */
+	const handleRefresh = (): void => {
+		post({ command: 'requestMcpSettings' });
+	};
+
+	// 客户端语法预检（即时反馈；宿主仍会重新校验并返回精确 fieldPath）
+	let clientSyntaxError: string | undefined;
+	if (editorOpen && jsonText.trim()) {
+		try {
+			JSON.parse(jsonText);
+		} catch (e) {
+			clientSyntaxError = `JSON 语法错误：${e instanceof Error ? e.message : String(e)}`;
+		}
+	}
+	const showError = feedback?.kind === 'error' ? feedback : null;
+	const showFieldPath = showError?.fieldPath ?? undefined;
+	const canSave = !saving && !clientSyntaxError;
+
+	if (editorOpen) {
+		return (
+			<section className="mcp-config-page" aria-label="MCP JSON 编辑">
+				<button type="button" className="mcp-back-button" onClick={handleClose}>← 返回 MCP 列表</button>
+				<header className="mcp-config-heading">
+					<h1>{mode === 'add' ? '添加 MCP 服务器' : `编辑 MCP 服务器：${editingServerId}`}</h1>
+					<p>统一通过 JSON 配置保存 Server；密钥字段仅会以安全占位形式回显。</p>
+				</header>
+				<section className="mcp-editor-card">
+					<div className="mcp-setup-tabs" role="tablist" aria-label="配置方式">
+						{(['quick', 'manual', 'json'] as const).map((tab) => (
+							<button key={tab} type="button" role="tab" aria-selected={setupTab === tab} className={setupTab === tab ? 'active' : ''} onClick={() => setSetupTab(tab)}>
+								{tab === 'quick' ? '快速安装' : tab === 'manual' ? '手动配置' : 'JSON'}
+							</button>
+						))}
+					</div>
+					<h2 className="mcp-editor-title">{mode === 'add' ? '新增 / 批量导入' : `编辑：${editingServerId}`}</h2>
+					<label className="mcp-config-field">
+						<span>命令、URL 或 JSON</span>
+						<textarea
+							className="mcp-json-textarea"
+							aria-label="MCP JSON 配置"
+							spellCheck={false}
+							value={jsonText}
+							onChange={(e) => setJsonText(e.target.value)}
+						/>
+					</label>
+					<p className="mcp-config-help">请粘贴符合 <code>mcpServers</code> 结构的 JSON；可一次添加多个 Server。</p>
+					<div className="mcp-config-benefits" aria-label="配置说明">
+						<span>自动校验传输方式</span><span>保存后验证连接</span><span>所有工具直接可用</span>
+					</div>
+					{clientSyntaxError ? <div className="settings-feedback settings-feedback-error" role="alert">{clientSyntaxError}</div> : null}
+					<footer className="mcp-editor-footer">
+						<button type="button" className="settings-secondary-button" onClick={handleClose}>取消</button>
+						<button type="button" className="settings-primary-button" onClick={handleSave} disabled={!canSave} aria-label="保存 MCP 配置">
+							{saving ? '保存中…' : mode === 'add' ? '添加并连接' : '保存更改'}
+						</button>
+					</footer>
+				</section>
+				{feedback ? <div className={`settings-feedback${feedback.kind === 'error' ? ' settings-feedback-error' : ''}`} role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedback.message}{showFieldPath ? <span className="mcp-field-path">字段：{showFieldPath}</span> : null}</div> : null}
+			</section>
+		);
+	}
+
+	return (
+		<section className="mcp-management-page">
+			<header className="mcp-management-header">
+				<div>
+					<h2 className="mcp-page-title" aria-label="MCP">MCP 与工具</h2>
+					<p>管理 MCP 服务连接和工具发现。配置由插件私有存储管理，不自动读取项目 .mcp.json 文件。</p>
+				</div>
+				<div className="mcp-header-actions">
+					<button type="button" className="mcp-icon-button" onClick={handleRefresh} aria-label="刷新 MCP 服务">↻</button>
+					<button type="button" className="settings-primary-button mcp-add-button" onClick={handleOpenAdd} aria-label="添加/导入 JSON">+ 添加服务器</button>
+				</div>
+			</header>
+			<div className="mcp-overview" aria-label="MCP 概览">
+				<span>{readyServerCount} 个服务已连接</span><span>· {servers?.length ?? 0} 个服务</span><span>· {totalToolCount} 个工具</span>
+			</div>
+			<label className="mcp-search-field">
+				<span aria-hidden="true">⌕</span>
+				<input type="search" role="searchbox" aria-label="搜索 MCP 服务" value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder="搜索 MCP 服务…" />
+			</label>
+			{feedback ? <div className={`settings-feedback${feedback.kind === 'error' ? ' settings-feedback-error' : ''}`} role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedback.message}{showFieldPath ? <span className="mcp-field-path">字段：{showFieldPath}</span> : null}</div> : null}
+			<section className="mcp-server-section" aria-label="MCP Server 列表">
+				<header><h3>当前项目 <span>{visibleServers.length}</span></h3><p>由当前项目声明，默认自动可用。</p></header>
+				{!servers ? <div className="settings-empty-list">正在加载 MCP Server…</div> : visibleServers.length === 0 ? (
+					<div className="mcp-empty-state">
+						<div className="mcp-empty-state-icon" aria-hidden="true">⌘</div>
+						<strong>{searchText ? '未找到匹配的 MCP Server' : '暂无 MCP Server'}</strong>
+						<p>{searchText ? '请调整搜索关键词，或清空搜索后查看全部服务。' : '添加第一个服务后，可在此查看连接状态与已发现工具。'}</p>
+						{searchText ? null : <button type="button" className="mcp-empty-state-action" onClick={handleOpenAdd} aria-label="添加服务器（空状态）">+ 添加服务器</button>}
+					</div>
+				) : (
+					<div className="mcp-server-list">
+						{visibleServers.map((server) => (
+							<article className="mcp-server-item" key={server.id} data-server-id={server.id}>
+								<div className="mcp-server-icon" aria-hidden="true">▤</div>
+								<div className="mcp-server-body">
+									<div className="mcp-server-row">
+										<button type="button" className="mcp-server-name" onClick={() => setExpandedId(expandedId === server.id ? undefined : server.id)} aria-expanded={expandedId === server.id} aria-label={`展开 ${server.id} 详情`}>
+											<span className={`mcp-status-dot mcp-status-${server.status}`} />{server.id}
+										</button>
+										<span className="mcp-server-transport">{transportLabel(server.configuredTransport)}</span>
+										<span className={`mcp-server-status mcp-status-${server.status}`}>{mcpStatusLabel(server.status)}</span>
+										<span className="mcp-server-tools">工具 {server.toolCount}</span>
+									</div>
+									<p className="mcp-server-summary">{server.status === 'ready' ? '可用 · 已发现工具' : mcpStatusLabel(server.status)} · 配置：{transportLabel(server.configuredTransport)}{server.actualTransport && server.actualTransport !== server.configuredTransport ? ` · 实际：${transportLabel(server.actualTransport)}` : ''}</p>
+									<p className="mcp-server-command">{server.config.type === 'stdio' ? [server.config.command, ...server.config.args].join(' ') : server.config.url}</p>
+									{server.errorSummary ? <p className="mcp-server-error" role="alert">{server.errorSummary}</p> : null}
+									{expandedId === server.id && server.status === 'ready' && server.tools.length > 0 ? <ul className="mcp-tool-list" aria-label={`${server.id} 已发现工具`}>{server.tools.map((tool) => <li key={tool.name} className="mcp-tool-item"><strong>{tool.name}</strong>{tool.description ? <span> — {tool.description}</span> : null}</li>)}</ul> : null}
+								</div>
+								<div className="mcp-server-actions">
+									<button type="button" className="mcp-action-button" onClick={() => onReconnect(server.id)} aria-label={`重连 ${server.id}`}>↻</button>
+									<button type="button" className="mcp-action-button" onClick={() => handleOpenEdit(server)} aria-label={`编辑 ${server.id}`}>编辑</button>
+									{confirmDeleteId === server.id ? <span className="mcp-confirm-delete"><span>确认删除？</span><button type="button" className="settings-danger-button" onClick={() => { onDelete(server.id); setConfirmDeleteId(undefined); }} aria-label={`确认删除 ${server.id}`}>确认</button><button type="button" className="settings-secondary-button" onClick={() => setConfirmDeleteId(undefined)} aria-label={`取消删除 ${server.id}`}>取消</button></span> : <button type="button" className="mcp-delete-button" onClick={() => setConfirmDeleteId(server.id)} aria-label={`删除 ${server.id}`}>删除</button>}
+									<button type="button" aria-pressed={server.enabled} className={`mcp-toggle${server.enabled ? ' on' : ''}`} onClick={() => onSetEnabled(server.id, !server.enabled)} aria-label={server.enabled ? `停用 ${server.id}` : `启用 ${server.id}`}><span /></button>
+								</div>
+							</article>
+						))}
+					</div>
+				)}
+			</section>
+		</section>
+	);
+}
+
 /** 根据当前分类渲染右侧内容。 */
 function SettingsContent({
 	section,
@@ -431,6 +714,9 @@ function SettingsContent({
 	directories,
 	installTarget,
 	saving,
+	mcpServers,
+	mcpSaving,
+	mcpFeedback,
 	onSaveModel,
 	onSetDefaultModel,
 	onSetModelEnabled,
@@ -438,6 +724,10 @@ function SettingsContent({
 	onSourceChange,
 	onDirectoriesSave,
 	onUploadArchive,
+	onSaveMcpJson,
+	onSetMcpEnabled,
+	onReconnectMcp,
+	onDeleteMcp,
 }: {
 	section: SettingsSection;
 	model: ModelSettingsView | null;
@@ -446,6 +736,9 @@ function SettingsContent({
 	directories: string[];
 	installTarget?: string;
 	saving: boolean;
+	mcpServers: readonly McpServerView[] | null;
+	mcpSaving: boolean;
+	mcpFeedback: McpFeedback;
 	onSaveModel: (input: ModelSettingsInput) => void;
 	/** 设置默认模型回调。 */
 	onSetDefaultModel: (modelId: string) => void;
@@ -456,6 +749,13 @@ function SettingsContent({
 	onSourceChange: (source: SyncSource) => void;
 	onDirectoriesSave: (directories: string[]) => void;
 	onUploadArchive: () => void;
+	onSaveMcpJson: (json: string, mode: McpSaveMode, editingServerId?: string) => void;
+	/** 切换 MCP Server 启用状态回调。 */
+	onSetMcpEnabled: (serverId: string, enabled: boolean) => void;
+	/** 重连 MCP Server 回调。 */
+	onReconnectMcp: (serverId: string) => void;
+	/** 删除 MCP Server 回调。 */
+	onDeleteMcp: (serverId: string) => void;
 }): JSX.Element {
 	if (section === 'skill') {
 		return (
@@ -468,6 +768,19 @@ function SettingsContent({
 				onSourceChange={onSourceChange}
 				onDirectoriesSave={onDirectoriesSave}
 				onUploadArchive={onUploadArchive}
+			/>
+		);
+	}
+	if (section === 'mcp') {
+		return (
+			<McpSettings
+				servers={mcpServers}
+				saving={mcpSaving}
+				feedback={mcpFeedback}
+				onSaveJson={onSaveMcpJson}
+				onSetEnabled={onSetMcpEnabled}
+				onReconnect={onReconnectMcp}
+				onDelete={onDeleteMcp}
 			/>
 		);
 	}
@@ -487,24 +800,40 @@ export function SettingsPage(): JSX.Element {
 	const [installTarget, setInstallTarget] = useState<string | undefined>(undefined);
 	const [saving, setSaving] = useState(false);
 	const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+	// MCP 状态与模型/Skill 隔离：Host 推送 MCP 快照时不清空模型/Skill 草稿
+	const [mcpServers, setMcpServers] = useState<readonly McpServerView[] | null>(null);
+	const [mcpSaving, setMcpSaving] = useState(false);
+	const [mcpFeedback, setMcpFeedback] = useState<McpFeedback>(null);
 	// 当前待确认的异步动作：install=安装后等待新快照，source=来源切换后等待新快照（用 ref 供订阅闭包读取最新值）
 	const pendingActionRef = useRef<'archive' | 'source' | 'directories' | 'modelAction' | null>(null);
+
+	// 成功反馈只作短暂提示；错误反馈保留，确保用户有时间查看并处理。
+	useEffect(() => {
+		if (mcpFeedback?.kind !== 'success') {
+			return;
+		}
+		const timer = window.setTimeout(() => {
+			setMcpFeedback((current) => current?.kind === 'success' ? null : current);
+		}, MCP_SUCCESS_FEEDBACK_DURATION_MS);
+		return () => window.clearTimeout(timer);
+	}, [mcpFeedback]);
 
 	// 挂载时请求初始数据并订阅宿主响应
 	useEffect(() => {
 		post({ command: 'requestModelSettings' });
 		post({ command: 'requestSkills' });
+		post({ command: 'requestMcpSettings' });
 		return subscribe((msg: HostToWebviewMessage) => {
 			switch (msg.command) {
 				case 'modelSettings':
 					setModel(msg.model);
 					setFeedback(null);
 					break;
-			case 'modelSettingsSaved':
-				setModel(msg.model);
-				setSaving(false);
-				setFeedback({ kind: 'success', message: pendingActionRef.current === 'modelAction' ? '模型列表已更新' : '模型配置已保存，后续新会话生效' });
-				pendingActionRef.current = null;
+				case 'modelSettingsSaved':
+					setModel(msg.model);
+					setSaving(false);
+					setFeedback({ kind: 'success', message: pendingActionRef.current === 'modelAction' ? '模型列表已更新' : '模型配置已保存，后续新会话生效' });
+					pendingActionRef.current = null;
 					break;
 				case 'skillsList':
 					setSkills(msg.skills);
@@ -525,6 +854,23 @@ export function SettingsPage(): JSX.Element {
 					setSaving(false);
 					pendingActionRef.current = null;
 					setFeedback({ kind: 'error', message: msg.message });
+					break;
+				case 'mcpSettings':
+					// 状态推送只更新 MCP 快照，不影响模型/Skill 草稿
+					setMcpServers(msg.servers);
+					break;
+				case 'mcpSettingsSaved':
+					setMcpServers(msg.servers);
+					setMcpSaving(false);
+					setMcpFeedback({ kind: 'success', message: 'MCP 配置已保存，连接将在后台建立' });
+					break;
+				case 'mcpOperationAccepted':
+					setMcpSaving(false);
+					setMcpFeedback({ kind: 'success', message: `操作已接受：${msg.operation}（${msg.serverId}），最终状态以后续快照为准` });
+					break;
+				case 'mcpSettingsError':
+					setMcpSaving(false);
+					setMcpFeedback({ kind: 'error', message: msg.message, ...(msg.fieldPath ? { fieldPath: msg.fieldPath } : {}) });
 					break;
 			}
 		});
@@ -585,6 +931,34 @@ export function SettingsPage(): JSX.Element {
 		post({ command: 'uploadSkillArchive' });
 	};
 
+	/** 提交 MCP JSON 保存（add 新增/批量导入，edit 编辑单个 Server）。 */
+	const handleSaveMcpJson = (json: string, mode: McpSaveMode, editingServerId?: string): void => {
+		setMcpFeedback(null);
+		setMcpSaving(true);
+		post({ command: 'saveMcpServersJson', json, mode, editingServerId });
+	};
+
+	/** 切换 MCP Server 启用状态。 */
+	const handleSetMcpEnabled = (serverId: string, enabled: boolean): void => {
+		setMcpFeedback(null);
+		setMcpSaving(true);
+		post({ command: 'setMcpServerEnabled', serverId, enabled });
+	};
+
+	/** 请求重连指定 MCP Server（不改配置，仅重建 Connection）。 */
+	const handleReconnectMcp = (serverId: string): void => {
+		setMcpFeedback(null);
+		setMcpSaving(true);
+		post({ command: 'reconnectMcpServer', serverId });
+	};
+
+	/** 请求删除指定 MCP Server（含其全部 Secrets）。 */
+	const handleDeleteMcp = (serverId: string): void => {
+		setMcpFeedback(null);
+		setMcpSaving(true);
+		post({ command: 'deleteMcpServer', serverId });
+	};
+
 	return (
 		<section className="settings-page" aria-label="设置">
 			<aside className="settings-nav" aria-label="设置分类">
@@ -620,6 +994,9 @@ export function SettingsPage(): JSX.Element {
 						directories={directories}
 						installTarget={installTarget}
 						saving={saving}
+						mcpServers={mcpServers}
+						mcpSaving={mcpSaving}
+						mcpFeedback={mcpFeedback}
 						onSaveModel={handleSaveModel}
 						onSetDefaultModel={handleSetDefaultModel}
 						onSetModelEnabled={handleSetModelEnabled}
@@ -627,6 +1004,10 @@ export function SettingsPage(): JSX.Element {
 						onSourceChange={handleSourceChange}
 						onDirectoriesSave={handleDirectoriesSave}
 						onUploadArchive={handleUploadArchive}
+						onSaveMcpJson={handleSaveMcpJson}
+						onSetMcpEnabled={handleSetMcpEnabled}
+						onReconnectMcp={handleReconnectMcp}
+						onDeleteMcp={handleDeleteMcp}
 					/>
 				</div>
 			</main>

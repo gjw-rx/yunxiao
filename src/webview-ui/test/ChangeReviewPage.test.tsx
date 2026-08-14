@@ -56,6 +56,9 @@ describe('ChangeReviewPage', () => {
 		expect(fileTab).toContain('+1');
 		expect(screen.getAllByTestId('change-diff-hidden-lines')).toHaveLength(2);
 		expect(screen.getAllByText('4 个隐藏的行')).toHaveLength(4);
+		const scrollArea = screen.getByTestId('change-diff-scroll-area');
+		expect(scrollArea.getAttribute('tabindex')).toBe('0');
+		expect(scrollArea.getAttribute('aria-label')).toContain('可上下及左右滚动');
 	});
 
 	/** 将同一处替换展示为带行号、上下文与字符级高亮的并排差异。 */

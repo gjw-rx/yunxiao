@@ -12,6 +12,9 @@ import type { SkillInstallResult } from './skill/skillInstaller';
 import type { RuntimeStatus } from './webview-ui/protocol';
 import type { SessionTodoStore } from './memory/sessionTodoStore';
 import type { ChangeJournal } from './core/changeJournal';
+import type { McpConfigStore } from './mcp/configStore';
+import type { McpServerView } from './mcp/types';
+import type { McpSaveMode, McpOperation } from './webview-ui/protocol';
 import { summarizeTodos, type TodoStateUpdate } from './memory/todoTypes';
 import { buildSlashCommandGroups } from './chat/slashCommands';
 import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
@@ -60,6 +63,14 @@ interface SettingsPanelDeps {
   readonly uploadSkillArchive: () => Promise<SkillInstallResult>;
   /** 模型配置保存成功回调（扩展侧重建 provider 并更新 AgentLoop） */
   readonly onModelConfigSaved?: (config: ModelConfig) => void;
+  /** MCP 私有配置存储；未装配时 MCP 写操作返回未就绪错误。 */
+  readonly mcpStore?: McpConfigStore;
+  /** 构建 MCP 设置快照（合并 Store 配置视图与 Manager 运行时状态）。 */
+  readonly getMcpSnapshot?: () => Promise<readonly McpServerView[]>;
+  /** MCP 配置持久化变更后通知运行时应用最新 revision（Manager 串行 applyConfig）。 */
+  readonly onMcpConfigChanged?: () => void | Promise<void>;
+  /** 请求重连指定 Server（Manager 重建 Connection，不改配置）。 */
+  readonly onMcpReconnect?: (serverId: string) => void | Promise<void>;
 }
 
 /** 待处理的审批请求：call_id -> resolve 回调 */
@@ -334,7 +345,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // 设置面板消息路由：模型配置读取/保存、Skill 列表读取、来源切换与安装请求
     panel.webview.onDidReceiveMessage(
-      async (msg: { command: string; [key: string]: unknown }) => {
+      async (msg: { command: string;[key: string]: unknown }) => {
         await this._handleSettingsMessage(panel, msg);
       },
       undefined,
@@ -530,7 +541,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async _handleSettingsMessage(
     panel: vscode.WebviewPanel,
-    msg: { command: string; [key: string]: unknown }
+    msg: { command: string;[key: string]: unknown }
   ): Promise<void> {
     const deps = this._settingsDeps;
     logger.log(`[ChatPanel] 收到设置面板消息: ${msg.command}`);
@@ -630,7 +641,190 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
+      case 'requestMcpSettings': {
+        const servers = deps.getMcpSnapshot ? await deps.getMcpSnapshot() : [];
+        panel.webview.postMessage({ command: 'mcpSettings', servers });
+        break;
+      }
+      case 'saveMcpServersJson': {
+        await this._handleSaveMcpServersJson(panel, msg, deps);
+        break;
+      }
+      case 'setMcpServerEnabled': {
+        await this._handleSetMcpServerEnabled(panel, msg, deps);
+        break;
+      }
+      case 'reconnectMcpServer': {
+        await this._handleReconnectMcpServer(panel, msg, deps);
+        break;
+      }
+      case 'deleteMcpServer': {
+        await this._handleDeleteMcpServer(panel, msg, deps);
+        break;
+      }
     }
+  }
+
+  /**
+   * 发送 MCP 设置错误到设置面板（统一错误消息形状，携带可选字段路径）。
+   *
+   * @param panel 设置面板
+   * @param operation 触发错误的操作类别
+   * @param message 可读错误消息（不含秘密/堆栈）
+   * @param fieldPath 可选字段路径，定位到 `mcpServers.<id>.<field>`
+   */
+  private _postMcpError(
+    panel: vscode.WebviewPanel,
+    operation: McpOperation,
+    message: string,
+    fieldPath?: string,
+  ): void {
+    panel.webview.postMessage({ command: 'mcpSettingsError', operation, message, fieldPath });
+  }
+
+  /**
+   * 处理 MCP JSON 保存（add/edit）：Host 重新校验 mode 与 editingServerId，
+   * 调用 Store 事务保存；成功通知运行时应用并回推最新快照，失败返回带 fieldPath 的错误。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息（json/mode/editingServerId）
+   * @param deps 设置面板依赖
+   */
+  private async _handleSaveMcpServersJson(
+    panel: vscode.WebviewPanel,
+    msg: { command: string;[key: string]: unknown },
+    deps: SettingsPanelDeps,
+  ): Promise<void> {
+    const operation: McpOperation = 'save';
+    if (!deps.mcpStore) {
+      this._postMcpError(panel, operation, 'MCP 配置存储未就绪');
+      return;
+    }
+    const json = typeof msg.json === 'string' ? msg.json : '';
+    const mode: McpSaveMode = msg.mode === 'edit' ? 'edit' : 'add';
+    const editingServerId = typeof msg.editingServerId === 'string' ? msg.editingServerId : undefined;
+    if (mode === 'edit' && !editingServerId) {
+      this._postMcpError(panel, operation, '编辑模式缺少 editingServerId');
+      return;
+    }
+    const result = mode === 'edit'
+      ? await deps.mcpStore.saveEdit(editingServerId!, json)
+      : await deps.mcpStore.saveAddImport(json);
+    if (!result.ok) {
+      const first = result.errors[0];
+      this._postMcpError(panel, operation, first?.message ?? '保存失败', first?.fieldPath);
+      return;
+    }
+    logger.log(`[ChatPanel] MCP 配置已保存 mode=${mode} revision=${result.revision} servers=${Object.keys(result.servers).length}`);
+    await deps.onMcpConfigChanged?.();
+    const servers = deps.getMcpSnapshot ? await deps.getMcpSnapshot() : [];
+    panel.webview.postMessage({ command: 'mcpSettingsSaved', servers });
+  }
+
+  /**
+   * 处理 MCP Server 启停：校验 serverId，持久化 enabled，通知运行时并回推操作已接受。
+   * 最终连接状态以后续 mcpSettings 快照为准。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息（serverId/enabled）
+   * @param deps 设置面板依赖
+   */
+  private async _handleSetMcpServerEnabled(
+    panel: vscode.WebviewPanel,
+    msg: { command: string;[key: string]: unknown },
+    deps: SettingsPanelDeps,
+  ): Promise<void> {
+    const operation: McpOperation = 'setEnabled';
+    if (!deps.mcpStore) {
+      this._postMcpError(panel, operation, 'MCP 配置存储未就绪');
+      return;
+    }
+    const serverId = typeof msg.serverId === 'string' ? msg.serverId : '';
+    if (!serverId) {
+      this._postMcpError(panel, operation, '缺少 serverId');
+      return;
+    }
+    const enabled = msg.enabled === true;
+    const result = await deps.mcpStore.setEnabled(serverId, enabled);
+    if (!result.ok) {
+      this._postMcpError(panel, operation, result.error ?? '操作失败');
+      return;
+    }
+    logger.log(`[ChatPanel] MCP 启停已保存 serverId=${serverId} enabled=${enabled} revision=${result.revision}`);
+    await deps.onMcpConfigChanged?.();
+    panel.webview.postMessage({ command: 'mcpOperationAccepted', serverId, operation });
+  }
+
+  /**
+   * 处理 MCP Server 重连：校验 serverId，通知 Manager 重建连接，回推操作已接受。
+   * 重连不改配置，最终状态以后续 mcpSettings 快照为准。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息（serverId）
+   * @param deps 设置面板依赖
+   */
+  private async _handleReconnectMcpServer(
+    panel: vscode.WebviewPanel,
+    msg: { command: string;[key: string]: unknown },
+    deps: SettingsPanelDeps,
+  ): Promise<void> {
+    const operation: McpOperation = 'reconnect';
+    const serverId = typeof msg.serverId === 'string' ? msg.serverId : '';
+    if (!serverId) {
+      this._postMcpError(panel, operation, '缺少 serverId');
+      return;
+    }
+    logger.log(`[ChatPanel] MCP 重连请求已接受 serverId=${serverId}`);
+    await deps.onMcpReconnect?.(serverId);
+    panel.webview.postMessage({ command: 'mcpOperationAccepted', serverId, operation });
+  }
+
+  /**
+   * 处理 MCP Server 删除：校验 serverId，持久化删除并清理 Secrets，
+   * 通知运行时下线，回推不含已删除 Server 的最新快照。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息（serverId）
+   * @param deps 设置面板依赖
+   */
+  private async _handleDeleteMcpServer(
+    panel: vscode.WebviewPanel,
+    msg: { command: string;[key: string]: unknown },
+    deps: SettingsPanelDeps,
+  ): Promise<void> {
+    const operation: McpOperation = 'delete';
+    if (!deps.mcpStore) {
+      this._postMcpError(panel, operation, 'MCP 配置存储未就绪');
+      return;
+    }
+    const serverId = typeof msg.serverId === 'string' ? msg.serverId : '';
+    if (!serverId) {
+      this._postMcpError(panel, operation, '缺少 serverId');
+      return;
+    }
+    const result = await deps.mcpStore.delete(serverId);
+    if (!result.ok) {
+      this._postMcpError(panel, operation, result.error ?? '删除失败');
+      return;
+    }
+    logger.log(`[ChatPanel] MCP Server 已删除 serverId=${serverId}`);
+    await deps.onMcpConfigChanged?.();
+    const servers = deps.getMcpSnapshot ? await deps.getMcpSnapshot() : [];
+    panel.webview.postMessage({ command: 'mcpSettingsSaved', servers });
+  }
+
+  /**
+   * 主动向设置面板推送 MCP 状态快照（运行时状态/工具变化时调用）。
+   * 设置面板关闭或未打开、或未装配快照构建器时安全跳过，不抛错。
+   */
+  async pushMcpSnapshot(): Promise<void> {
+    const panel = this._settingsPanel;
+    const deps = this._settingsDeps;
+    if (!panel || !deps?.getMcpSnapshot) {
+      return;
+    }
+    const servers = await deps.getMcpSnapshot();
+    panel.webview.postMessage({ command: 'mcpSettings', servers });
   }
 
   /**
@@ -668,7 +862,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'webviewReady': {
         // 握手：UI 挂载完成后先同步当前运行时状态，避免未就绪时触发聊天业务。
         this._pushRuntimeState(webview);
-		this._pushApprovalMode(webview);
+        this._pushApprovalMode(webview);
         if (this._runtimeStatus !== 'ready') {
           break;
         }
@@ -678,22 +872,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
-		case 'setApprovalMode': {
-			const mode = msg.mode;
-			if (!isApprovalMode(mode)) {
-				logger.error(`[ChatPanel] 拒绝无效审批模式请求 mode=${String(mode)}`);
-				this._pushApprovalMode(webview);
-				break;
-			}
-			try {
-				await this._setApprovalMode(mode);
-				this._pushApprovalMode(webview);
-			} catch (error) {
-				logger.error(`[ChatPanel] 保存审批模式失败 mode=${mode} error=${error instanceof Error ? error.message : String(error)}`);
-				this._pushApprovalMode(webview);
-			}
-			break;
-		}
+      case 'setApprovalMode': {
+        const mode = msg.mode;
+        if (!isApprovalMode(mode)) {
+          logger.error(`[ChatPanel] 拒绝无效审批模式请求 mode=${String(mode)}`);
+          this._pushApprovalMode(webview);
+          break;
+        }
+        try {
+          await this._setApprovalMode(mode);
+          this._pushApprovalMode(webview);
+        } catch (error) {
+          logger.error(`[ChatPanel] 保存审批模式失败 mode=${mode} error=${error instanceof Error ? error.message : String(error)}`);
+          this._pushApprovalMode(webview);
+        }
+        break;
+      }
       case 'openSettings': {
         this._showSettingsPanel();
         break;
@@ -718,23 +912,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const skills = Array.isArray(msg.skills)
           ? (msg.skills as string[])
           : [];
-		if (userText.trim() === '/compact' && files.length === 0 && skills.length === 0) {
-			try {
-				const result = await this._sessionManager.compactContext(sessionId);
-				const message = result.status === 'compacted'
-					? '上下文压缩完成'
-					: result.status === 'skipped'
-						? '当前没有可压缩的上下文'
-						: `上下文压缩失败：${result.error ?? '未知错误'}`;
-				logger.log(`[ChatPanel] /compact 完成 sessionId=${sessionId} status=${result.status}`);
-				void vscode.window.showInformationMessage(message);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				logger.error(`[ChatPanel] /compact 失败 sessionId=${sessionId} error=${message}`);
-				void vscode.window.showWarningMessage(message);
-			}
-			break;
-		}
+        if (userText.trim() === '/compact' && files.length === 0 && skills.length === 0) {
+          try {
+            const result = await this._sessionManager.compactContext(sessionId);
+            const message = result.status === 'compacted'
+              ? '上下文压缩完成'
+              : result.status === 'skipped'
+                ? '当前没有可压缩的上下文'
+                : `上下文压缩失败：${result.error ?? '未知错误'}`;
+            logger.log(`[ChatPanel] /compact 完成 sessionId=${sessionId} status=${result.status}`);
+            void vscode.window.showInformationMessage(message);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.error(`[ChatPanel] /compact 失败 sessionId=${sessionId} error=${message}`);
+            void vscode.window.showWarningMessage(message);
+          }
+          break;
+        }
         let text = userText;
         // 已选 Skill 引用块转成斜杠命令文本（如 /plan），前置到用户消息
         if (skills.length > 0) {
@@ -755,23 +949,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._sessionManager.cancel(sessionId);
         break;
       }
-		case 'compactContext': {
-			try {
-				const result = await this._sessionManager.compactContext(msg.sessionId as string);
-				const message = result.status === 'compacted'
-					? '上下文压缩完成'
-					: result.status === 'skipped'
-						? '当前没有可压缩的上下文'
-						: `上下文压缩失败：${result.error ?? '未知错误'}`;
-				logger.log(`[ChatPanel] 手动压缩完成 sessionId=${msg.sessionId} status=${result.status}`);
-				void vscode.window.showInformationMessage(message);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				logger.error(`[ChatPanel] 手动压缩失败 sessionId=${msg.sessionId} error=${message}`);
-				void vscode.window.showWarningMessage(message);
-			}
-			break;
-		}
+      case 'compactContext': {
+        try {
+          const result = await this._sessionManager.compactContext(msg.sessionId as string);
+          const message = result.status === 'compacted'
+            ? '上下文压缩完成'
+            : result.status === 'skipped'
+              ? '当前没有可压缩的上下文'
+              : `上下文压缩失败：${result.error ?? '未知错误'}`;
+          logger.log(`[ChatPanel] 手动压缩完成 sessionId=${msg.sessionId} status=${result.status}`);
+          void vscode.window.showInformationMessage(message);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error(`[ChatPanel] 手动压缩失败 sessionId=${msg.sessionId} error=${message}`);
+          void vscode.window.showWarningMessage(message);
+        }
+        break;
+      }
       case 'switchModel': {
         // /model 命令：QuickPick 选择已启用模型并切换当前默认模型（复用设置页「设为默认」链路：持久化 + 重建 Provider）
         const deps = this._settingsDeps;
@@ -889,7 +1083,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._pushSlashCommands(webview);
         break;
       }
-      case 'requestWorkspaceFiles': {        const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+      case 'requestWorkspaceFiles': {
+        const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
         if (workspaceFolders.length === 0) {
           webview.postMessage({ command: 'workspaceFiles', files: [] });
           break;
