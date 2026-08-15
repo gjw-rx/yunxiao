@@ -5,14 +5,16 @@
 ## 功能特性
 
 - **本地驱动** — 插件直连任意 OpenAI 兼容端点（OpenAI / DeepSeek / 通义千问 / vLLM / Ollama 等），本地完成工具执行，代码与文件不出工作区
-- **本地工具执行** — 18 个内置本地工具，覆盖文件系统、代码智能、Git、终端、Diff
-- **审批网关** — 写 / 执行 / 删除类操作弹审批卡片（允许 / 始终允许 / 拒绝），只读操作自动放行
+- **本地工具执行** — 21 个内置本地工具，覆盖文件系统、代码智能、Git、终端、Diff、任务进度、网络检索
+- **审批网关** — 写 / 执行 / 删除类操作弹审批卡片（允许 / 始终允许 / 拒绝），只读操作自动放行；支持全访问模式自动批准非删除操作
 - **流式对话** — SSE 流式回复、打字机效果，工具调用过程实时可视化，含每步与会话级 token 用量统计
 - **多会话管理** — 新建、历史切换、重命名、删除；会话按工作区隔离本地持久化
 - **上下文自动压缩** — 对话接近模型上下文窗口时自动生成摘要压缩，保留近期关键信息
-- **Skill 系统** — 从 `.vscode/skills` 或 Claude / Trae 的 SKILL 目录加载技能，支持 `/skill-name` 斜杠命令
+- **模型切换** — 输入框下方快速切换模型，或使用 `/model` 斜杠命令
+- **外部网络检索** — 可选启用 `web_search` 工具，通过 Tavily 检索最新网络信息并注入对话
+- **Skill 系统** — 从 `.vscode/skills` 或 Claude / Trae 的 SKILL 目录加载技能，支持 `/skill-name` 斜杠命令；同时加载全局 `~/.agents/skills` 与工作区 AGENTS.md 规则
 - **MCP 工具** — 在设置页配置本地 STDIO 或远程 Streamable HTTP 的 MCP Server，动态发现的工具自动桥接为 Function Calling，经同一审批与结果治理链执行
-- **斜杠命令** — `/new` 新会话、`/stop` 停止生成、`/help` 帮助；输入框 `@` 引用文件自动注入上下文
+- **斜杠命令** — `/new` 新会话、`/stop` 停止生成、`/help` 帮助、`/model` 切换模型；输入框 `@` 引用文件自动注入上下文
 - **Markdown 渲染** — 代码块、列表、链接、表格等完整渲染
 
 ## 快速开始
@@ -59,6 +61,8 @@
 | Git | `git_commit` / `git_branch` / `git_stash` | 提交、分支管理、stash 操作 | 需审批 |
 | 终端 | `terminal_exec` | 执行 shell 命令并捕获输出；白名单命令自动放行，危险命令需审批 | 需审批 |
 | Skill | `skill` | 按名称加载 Skill，返回 Markdown 指令 | 只读 |
+| 网络 | `web_search` | 通过 Tavily 检索网络信息（需在设置中启用并配置 API Key） | 只读 |
+| 任务 | `todo_write` | 创建 / 更新会话内的任务进度列表，供面板展示 | 需审批 |
 
 ## MCP 工具配置
 
@@ -124,11 +128,14 @@ MCP（Model Context Protocol）Server 在插件设置页的「MCP」分类中管
 | `yunxiaoAgent.toolTimeoutMs` | `30000` | 本地工具执行超时（毫秒） |
 | `yunxiaoAgent.terminalTimeoutMs` | `300000` | 终端命令执行超时（毫秒） |
 | `yunxiaoAgent.alwaysAllowTools` | `[]` | 无需审批直接放行的工具名列表（如 `fs_write_file`） |
+| `yunxiaoAgent.approvalMode` | `request` | 审批模式：`request` 逐次确认 / `full-access` 自动批准非删除操作 |
+| `yunxiaoAgent.webSearch.enabled` | `false` | 是否启用外部网络检索 `web_search` 工具 |
+| `yunxiaoAgent.webSearch.apiKey` | 空 | Tavily API Key（启用网络检索后必须配置） |
 | `yunxiaoAgent.shellWhitelist` | 14 条安全命令前缀 | 终端自动放行的命令前缀 |
 | `yunxiaoAgent.skills.directories` | `[".vscode/skills"]` | Skill 搜索目录（相对工作区根） |
 | `yunxiaoAgent.sync.source` | `none` | 生态配置来源：`none` / `claude`（同步 Claude SKILL 与项目规则）/ `trae` |
 | `yunxiaoAgent.agent.maxSteps` | `50` | Agent 循环最大步数 |
-| `yunxiaoAgent.compaction.enabled` | `true` | 是否启用上下文自动压缩 |
+| `yunxiaoAgent.compaction.autoEnabled` | `true` | 是否启用上下文自动压缩 |
 
 更多配置项（读文件护栏、结果截断、范围授权等）可在 VSCode 设置中搜索「云效」查看。
 
