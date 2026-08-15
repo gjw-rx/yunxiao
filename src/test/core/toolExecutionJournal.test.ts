@@ -13,9 +13,9 @@ describe('ToolExecutionJournal', () => {
 		const state = new MemoryState();
 		const journal = new ToolExecutionJournal(state);
 		const identity = { scopeId: 'run-1', callId: 'call-1' };
-		assert.deepStrictEqual(await journal.begin(identity, 'fs.write_file'), { kind: 'started' });
+		assert.deepStrictEqual(await journal.begin(identity, 'fs_write_file'), { kind: 'started' });
 		await journal.complete(identity, { call_id: 'call-1', status: 'success', result: '已写入' });
-		assert.deepStrictEqual(await journal.begin(identity, 'fs.write_file'), {
+		assert.deepStrictEqual(await journal.begin(identity, 'fs_write_file'), {
 			kind: 'completed', result: { call_id: 'call-1', status: 'success', result: '已写入' },
 		});
 		assert.ok(!JSON.stringify([...state.values.values()]).includes('secret-content'));
@@ -24,7 +24,7 @@ describe('ToolExecutionJournal', () => {
 	it('treats an uncompleted receipt as unknown', async () => {
 		const journal = new ToolExecutionJournal(new MemoryState());
 		const identity = { scopeId: 'run-1', callId: 'call-1' };
-		await journal.begin(identity, 'terminal.exec');
-		assert.deepStrictEqual(await journal.begin(identity, 'terminal.exec'), { kind: 'unknown' });
+		await journal.begin(identity, 'terminal_exec');
+		assert.deepStrictEqual(await journal.begin(identity, 'terminal_exec'), { kind: 'unknown' });
 	});
 });

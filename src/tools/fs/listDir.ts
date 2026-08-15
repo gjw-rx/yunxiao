@@ -1,5 +1,5 @@
 /**
- * fs.list_dir - 列目录（read 权限，免审批）。
+ * fs_list_dir - 列目录（read 权限，免审批）。
  * 职责：经 pathGuard 解析目录 -> 列条目（名称/类型/大小/修改时间）-> 尊重 .gitignore 过滤 -> 类型过滤。
  * 默认非递归（单层）；recursive:true 递归（深度上限 MAX_DEPTH 防 token 爆炸）。
  * 用 Node fs（与 readFile 一致，便于无 vscode 单测）。.gitignore 为最小匹配器，非完整语义（需完整语义请用 search_files 的 ripgrep）。
@@ -40,7 +40,7 @@ interface DirEntry {
 
 export class ListDirTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'fs.list_dir',
+		name: 'fs_list_dir',
 		description:
 			'列出工作区内目录条目（含类型/大小/修改时间），尊重 .gitignore，默认单层。' +
 			'条目较多时默认返回前 2000 条，可用 offset/limit 分页续读。',
@@ -63,7 +63,9 @@ export class ListDirTool extends BaseTool {
 	};
 
 	validate(args: Record<string, unknown>): void {
-		requireStringArg(args, 'path');
+		if (args.path !== '') {
+			requireStringArg(args, 'path');
+		}
 		const t = args.type;
 		if (t !== undefined && t !== null && t !== 'file' && t !== 'dir' && t !== 'all') {
 			throw new Error('参数 type 必须为 file | dir | all');
@@ -74,13 +76,13 @@ export class ListDirTool extends BaseTool {
 		args: Record<string, unknown>,
 		context: ToolContext
 	): Promise<ToolExecutionResult> {
-		const inputPath = args.path as string;
+		const inputPath = (args.path as string) || '.';
 		const typeFilter = (args.type as 'file' | 'dir' | 'all') ?? 'all';
 		const recursive = args.recursive === true;
 		const offset = typeof args.offset === 'number' ? args.offset : 1;
 		const limit = typeof args.limit === 'number' ? args.limit : DEFAULT_LIST_LIMIT;
 		const startedAt = Date.now();
-		logger.log(`[fs.list_dir] 开始 - path=${inputPath}, type=${typeFilter}, recursive=${recursive}, offset=${offset}, limit=${limit}`);
+		logger.log(`[fs_list_dir] 开始 - path=${inputPath}, type=${typeFilter}, recursive=${recursive}, offset=${offset}, limit=${limit}`);
 
 		// 1. 路径安全解析
 		let resolved;
@@ -90,7 +92,7 @@ export class ListDirTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
-				logger.error(`[fs.list_dir] 路径解析失败 - path=${inputPath}, error=${err.message}`);
+				logger.error(`[fs_list_dir] 路径解析失败 - path=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -122,8 +124,8 @@ export class ListDirTool extends BaseTool {
 			0
 		);
 
-		logger.log(`[fs.list_dir] 完成 - path=${inputPath}, entries=${entries.length}, duration_ms=${Date.now() - startedAt}`);
-		// offset 越界：与 fs.read_file 一致返回 error（含总条数）
+		logger.log(`[fs_list_dir] 完成 - path=${inputPath}, entries=${entries.length}, duration_ms=${Date.now() - startedAt}`);
+		// offset 越界：与 fs_read_file 一致返回 error（含总条数）
 		if (entries.length > 0 && offset > entries.length) {
 			return {
 				status: 'error',

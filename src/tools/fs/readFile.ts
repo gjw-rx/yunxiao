@@ -1,5 +1,5 @@
 /**
- * fs.read_file - 本地只读工具（无需审批）。
+ * fs_read_file - 本地只读工具（无需审批）。
  * 职责：pathGuard 解析路径 -> 二进制检测 -> 流式分页读取（行数 + 字节双预算）-> 敏感文件脱敏 -> 返回带行号文本。
  * 大文件不再整体拒绝：默认返回前 2000 行，可用 offset/limit 分页续读；单行超过 2000 字符截断标注。
  */
@@ -214,10 +214,10 @@ function readLinesPaged(
 
 export class ReadFileTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'fs.read_file',
+		name: 'fs_read_file',
 		description:
 			'读取工作区内文本文件内容（UTF-8）。输出带行号；大文件默认返回前 2000 行，可用 offset 续读；' +
-			'单行超过 2000 字符会被截断；目录请用 fs.list_dir。',
+			'单行超过 2000 字符会被截断；目录请用 fs_list_dir。',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -249,7 +249,7 @@ export class ReadFileTool extends BaseTool {
 		);
 		const maxLineLength = context.readMaxLineLength ?? DEFAULT_MAX_LINE_LENGTH;
 		const startedAt = Date.now();
-		logger.log(`[fs.read_file] 开始 - path=${inputPath}, offset=${offset}, limit=${limit}`);
+		logger.log(`[fs_read_file] 开始 - path=${inputPath}, offset=${offset}, limit=${limit}`);
 
 		// 1. 路径安全解析
 		let resolved;
@@ -259,7 +259,7 @@ export class ReadFileTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
-				logger.error(`[fs.read_file] 路径解析失败 - path=${inputPath}, error=${err.message}`);
+				logger.error(`[fs_read_file] 路径解析失败 - path=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -273,7 +273,7 @@ export class ReadFileTool extends BaseTool {
 			return { status: 'error', error: `文件不存在: ${inputPath}` };
 		}
 		if (stat.isDirectory()) {
-			return { status: 'error', error: `是目录而非文件，请用 fs.list_dir: ${inputPath}` };
+			return { status: 'error', error: `是目录而非文件，请用 fs_list_dir: ${inputPath}` };
 		}
 
 		// 3. 二进制检测（扩展名）
@@ -320,10 +320,10 @@ export class ReadFileTool extends BaseTool {
 		if (resolved.sensitive) {
 			output = redactSecrets(output);
 			context.warn?.(`访问敏感文件 ${resolved.relativePath}，内容中的密钥已脱敏`);
-			logger.log(`[fs.read_file] 访问敏感文件 - path=${resolved.relativePath}, 密钥已脱敏`);
+			logger.log(`[fs_read_file] 访问敏感文件 - path=${resolved.relativePath}, 密钥已脱敏`);
 		}
 
-		logger.log(`[fs.read_file] 完成 - path=${inputPath}, lines=${page.lines.length}, totalCount=${page.totalCount}, duration_ms=${Date.now() - startedAt}`);
+		logger.log(`[fs_read_file] 完成 - path=${inputPath}, lines=${page.lines.length}, totalCount=${page.totalCount}, duration_ms=${Date.now() - startedAt}`);
 		return {
 			status: 'success',
 			result: output,

@@ -53,6 +53,20 @@ describe('ListDirTool', () => {
 		assert.ok(a.size > 0);
 	});
 
+	it('空路径列出工作区根目录', async () => {
+		// 准备
+		await writeFile('root.ts', 'export const root = true;\n');
+
+		// 执行
+		tool.validate({ path: '' });
+		const result = await tool.execute({ path: '' }, await makeContext());
+
+		// 断言
+		assert.strictEqual(result.status, 'success');
+		const entries = parseEntries(result.result as string);
+		assert.ok(entries.some((entry) => entry.name === 'root.ts'));
+	});
+
 	it('type 过滤：仅目录', async () => {
 		// Arrange
 		await writeFile('a.ts', 'x');

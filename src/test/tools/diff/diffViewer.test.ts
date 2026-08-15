@@ -18,12 +18,12 @@ describe('DiffViewer', () => {
 		};
 		const viewer = new DiffViewer(shim);
 		// Act
-		await viewer.showDiff('/a/original.txt', '/b/proposed.txt', 'code.edit: x');
+		await viewer.showDiff('/a/original.txt', '/b/proposed.txt', 'code_edit: x');
 		// Assert
 		assert.strictEqual(calls.length, 1);
 		assert.strictEqual(calls[0].command, 'vscode.diff');
 		assert.strictEqual(calls[0].args.length, 3);
-		assert.deepStrictEqual(calls[0].args[2], 'code.edit: x');
+		assert.deepStrictEqual(calls[0].args[2], 'code_edit: x');
 		assert.deepStrictEqual(uris, ['/a/original.txt', '/b/proposed.txt']);
 	});
 });

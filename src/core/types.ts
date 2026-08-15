@@ -39,9 +39,9 @@ export interface ToolResultMetadata {
 	readonly affected_files?: string[];
 	readonly diff?: string;
 	readonly duration_ms?: number;
-	/** 终端命令退出码（terminal.exec 填充）。 */
+	/** 终端命令退出码（terminal_exec 填充）。 */
 	readonly exitCode?: number;
-	/** git commit 短 SHA（git.commit 填充）。 */
+	/** git commit 短 SHA（git_commit 填充）。 */
 	readonly sha?: string;
 	/** 结果是否可由 Agent 在调整策略后有限重试。缺省为 false。 */
 	readonly retryable?: boolean;
@@ -51,9 +51,9 @@ export interface ToolResultMetadata {
 	readonly redacted?: boolean;
 	/** 本地执行已开始但结果未确认，禁止自动重放。 */
 	readonly execution_state?: 'unknown';
-	/** code.edit 预览所依据的文件内容版本。 */
+	/** code_edit 预览所依据的文件内容版本。 */
 	readonly base_version?: string;
-	/** code.edit 成功写入后的文件内容版本。 */
+	/** code_edit 成功写入后的文件内容版本。 */
 	readonly applied_version?: string;
 }
 
@@ -121,6 +121,12 @@ export interface TokenUsage {
 	readonly total_tokens: number;
 	/** 思考 token 数（provider 提供时存在） */
 	readonly reasoning_tokens?: number;
+	/** 缓存命中读取 token（provider 提供 cache 明细时存在） */
+	readonly cache_read_tokens?: number;
+	/** 缓存写入 token（provider 提供 cache 明细时存在） */
+	readonly cache_write_tokens?: number;
+	/** 非缓存输入 token（provider 提供 cache 明细时存在） */
+	readonly no_cache_tokens?: number;
 }
 
 /** token 数字来源标记：真实 usage 或估算 */
@@ -161,4 +167,10 @@ export interface SessionTokenUsagePayload {
 	readonly breakdown: TokenBreakdown;
 	/** 本 run 新增 token 数（便于前端增量展示） */
 	readonly delta_tokens: number;
+	/** 会话累计非缓存输入 token（输入侧明细，不计入 total_tokens；无缓存数据时省略） */
+	readonly no_cache_tokens?: number;
+	/** 会话累计缓存读取 token（输入侧明细，不计入 total_tokens；无缓存数据时省略） */
+	readonly cache_read_tokens?: number;
+	/** 会话累计缓存写入 token（输入侧明细，不计入 total_tokens；无缓存数据时省略） */
+	readonly cache_write_tokens?: number;
 }

@@ -4,7 +4,7 @@
  * 持久化后端二选一：VSCode workspaceState（旧）或 SessionFileStore（~/.yunForce JSONL 文件，新）。
  * 对外公开 API 不变，AgentLoop / HistoryLoader 无需感知后端差异。
  */
-import type { Message, InputMessage, CompactionMessage } from './types';
+import type { Message, InputMessage, CompactionMessage, AssistantMessage } from './types';
 import { SessionFileStore, type SessionMeta } from './sessionFileStore';
 import * as logger from '../logger';
 
@@ -16,6 +16,16 @@ export interface WorkspaceState {
 
 const STATE_KEY = 'yunxiaoAgent.messages';
 const MAX_MESSAGES = 1000;
+
+/** 最新压缩检查点表示的有效会话上下文。 */
+export interface EffectiveHistory {
+	/** 最新检查点摘要；未压缩时为 null。 */
+	readonly summary: string | null;
+	/** 最新检查点携带的活跃任务上下文；无压缩点或旧检查点不含该字段时为 null。 */
+	readonly todoContext: string | null;
+	/** 应参与下一次请求或下一次压缩的原始消息。 */
+	readonly messages: Message[];
+}
 
 export class MessageStore {
 	private readonly store = new Map<string, Message[]>();
@@ -97,6 +107,25 @@ export class MessageStore {
 		return null;
 	}
 
+	/**
+	 * 从最新压缩检查点恢复有效历史，不改写 append-only 的物理消息记录。
+	 * @param sessionId 会话 ID。
+	 * @returns 当前生效的摘要和原始消息。
+	 */
+	getEffectiveHistory(sessionId: string): EffectiveHistory {
+		const checkpoint = this.getCompactionPoint(sessionId);
+		const allMessages = this.loadHistory(sessionId);
+		if (!checkpoint) {
+			return { summary: null, todoContext: null, messages: allMessages };
+		}
+		const messages = [
+			...checkpoint.recentContext,
+			...allMessages.filter((message) => message.seq > checkpoint.seq),
+		];
+		logger.log(`[MessageStore] 加载有效历史 sessionId=${sessionId} checkpointSeq=${checkpoint.seq} 消息数=${messages.length} todoContext=${checkpoint.todoContext ? '有' : '无'}`);
+		return { summary: checkpoint.summary, todoContext: checkpoint.todoContext ?? null, messages };
+	}
+
 	/** 清空 session 消息并持久化。 */
 	clear(sessionId: string): void {
 		this.ensureLoaded(sessionId);
@@ -125,6 +154,69 @@ export class MessageStore {
 		} else {
 			this.persist();
 		}
+	}
+
+	/**
+	 * 删除单条消息并按角色补删配对消息，保证发往模型的历史合法（tool 消息紧邻其 assistant.toolCalls）：
+	 * - 删非注入 user：级联删除该 turn 内全部后续消息（到下一个非注入 user 之前）
+	 * - 删带 toolCalls 的 assistant：级联删除其 toolCallId 匹配的 tool 消息
+	 * - 删 tool：单条删除，并同步从对应 assistant 的 toolCalls 移除该 id；若移除后 assistant 无 toolCalls 且正文为空则一并删除
+	 * @param sessionId 会话 ID
+	 * @param seq 要删除的消息序号
+	 */
+	deleteMessage(sessionId: string, seq: number): void {
+		this.ensureLoaded(sessionId);
+		const messages = this.store.get(sessionId);
+		if (!messages) {
+			return;
+		}
+		const idx = messages.findIndex((m) => m.seq === seq);
+		if (idx === -1) {
+			logger.log(`[MessageStore] 删除消息未找到 seq=${seq} sessionId=${sessionId}`);
+			return;
+		}
+		const target = messages[idx];
+		const removed = new Set<number>([seq]);
+		if (target.role === 'user' && !target.injected) {
+			// 级联删除该 turn：到下一个非注入 user 消息之前
+			for (let i = idx + 1; i < messages.length; i++) {
+				const m = messages[i];
+				if (m.role === 'user' && !m.injected) {
+					break;
+				}
+				removed.add(m.seq);
+			}
+		} else if (target.role === 'assistant' && target.toolCalls && target.toolCalls.length > 0) {
+			const ids = new Set(target.toolCalls.map((tc) => tc.id));
+			for (const m of messages) {
+				if (m.role === 'tool' && ids.has(m.toolCallId)) {
+					removed.add(m.seq);
+				}
+			}
+		} else if (target.role === 'tool') {
+			// 删除 tool 消息：同步清理对应 assistant 的孤立 toolCall，避免无应答 toolCalls 使历史不合法
+			const callId = target.toolCallId;
+			const assistantIdx = messages.findIndex(
+				(m) => m.role === 'assistant' && m.toolCalls?.some((tc) => tc.id === callId)
+			);
+			if (assistantIdx !== -1) {
+				const assistant = messages[assistantIdx] as AssistantMessage;
+				const remaining = (assistant.toolCalls ?? []).filter((tc) => tc.id !== callId);
+				if (remaining.length === 0 && !assistant.content.trim()) {
+					removed.add(assistant.seq);
+				} else {
+					Object.assign(messages[assistantIdx], { toolCalls: remaining });
+				}
+			}
+		}
+		const filtered = messages.filter((m) => !removed.has(m.seq));
+		this.store.set(sessionId, filtered);
+		if (this.fileStore) {
+			this.fileStore.rewriteSession(sessionId, filtered);
+		} else {
+			this.persist();
+		}
+		logger.log(`[MessageStore] 删除消息 sessionId=${sessionId} seq=${seq} 级联条数=${removed.size} 剩余=${filtered.length}`);
 	}
 
 	/** 按 seq 更新已有消息的字段（如回写 token 记账），并持久化。 */

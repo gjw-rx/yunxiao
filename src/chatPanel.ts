@@ -5,37 +5,112 @@ import type { ToolRegistry } from './core/toolRegistry';
 import type { EventBus, AgentEvent } from './core/eventBus';
 import type { LocalSessionManager } from './core/localSessionManager';
 import type { SkillRegistry } from './skill/skillRegistry';
+import type { ModelConfigStore, ModelSettingsInput } from './config/modelConfigStore';
+import type { ModelConfig } from './config/modelConfig';
+import type { SyncSource } from './config/syncConfig';
+import type { SkillInstallResult } from './skill/skillInstaller';
+import type { RuntimeStatus } from './webview-ui/protocol';
+import type { SessionTodoStore } from './memory/sessionTodoStore';
+import type { ChangeJournal } from './core/changeJournal';
+import type { McpConfigStore } from './mcp/configStore';
+import type { McpServerView } from './mcp/types';
+import type { McpSaveMode, McpOperation, HooksConfigView, RtkStatusView } from './webview-ui/protocol';
+import type { HooksConfigStore } from './hook/hooksConfigStore';
+import type { RtkTransformHook } from './hook/rtkAdapter';
+import { detectRtk, type RtkDetectionResult } from './hook/rtkDetector';
+import { summarizeTodos, type TodoStateUpdate } from './memory/todoTypes';
 import { buildSlashCommandGroups } from './chat/slashCommands';
 import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
+import { APPROVAL_MODE_CONFIG_KEY, isApprovalMode, type ApprovalMode } from './core/approvalGateway';
 import * as logger from './logger';
+
+/** 单个前后快照向 Webview 发送的最大字符数。 */
+const MAX_CHANGE_REVIEW_FILE_CHARS = 100_000;
+
+/**
+ * 截断过大的文件快照，避免独立变更页消息超过 Webview 可承载范围。
+ * @param text 原始快照文本。
+ * @returns 可安全发送到 Webview 的文本。
+ */
+function truncateChangeReviewText(text: string): string {
+  if (text.length <= MAX_CHANGE_REVIEW_FILE_CHARS) {
+    return text;
+  }
+  return `${text.slice(0, MAX_CHANGE_REVIEW_FILE_CHARS)}\n\n… 内容已截断，仅展示前 ${MAX_CHANGE_REVIEW_FILE_CHARS} 个字符。`;
+}
 
 interface ChatViewDeps {
   readonly sessionManager: LocalSessionManager;
   readonly registry: ToolRegistry;
   readonly eventBus: EventBus;
+  readonly todoStore?: SessionTodoStore;
+  /** 会话代码变更日志。 */
+  readonly changeJournal?: ChangeJournal;
 }
 
-function getNonce(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let result = '';
-  for (let i = 0; i < 32; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
+/** 设置面板依赖：模型存储、配置来源、Skill 安装与模型保存回调。 */
+interface SettingsPanelDeps {
+  /** 插件私有模型配置存储 */
+  readonly modelStore: ModelConfigStore;
+  /** 读取配置来源（none/claude/trae/agent） */
+  readonly getSyncSource: () => SyncSource;
+  /** 读取用户配置的 Skill 加载目录 */
+  readonly getSkillDirectories: () => string[];
+  /** 保存配置来源（保存后由扩展侧完成 Skill 重新同步后再返回） */
+  readonly setSyncSource: (source: SyncSource) => Promise<SyncSource>;
+  /** 保存 Skill 加载目录并完成重新加载 */
+  readonly setSkillDirectories: (directories: readonly string[]) => Promise<string[]>;
+  /** 当前生效的模型名称（对话/设置面板头部展示） */
+  readonly getModelName: () => string;
+  /** 选择并安装项目 Skill ZIP（完成后由扩展侧刷新注册表与斜杠菜单） */
+  readonly uploadSkillArchive: () => Promise<SkillInstallResult>;
+  /** 模型配置保存成功回调（扩展侧重建 provider 并更新 AgentLoop） */
+  readonly onModelConfigSaved?: (config: ModelConfig) => void;
+  /** MCP 私有配置存储；未装配时 MCP 写操作返回未就绪错误。 */
+  readonly mcpStore?: McpConfigStore;
+  /** 构建 MCP 设置快照（合并 Store 配置视图与 Manager 运行时状态）。 */
+  readonly getMcpSnapshot?: () => Promise<readonly McpServerView[]>;
+  /** MCP 配置持久化变更后通知运行时应用最新 revision（Manager 串行 applyConfig）。 */
+  readonly onMcpConfigChanged?: () => void | Promise<void>;
+  /** 请求重连指定 Server（Manager 重建 Connection，不改配置）。 */
+  readonly onMcpReconnect?: (serverId: string) => void | Promise<void>;
+  /** Hooks 配置 Store（未装配时 Hooks 写操作返回未就绪错误）。 */
+  readonly hooksConfigStore?: HooksConfigStore;
+  /** RTK 检测函数（默认 detectRtk；可注入供测试）。 */
+  readonly detectRtk?: (executablePath: string) => Promise<RtkDetectionResult>;
+  /** RTK Transform Hook（提供固定样例改写测试）。 */
+  readonly rtkTransformHook?: RtkTransformHook;
 }
 
 /** 待处理的审批请求：call_id -> resolve 回调 */
 type ApprovalResolver = (decision: 'allow' | 'always' | 'deny') => void;
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
-  private _view?: vscode.WebviewView;
+  private _chatView?: vscode.WebviewView; // 侧栏对话视图（用户隐藏后置空）
+  private _chatWebview?: vscode.Webview; // 当前侧栏对话 Webview
+  private _chatMessageDisposable?: vscode.Disposable; // 当前聊天 Webview 消息监听器
+  private _unsubscribeChatEvents?: () => void; // 当前聊天事件总线取消订阅函数
+  private _settingsPanel?: vscode.WebviewPanel; // 编辑区设置面板（单例，用户关闭后置空）
   private readonly _registry: ToolRegistry;
   private readonly _sessionManager: LocalSessionManager;
   private readonly _eventBus: EventBus;
+  private readonly _todoStore?: SessionTodoStore;
+  private readonly _changeJournal?: ChangeJournal;
+  /** 独立代码变更查看面板。 */
+  private _changeReviewPanel?: vscode.WebviewPanel;
+  /** 当前独立变更页所查看的会话与变更集。 */
+  private _changeReviewTarget?: { readonly sessionId: string; readonly changeSetId: string };
   private _currentSessionId?: string;
   private _createSessionRequest = 0;
   private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
   private _skillRegistry?: SkillRegistry;
+  private _settingsDeps?: SettingsPanelDeps;
+  /** 最近一次 RTK 检测状态缓存（设置页快照复用）。 */
+  private _rtkStatus?: RtkStatusView;
+  /** 当前扩展运行时状态；未就绪时拒绝聊天业务消息。 */
+  private _runtimeStatus: RuntimeStatus = 'initializing';
+  /** 运行时失败时可显示的简要错误信息。 */
+  private _runtimeMessage?: string;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -44,6 +119,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._registry = deps.registry;
     this._sessionManager = deps.sessionManager;
     this._eventBus = deps.eventBus;
+    this._todoStore = deps.todoStore;
+    this._changeJournal = deps.changeJournal;
   }
 
   /**
@@ -56,10 +133,88 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * 向 webview 推送最新的斜杠命令分组数据（webview 未就绪时忽略）。
+   * 注入设置面板依赖（模型存储、配置来源、Skill 安装与模型保存回调）。
+   *
+   * @param deps 设置面板依赖
    */
-  private _pushSlashCommands(view: vscode.WebviewView): void {
-    view.webview.postMessage({
+  setSettingsDeps(deps: SettingsPanelDeps): void {
+    this._settingsDeps = deps;
+  }
+
+  /**
+   * 更新扩展运行时状态并通知已打开的聊天 Webview。
+   *
+   * @param status 新的运行时状态
+   * @param message 初始化失败时展示的简要错误信息
+   * @returns void
+   */
+  setRuntimeStatus(status: RuntimeStatus, message?: string): void {
+    this._runtimeStatus = status;
+    this._runtimeMessage = message;
+    if (this._chatWebview) {
+      this._pushRuntimeState(this._chatWebview);
+    }
+    logger.log(`[ChatPanel] 运行时状态已更新 status=${status}${message ? ` message=${message}` : ''}`);
+  }
+
+  /**
+   * 向指定聊天 Webview 发送当前运行时状态。
+   *
+   * @param webview 接收状态的聊天 Webview
+   * @returns void
+   */
+  private _pushRuntimeState(webview: vscode.Webview): void {
+    webview.postMessage({
+      command: 'runtimeState',
+      status: this._runtimeStatus,
+      ...(this._runtimeMessage ? { message: this._runtimeMessage } : {}),
+    });
+  }
+
+  /**
+   * 获取当前工作区的有效审批模式，非法值按安全默认值处理。
+   * @returns 当前有效审批模式。
+   */
+  private _getApprovalMode(): ApprovalMode {
+    const mode = vscode.workspace.getConfiguration('yunxiaoAgent').get<unknown>(APPROVAL_MODE_CONFIG_KEY);
+    if (mode === undefined || isApprovalMode(mode)) {
+      return mode ?? 'request';
+    }
+    logger.error(`[ChatPanel] 审批模式配置无效，已回退 request value=${String(mode)}`);
+    return 'request';
+  }
+
+  /**
+   * 向聊天 Webview 推送当前工作区审批模式。
+   * @param webview 接收审批模式的聊天 Webview。
+   * @returns void。
+   */
+  private _pushApprovalMode(webview: vscode.Webview): void {
+    webview.postMessage({ command: 'approvalMode', mode: this._getApprovalMode() });
+  }
+
+  /**
+   * 保存当前工作区审批模式。
+   * @param mode 待保存的有效审批模式。
+   * @returns Promise<void>。
+   */
+  private async _setApprovalMode(mode: ApprovalMode): Promise<void> {
+    await vscode.workspace.getConfiguration('yunxiaoAgent').update(
+      APPROVAL_MODE_CONFIG_KEY,
+      mode,
+      vscode.ConfigurationTarget.Workspace,
+    );
+    logger.log(`[ChatPanel] 审批模式已保存 mode=${mode}`);
+  }
+
+  /**
+   * 向 webview 推送最新的斜杠命令分组数据（webview 未就绪时忽略）。
+   *
+   * @param webview 接收斜杠命令分组的聊天 Webview
+   * @returns void
+   */
+  private _pushSlashCommands(webview: vscode.Webview): void {
+    webview.postMessage({
       command: 'slashCommands',
       groups: buildSlashCommandGroups(this._skillRegistry),
     });
@@ -67,77 +222,193 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * 刷新斜杠命令数据：skill 注册/配置变更后由扩展侧调用，重新推送分组。
+   *
+   * @returns void
    */
   refreshSlashCommands(): void {
-    if (this._view) {
-      this._pushSlashCommands(this._view);
+    if (this._chatWebview && this._runtimeStatus === 'ready') {
+      this._pushSlashCommands(this._chatWebview);
     }
   }
 
+  /**
+   * 打开侧栏对话视图：聚焦扩展的 View Container，不创建编辑器标签。
+   *
+   * @returns void
+   */
+  show(): void {
+    logger.log('[ChatPanel] 请求打开侧栏对话视图');
+    void vscode.commands.executeCommand('workbench.view.extension.yunxiaoAgentContainer').then(
+      () => {
+        this._chatView?.show();
+        logger.log('[ChatPanel] 侧栏对话视图已聚焦');
+      },
+      (err) => logger.error(`[ChatPanel] 打开侧栏对话视图失败: ${err instanceof Error ? err.message : String(err)}`)
+    );
+  }
+
+  /**
+   * 解析侧栏 WebviewView 并完成聊天 Webview 初始化。
+   *
+   * @param webviewView VS Code 提供的侧栏视图
+   * @param _ctx 视图恢复上下文
+   * @param _token 解析取消令牌
+   * @returns void
+   */
   resolveWebviewView(
     webviewView: vscode.WebviewView,
     _ctx: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken
   ): void {
-    this._view = webviewView;
-
-    webviewView.webview.options = {
+    this._chatMessageDisposable?.dispose();
+    this._unsubscribeChatEvents?.();
+    const webview = webviewView.webview;
+    this._chatView = webviewView;
+    this._chatWebview = webview;
+    webview.options = {
       enableScripts: true,
       localResourceRoots: [
         vscode.Uri.file(path.join(this._context.extensionPath, 'dist')),
         vscode.Uri.file(path.join(this._context.extensionPath, 'media')),
       ],
     };
+    webview.html = this._getHtml(webview, 'chat');
 
-    webviewView.webview.html = this._getHtml(webviewView.webview);
-
-    webviewView.webview.onDidReceiveMessage(
+    const messageDisposable = webview.onDidReceiveMessage(
       async (msg: { command: string;[key: string]: unknown }) => {
         await this._handleMessage(msg);
+      }
+    );
+    this._chatMessageDisposable = messageDisposable;
+
+    // 订阅事件总线，将当前会话的事件转发给 webview；视图销毁时取消订阅，避免重复转发
+    const unsub = this._eventBus.onAll((e) => this._forwardEvent(e));
+    this._unsubscribeChatEvents = unsub;
+
+    // 视图销毁时清空引用、取消事件订阅，并将未决审批回退为 deny（避免 AgentLoop 挂起）
+    webviewView.onDidDispose(
+      () => {
+        messageDisposable.dispose();
+        unsub();
+        if (this._chatView !== webviewView) {
+          return;
+        }
+        logger.log('[ChatPanel] 侧栏对话视图已销毁');
+        this._chatView = undefined;
+        this._chatWebview = undefined;
+        this._chatMessageDisposable = undefined;
+        this._unsubscribeChatEvents = undefined;
+        for (const resolve of this._pendingApprovals.values()) {
+          resolve('deny');
+        }
+        this._pendingApprovals.clear();
+      }
+    );
+
+    logger.log(`[ChatPanel] 侧栏对话视图已解析 runtimeStatus=${this._runtimeStatus}`);
+  }
+
+  /**
+   * 将当前生效模型名称推送到已打开的对话面板。
+   *
+   * @returns void
+   */
+  refreshModelInfo(): void {
+    const modelName = this._settingsDeps?.getModelName() ?? '';
+    if (!this._chatWebview || !modelName) {
+      return;
+    }
+    this._chatWebview.postMessage({ command: 'modelInfo', model: modelName });
+    logger.log(`[ChatPanel] 已刷新对话模型信息 model=${modelName}`);
+  }
+
+  /**
+   * 打开设置面板：在编辑器区域创建（或聚焦）独立的单例 WebviewPanel。
+   */
+  private _showSettingsPanel(): void {
+    if (this._settingsPanel) {
+      this._settingsPanel.reveal(vscode.ViewColumn.Active);
+      return;
+    }
+    this._settingsPanel = this._createSettingsPanel();
+  }
+
+  /**
+   * 创建独立设置面板并加载设置入口的 Webview 应用。
+   * @returns 新创建的设置 WebviewPanel
+   */
+  private _createSettingsPanel(): vscode.WebviewPanel {
+    const panel = vscode.window.createWebviewPanel(
+      'yunxiaoAgent.settingsPanel',
+      '云效 Agent 设置',
+      vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [
+          vscode.Uri.file(path.join(this._context.extensionPath, 'dist')),
+          vscode.Uri.file(path.join(this._context.extensionPath, 'media')),
+        ],
+      }
+    );
+    panel.iconPath = vscode.Uri.file(path.join(this._context.extensionPath, 'media', 'icon.png'));
+    panel.webview.html = this._getHtml(panel.webview, 'settings');
+
+    // 设置面板消息路由：模型配置读取/保存、Skill 列表读取、来源切换与安装请求
+    panel.webview.onDidReceiveMessage(
+      async (msg: { command: string;[key: string]: unknown }) => {
+        await this._handleSettingsMessage(panel, msg);
       },
       undefined,
       this._context.subscriptions
     );
 
-    // 订阅事件总线，将当前会话的事件转发给 webview
-    const unsub = this._eventBus.onAll((e) => this._forwardEvent(e));
-    this._context.subscriptions.push({ dispose: unsub });
-
-    // 发送当前模型名称到 webview
-    const modelConfig = vscode.workspace.getConfiguration('yunxiaoAgent.model');
-    const modelName = modelConfig.get<string>('model', '');
-    if (modelName) {
-      webviewView.webview.postMessage({ command: 'modelInfo', model: modelName });
-    }
-
-    // 推送斜杠命令分组（webview 侧亦可主动 requestSlashCommands 拉取）
-    this._pushSlashCommands(webviewView);
+    panel.onDidDispose(
+      () => {
+        logger.log('[ChatPanel] 编辑区设置面板已关闭');
+        if (this._settingsPanel === panel) {
+          this._settingsPanel = undefined;
+        }
+      },
+      undefined,
+      this._context.subscriptions
+    );
+    logger.log('[ChatPanel] 编辑区设置面板已打开');
+    return panel;
   }
 
-  /** 将当前会话的事件总线事件转发给 webview。 */
+  /**
+   * 将当前会话的事件总线事件转发给聊天 Webview。
+   *
+   * @param e 待转发的 Agent 事件
+   * @returns void
+   */
   private _forwardEvent(e: AgentEvent): void {
-    const view = this._view;
-    if (!view || e.sessionId !== this._currentSessionId) {
+    const webview = this._chatWebview;
+    if (!webview || e.sessionId !== this._currentSessionId) {
       return;
     }
     switch (e.type) {
       case 'content':
-        view.webview.postMessage({ command: 'replyChunk', text: e.payload as string });
+        webview.postMessage({ command: 'replyChunk', text: e.payload as string });
         break;
       case 'step_end':
-        view.webview.postMessage({ command: 'stepEnd' });
+        webview.postMessage({ command: 'stepEnd' });
         break;
       case 'token_usage':
-        view.webview.postMessage({ command: 'tokenUsage', payload: e.payload });
+        webview.postMessage({ command: 'tokenUsage', payload: e.payload });
         break;
       case 'session_token_usage':
-        view.webview.postMessage({ command: 'sessionTokenUsage', payload: e.payload });
+        webview.postMessage({ command: 'sessionTokenUsage', payload: e.payload });
+        break;
+      case 'todo_state_change':
+        webview.postMessage({ command: 'todoState', ...(e.payload as TodoStateUpdate) });
         break;
       case 'stream_end':
-        view.webview.postMessage({ command: 'replyEnd' });
+        webview.postMessage({ command: 'replyEnd' });
         break;
       case 'error':
-        view.webview.postMessage({ command: 'error', message: e.payload as string });
+        webview.postMessage({ command: 'error', message: e.payload as string });
         break;
       case 'tool_state_change': {
         const p = e.payload as {
@@ -148,65 +419,63 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           args?: unknown;
           output?: unknown;
         };
-        view.webview.postMessage({ command: 'toolState', ...p });
-        // code.edit 成功且有 diff 数据时，额外发送 diffResult 命令
-        if (p.tool === 'code.edit' && p.state === 'success' && p.output) {
-          const out = p.output as Record<string, unknown>;
-          if (out.diff) {
-            view.webview.postMessage({
-              command: 'diffResult',
-              call_id: p.call_id,
-              file_path: out.file_path ?? out.path ?? '',
-              diff_html: out.diff_html ?? out.diff ?? '',
-              additions: out.additions ?? 0,
-              deletions: out.deletions ?? 0,
-            });
-          }
-        }
+        webview.postMessage({ command: 'toolState', ...p });
         break;
       }
       case 'tool_call': {
         const p = e.payload as { call_id: string; tool: string; args?: unknown };
-        view.webview.postMessage({ command: 'toolCall', ...p });
+        webview.postMessage({ command: 'toolCall', ...p });
         break;
       }
       case 'tool_result': {
         const p = e.payload as { call_id: string; status: string; result?: unknown; error?: string };
-        view.webview.postMessage({ command: 'toolResult', ...p });
+        webview.postMessage({ command: 'toolResult', ...p });
         break;
       }
       case 'thought':
-        view.webview.postMessage({ command: 'thought', text: e.payload as string });
+        webview.postMessage({ command: 'thought', text: e.payload as string });
         break;
       case 'progress': {
         const p = e.payload as { phase?: string };
-        view.webview.postMessage({ command: 'progress', phase: p.phase });
+        webview.postMessage({ command: 'progress', phase: p.phase });
         break;
       }
       case 'plan': {
         const p = e.payload as { steps: string[] };
-        view.webview.postMessage({ command: 'plan', steps: p.steps });
+        webview.postMessage({ command: 'plan', steps: p.steps });
         break;
       }
+      case 'turn_change_set':
+        webview.postMessage({ command: 'replyChangeSet', changeSet: e.payload });
+        break;
       default:
         break;
     }
   }
 
-  /** 从工具栏"新建会话"按钮触发 */
+  /**
+   * 从工具栏“新建会话”按钮触发前端创建会话。
+   *
+   * @returns void
+   */
   triggerNewSession(): void {
-    this._view?.webview.postMessage({ command: 'triggerNewSession' });
+    if (this._runtimeStatus !== 'ready') {
+      logger.log(`[ChatPanel] 运行时未就绪，忽略新建会话请求 status=${this._runtimeStatus}`);
+      return;
+    }
+    this._chatWebview?.postMessage({ command: 'triggerNewSession' });
   }
 
   /**
    * 从历史下拉打开会话（回放/继续对话共用）：切换当前会话并通知前端加载历史。
    * @param sessionId 会话 ID
    * @param title 会话标题（为空时前端保持当前输入框文案）
+   * @returns void
    */
   openSession(sessionId: string, title?: string): void {
     this._sessionManager.setCurrentSessionId(sessionId);
     this._currentSessionId = sessionId;
-    this._view?.webview.postMessage({ command: 'openSession', sessionId, title });
+    this._chatWebview?.postMessage({ command: 'openSession', sessionId, title });
   }
 
   /** 获取当前会话 ID */
@@ -222,6 +491,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * @param summary 操作摘要
    * @param filePath 关联的文件路径（可选）
    * @param sessionId 当前会话 ID
+   * @returns 用户审批结果
    */
   requestApproval(
     callId: string,
@@ -230,15 +500,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     filePath: string | undefined,
     sessionId: string
   ): Promise<'allow' | 'always' | 'deny'> {
-    const view = this._view;
+    const webview = this._chatWebview;
     return new Promise<'allow' | 'always' | 'deny'>((resolve) => {
-      if (!view || sessionId !== this._currentSessionId) {
+      if (!webview || !this._chatView?.visible || sessionId !== this._currentSessionId) {
         // 视图不可见或会话不匹配，回退为 deny（安全保守）
+        logger.log(`[ChatPanel] 审批视图不可用，自动拒绝 callId=${callId} sessionId=${sessionId}`);
         resolve('deny');
         return;
       }
       this._pendingApprovals.set(callId, resolve);
-      view.webview.postMessage({
+      webview.postMessage({
         command: 'approvalRequest',
         call_id: callId,
         tool_name: toolName,
@@ -248,13 +519,530 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  /**
+   * 组装设置页 Skill 快照：当前注册表 Skill 列表、配置来源与安装目标提示。
+   *
+   * @param deps 设置面板依赖（读取配置来源）
+   * @returns 设置页 Skill 列表 payload
+   */
+  private _buildSkillsPayload(deps: SettingsPanelDeps): {
+    skills: { name: string; description: string; sourcePath?: string }[];
+    source: SyncSource;
+    directories: string[];
+    installTarget?: string;
+  } {
+    const skills = (this._skillRegistry?.list() ?? []).map((s) => ({
+      name: s.name,
+      description: s.description,
+      sourcePath: s.sourcePath,
+    }));
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    const installTarget = folders.length > 0
+      ? `.claude/skills/<skill-name>/SKILL.md`
+      : undefined;
+    return { skills, source: deps.getSyncSource(), directories: deps.getSkillDirectories(), installTarget };
+  }
+
+  /**
+   * 处理设置面板消息：模型配置读取/保存、Skill 列表读取、来源切换与安装。
+   * 密钥永不回传；校验失败返回可显示的 settingsError。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息
+   */
+  private async _handleSettingsMessage(
+    panel: vscode.WebviewPanel,
+    msg: { command: string;[key: string]: unknown }
+  ): Promise<void> {
+    const deps = this._settingsDeps;
+    logger.log(`[ChatPanel] 收到设置面板消息: ${msg.command}`);
+    if (!deps) {
+      panel.webview.postMessage({ command: 'settingsError', message: '设置面板依赖未就绪' });
+      return;
+    }
+
+    switch (msg.command) {
+      case 'requestModelSettings': {
+        const view = await deps.modelStore.getSettingsView();
+        panel.webview.postMessage({ command: 'modelSettings', model: view });
+        break;
+      }
+      case 'saveModelSettings': {
+        try {
+          const config = await deps.modelStore.save(msg.model as ModelSettingsInput);
+          deps.onModelConfigSaved?.(config);
+          panel.webview.postMessage({
+            command: 'modelSettingsSaved',
+            model: await deps.modelStore.getSettingsView(),
+          });
+        } catch (err) {
+          panel.webview.postMessage({
+            command: 'settingsError',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+      case 'setDefaultModel': {
+        try {
+          deps.onModelConfigSaved?.(await deps.modelStore.setDefaultModel(msg.modelId as string));
+          panel.webview.postMessage({ command: 'modelSettingsSaved', model: await deps.modelStore.getSettingsView() });
+        } catch (err) {
+          panel.webview.postMessage({ command: 'settingsError', message: err instanceof Error ? err.message : String(err) });
+        }
+        break;
+      }
+      case 'setModelEnabled': {
+        try {
+          await deps.modelStore.setModelEnabled(msg.modelId as string, msg.enabled === true);
+          panel.webview.postMessage({ command: 'modelSettingsSaved', model: await deps.modelStore.getSettingsView() });
+        } catch (err) {
+          panel.webview.postMessage({ command: 'settingsError', message: err instanceof Error ? err.message : String(err) });
+        }
+        break;
+      }
+      case 'deleteModel': {
+        try {
+          await deps.modelStore.deleteModel(msg.modelId as string);
+          panel.webview.postMessage({ command: 'modelSettingsSaved', model: await deps.modelStore.getSettingsView() });
+        } catch (err) {
+          panel.webview.postMessage({ command: 'settingsError', message: err instanceof Error ? err.message : String(err) });
+        }
+        break;
+      }
+      case 'requestSkills': {
+        panel.webview.postMessage({ command: 'skillsList', ...this._buildSkillsPayload(deps) });
+        break;
+      }
+      case 'setSyncSource': {
+        try {
+          await deps.setSyncSource(msg.source as SyncSource);
+          // 扩展侧已完成 Skill 重新同步，推送最新快照
+          panel.webview.postMessage({ command: 'skillsList', ...this._buildSkillsPayload(deps) });
+        } catch (err) {
+          panel.webview.postMessage({
+            command: 'settingsError',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+      case 'setSkillDirectories': {
+        try {
+          const directories = Array.isArray(msg.directories)
+            ? msg.directories.filter((entry): entry is string => typeof entry === 'string')
+            : [];
+          await deps.setSkillDirectories(directories);
+          panel.webview.postMessage({ command: 'skillsList', ...this._buildSkillsPayload(deps) });
+        } catch (err) {
+          panel.webview.postMessage({
+            command: 'settingsError',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+      case 'uploadSkillArchive': {
+        const result = await deps.uploadSkillArchive();
+        if (result.ok) {
+          // 安装成功后扩展侧已重新同步并刷新斜杠菜单，推送最新快照
+          panel.webview.postMessage({ command: 'skillsList', ...this._buildSkillsPayload(deps) });
+        } else {
+          panel.webview.postMessage({ command: 'settingsError', message: result.reason });
+        }
+        break;
+      }
+      case 'requestMcpSettings': {
+        const servers = deps.getMcpSnapshot ? await deps.getMcpSnapshot() : [];
+        panel.webview.postMessage({ command: 'mcpSettings', servers });
+        break;
+      }
+      case 'saveMcpServersJson': {
+        await this._handleSaveMcpServersJson(panel, msg, deps);
+        break;
+      }
+      case 'setMcpServerEnabled': {
+        await this._handleSetMcpServerEnabled(panel, msg, deps);
+        break;
+      }
+      case 'reconnectMcpServer': {
+        await this._handleReconnectMcpServer(panel, msg, deps);
+        break;
+      }
+      case 'deleteMcpServer': {
+        await this._handleDeleteMcpServer(panel, msg, deps);
+        break;
+      }
+      case 'requestHooksSnapshot': {
+        await this._postHooksSnapshot(panel, deps);
+        break;
+      }
+      case 'saveHooksConfig': {
+        await this._handleSaveHooksConfig(panel, msg, deps);
+        break;
+      }
+      case 'detectRtk': {
+        await this._handleDetectRtk(panel, deps);
+        break;
+      }
+      case 'testRtkRewrite': {
+        await this._handleTestRtkRewrite(panel, deps);
+        break;
+      }
+    }
+  }
+
+  /**
+   * 发送 MCP 设置错误到设置面板（统一错误消息形状，携带可选字段路径）。
+   *
+   * @param panel 设置面板
+   * @param operation 触发错误的操作类别
+   * @param message 可读错误消息（不含秘密/堆栈）
+   * @param fieldPath 可选字段路径，定位到 `mcpServers.<id>.<field>`
+   */
+  private _postMcpError(
+    panel: vscode.WebviewPanel,
+    operation: McpOperation,
+    message: string,
+    fieldPath?: string,
+  ): void {
+    panel.webview.postMessage({ command: 'mcpSettingsError', operation, message, fieldPath });
+  }
+
+  /**
+   * 处理 MCP JSON 保存（add/edit）：Host 重新校验 mode 与 editingServerId，
+   * 调用 Store 事务保存；成功通知运行时应用并回推最新快照，失败返回带 fieldPath 的错误。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息（json/mode/editingServerId）
+   * @param deps 设置面板依赖
+   */
+  private async _handleSaveMcpServersJson(
+    panel: vscode.WebviewPanel,
+    msg: { command: string;[key: string]: unknown },
+    deps: SettingsPanelDeps,
+  ): Promise<void> {
+    const operation: McpOperation = 'save';
+    if (!deps.mcpStore) {
+      this._postMcpError(panel, operation, 'MCP 配置存储未就绪');
+      return;
+    }
+    const json = typeof msg.json === 'string' ? msg.json : '';
+    const mode: McpSaveMode = msg.mode === 'edit' ? 'edit' : 'add';
+    const editingServerId = typeof msg.editingServerId === 'string' ? msg.editingServerId : undefined;
+    if (mode === 'edit' && !editingServerId) {
+      this._postMcpError(panel, operation, '编辑模式缺少 editingServerId');
+      return;
+    }
+    const result = mode === 'edit'
+      ? await deps.mcpStore.saveEdit(editingServerId!, json)
+      : await deps.mcpStore.saveAddImport(json);
+    if (!result.ok) {
+      const first = result.errors[0];
+      this._postMcpError(panel, operation, first?.message ?? '保存失败', first?.fieldPath);
+      return;
+    }
+    logger.log(`[ChatPanel] MCP 配置已保存 mode=${mode} revision=${result.revision} servers=${Object.keys(result.servers).length}`);
+    await deps.onMcpConfigChanged?.();
+    const servers = deps.getMcpSnapshot ? await deps.getMcpSnapshot() : [];
+    panel.webview.postMessage({ command: 'mcpSettingsSaved', servers });
+  }
+
+  /**
+   * 处理 MCP Server 启停：校验 serverId，持久化 enabled，通知运行时并回推操作已接受。
+   * 最终连接状态以后续 mcpSettings 快照为准。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息（serverId/enabled）
+   * @param deps 设置面板依赖
+   */
+  private async _handleSetMcpServerEnabled(
+    panel: vscode.WebviewPanel,
+    msg: { command: string;[key: string]: unknown },
+    deps: SettingsPanelDeps,
+  ): Promise<void> {
+    const operation: McpOperation = 'setEnabled';
+    if (!deps.mcpStore) {
+      this._postMcpError(panel, operation, 'MCP 配置存储未就绪');
+      return;
+    }
+    const serverId = typeof msg.serverId === 'string' ? msg.serverId : '';
+    if (!serverId) {
+      this._postMcpError(panel, operation, '缺少 serverId');
+      return;
+    }
+    const enabled = msg.enabled === true;
+    const result = await deps.mcpStore.setEnabled(serverId, enabled);
+    if (!result.ok) {
+      this._postMcpError(panel, operation, result.error ?? '操作失败');
+      return;
+    }
+    logger.log(`[ChatPanel] MCP 启停已保存 serverId=${serverId} enabled=${enabled} revision=${result.revision}`);
+    await deps.onMcpConfigChanged?.();
+    panel.webview.postMessage({ command: 'mcpOperationAccepted', serverId, operation });
+  }
+
+  /**
+   * 处理 MCP Server 重连：校验 serverId，通知 Manager 重建连接，回推操作已接受。
+   * 重连不改配置，最终状态以后续 mcpSettings 快照为准。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息（serverId）
+   * @param deps 设置面板依赖
+   */
+  private async _handleReconnectMcpServer(
+    panel: vscode.WebviewPanel,
+    msg: { command: string;[key: string]: unknown },
+    deps: SettingsPanelDeps,
+  ): Promise<void> {
+    const operation: McpOperation = 'reconnect';
+    const serverId = typeof msg.serverId === 'string' ? msg.serverId : '';
+    if (!serverId) {
+      this._postMcpError(panel, operation, '缺少 serverId');
+      return;
+    }
+    logger.log(`[ChatPanel] MCP 重连请求已接受 serverId=${serverId}`);
+    await deps.onMcpReconnect?.(serverId);
+    panel.webview.postMessage({ command: 'mcpOperationAccepted', serverId, operation });
+  }
+
+  /**
+   * 处理 MCP Server 删除：校验 serverId，持久化删除并清理 Secrets，
+   * 通知运行时下线，回推不含已删除 Server 的最新快照。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息（serverId）
+   * @param deps 设置面板依赖
+   */
+  private async _handleDeleteMcpServer(
+    panel: vscode.WebviewPanel,
+    msg: { command: string;[key: string]: unknown },
+    deps: SettingsPanelDeps,
+  ): Promise<void> {
+    const operation: McpOperation = 'delete';
+    if (!deps.mcpStore) {
+      this._postMcpError(panel, operation, 'MCP 配置存储未就绪');
+      return;
+    }
+    const serverId = typeof msg.serverId === 'string' ? msg.serverId : '';
+    if (!serverId) {
+      this._postMcpError(panel, operation, '缺少 serverId');
+      return;
+    }
+    const result = await deps.mcpStore.delete(serverId);
+    if (!result.ok) {
+      this._postMcpError(panel, operation, result.error ?? '删除失败');
+      return;
+    }
+    logger.log(`[ChatPanel] MCP Server 已删除 serverId=${serverId}`);
+    await deps.onMcpConfigChanged?.();
+    const servers = deps.getMcpSnapshot ? await deps.getMcpSnapshot() : [];
+    panel.webview.postMessage({ command: 'mcpSettingsSaved', servers });
+  }
+
+  /**
+   * 主动向设置面板推送 MCP 状态快照（运行时状态/工具变化时调用）。
+   * 设置面板关闭或未打开、或未装配快照构建器时安全跳过，不抛错。
+   */
+  async pushMcpSnapshot(): Promise<void> {
+    const panel = this._settingsPanel;
+    const deps = this._settingsDeps;
+    if (!panel || !deps?.getMcpSnapshot) {
+      return;
+    }
+    const servers = await deps.getMcpSnapshot();
+    panel.webview.postMessage({ command: 'mcpSettings', servers });
+  }
+
+  /**
+   * 向设置面板推送 Hooks 快照（配置 + RTK 运行状态）。
+   *
+   * @param panel 设置面板
+   * @param deps 设置面板依赖
+   * @returns Promise<void>
+   */
+  private async _postHooksSnapshot(
+    panel: vscode.WebviewPanel,
+    deps: SettingsPanelDeps
+  ): Promise<void> {
+    const config = this._buildHooksConfigView(deps);
+    panel.webview.postMessage({ command: 'hooksSnapshot', config, rtk: this._rtkStatus });
+  }
+
+  /**
+   * 处理 Hooks 配置保存：运行时校验所有入站字段（enabled/rtkEnabled 必须为 boolean，
+   * rtkExecutablePath 必须为字符串或缺失），保存后清除过期 RTK 检测缓存并回推快照。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息（enabled/rtkEnabled/rtkExecutablePath）
+   * @param deps 设置面板依赖
+   * @returns Promise<void>
+   */
+  private async _handleSaveHooksConfig(
+    panel: vscode.WebviewPanel,
+    msg: { command: string;[key: string]: unknown },
+    deps: SettingsPanelDeps
+  ): Promise<void> {
+    if (!deps.hooksConfigStore) {
+      panel.webview.postMessage({ command: 'settingsError', message: 'Hooks 配置存储未就绪' });
+      return;
+    }
+    if (typeof msg.enabled !== 'boolean' || typeof msg.rtkEnabled !== 'boolean') {
+      panel.webview.postMessage({ command: 'settingsError', message: 'Hooks 配置字段非法' });
+      return;
+    }
+    const pathValue =
+      typeof msg.rtkExecutablePath === 'string' && msg.rtkExecutablePath.trim().length > 0
+        ? msg.rtkExecutablePath.trim()
+        : undefined;
+    await deps.hooksConfigStore.save({
+      enabled: msg.enabled,
+      rtk: {
+        enabled: msg.rtkEnabled,
+        ...(pathValue ? { executablePath: pathValue } : {}),
+      },
+    });
+    logger.log(`[ChatPanel] Hooks 配置已保存 enabled=${msg.enabled} rtkEnabled=${msg.rtkEnabled} rtkPath=${pathValue ? '已配置' : '未配置'}`);
+    // 路径变更后旧检测结果失效
+    this._rtkStatus = undefined;
+    await this._postHooksSnapshot(panel, deps);
+  }
+
+  /**
+   * 处理 RTK 重新检测：读取当前配置路径并调用检测函数，缓存有界状态后回推快照。
+   *
+   * @param panel 设置面板
+   * @param deps 设置面板依赖
+   * @returns Promise<void>
+   */
+  private async _handleDetectRtk(
+    panel: vscode.WebviewPanel,
+    deps: SettingsPanelDeps
+  ): Promise<void> {
+    const path = deps.hooksConfigStore?.get().rtk.executablePath;
+    if (!path) {
+      panel.webview.postMessage({ command: 'settingsError', message: '请先配置 RTK 可执行文件路径' });
+      return;
+    }
+    logger.log(`[ChatPanel] 开始检测 RTK path=${path}`);
+    const result = await (deps.detectRtk ?? detectRtk)(path);
+    this._rtkStatus = {
+      available: result.available,
+      version: result.version,
+      error: result.error,
+      lastDetectedAt: Date.now(),
+    };
+    logger.log(`[ChatPanel] RTK 检测完成 available=${result.available} version=${result.version ?? 'unknown'} error=${result.error ?? '无'}`);
+    await this._postHooksSnapshot(panel, deps);
+  }
+
+  /**
+   * 处理固定样例改写测试：调用 RTK Transform Hook 的 testRewrite（仅请求改写 git status，
+   * 不执行实际 Git 命令），回推测试结果消息。
+   *
+   * @param panel 设置面板
+   * @param deps 设置面板依赖
+   * @returns Promise<void>
+   */
+  private async _handleTestRtkRewrite(
+    panel: vscode.WebviewPanel,
+    deps: SettingsPanelDeps
+  ): Promise<void> {
+    if (!deps.rtkTransformHook) {
+      panel.webview.postMessage({ command: 'settingsError', message: 'RTK Hook 未就绪' });
+      return;
+    }
+    const result = await deps.rtkTransformHook.testRewrite();
+    logger.log(`[ChatPanel] RTK 样例测试完成 sample=${result.sample} rewritten=${result.rewritten ?? '无'} error=${result.error ?? '无'}`);
+    panel.webview.postMessage({
+      command: 'hooksTestResult',
+      sample: result.sample,
+      ...(result.rewritten ? { rewritten: result.rewritten } : {}),
+      ...(result.error ? { error: result.error } : {}),
+    });
+  }
+
+  /**
+   * 从配置 Store 构造设置页非敏感 Hooks 配置视图。
+   *
+   * @param deps 设置面板依赖
+   * @returns Hooks 配置视图（未装配 Store 时返回安全默认值）
+   */
+  private _buildHooksConfigView(deps: SettingsPanelDeps): HooksConfigView {
+    const config = deps.hooksConfigStore?.get();
+    const view: HooksConfigView = {
+      enabled: config?.enabled ?? true,
+      rtkEnabled: config?.rtk.enabled ?? false,
+      ...(config?.rtk.executablePath ? { rtkExecutablePath: config.rtk.executablePath } : {}),
+    };
+    return view;
+  }
+
+  /**
+   * 处理聊天 Webview 消息并调用对应的会话、文件或设置能力。
+   *
+   * @param msg Webview 发送的协议消息
+   * @returns Promise<void>
+   */
   private async _handleMessage(msg: { command: string;[key: string]: unknown }): Promise<void> {
-    const view = this._view;
-    if (!view) { return; }
+    const webview = this._chatWebview;
+    if (!webview) { return; }
 
     logger.log(`[ChatPanel] 收到 webview 消息: ${msg.command}`);
 
+    const guardedCommands = new Set([
+      'createSession',
+      'sendMessage',
+      'stopStream',
+      'loadHistory',
+      'requestSlashCommands',
+      'requestWorkspaceFiles',
+      'renameSession',
+      'requestSessions',
+      'openSession',
+      'deleteSession',
+      'deleteMessage',
+      'rollbackTurn',
+    ]);
+    if (this._runtimeStatus !== 'ready' && guardedCommands.has(msg.command)) {
+      logger.log(`[ChatPanel] 运行时未就绪，忽略业务消息 command=${msg.command} status=${this._runtimeStatus}`);
+      return;
+    }
+
     switch (msg.command) {
+      case 'webviewReady': {
+        // 握手：UI 挂载完成后先同步当前运行时状态，避免未就绪时触发聊天业务。
+        this._pushRuntimeState(webview);
+        this._pushApprovalMode(webview);
+        if (this._runtimeStatus !== 'ready') {
+          break;
+        }
+        const modelName = this._settingsDeps?.getModelName() ?? '';
+        if (modelName) {
+          webview.postMessage({ command: 'modelInfo', model: modelName });
+        }
+        break;
+      }
+      case 'setApprovalMode': {
+        const mode = msg.mode;
+        if (!isApprovalMode(mode)) {
+          logger.error(`[ChatPanel] 拒绝无效审批模式请求 mode=${String(mode)}`);
+          this._pushApprovalMode(webview);
+          break;
+        }
+        try {
+          await this._setApprovalMode(mode);
+          this._pushApprovalMode(webview);
+        } catch (error) {
+          logger.error(`[ChatPanel] 保存审批模式失败 mode=${mode} error=${error instanceof Error ? error.message : String(error)}`);
+          this._pushApprovalMode(webview);
+        }
+        break;
+      }
+      case 'openSettings': {
+        this._showSettingsPanel();
+        break;
+      }
       case 'createSession': {
         const requestId = ++this._createSessionRequest;
         // 新建会话保留旧会话数据（历史永存），仅切换当前指针
@@ -263,7 +1051,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         this._currentSessionId = sessionId;
-        view.webview.postMessage({ command: 'sessionCreated', sessionId });
+        webview.postMessage({ command: 'sessionCreated', sessionId });
         break;
       }
       case 'sendMessage': {
@@ -275,6 +1063,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const skills = Array.isArray(msg.skills)
           ? (msg.skills as string[])
           : [];
+        if (userText.trim() === '/compact' && files.length === 0 && skills.length === 0) {
+          try {
+            const result = await this._sessionManager.compactContext(sessionId);
+            const message = result.status === 'compacted'
+              ? '上下文压缩完成'
+              : result.status === 'skipped'
+                ? '当前没有可压缩的上下文'
+                : `上下文压缩失败：${result.error ?? '未知错误'}`;
+            logger.log(`[ChatPanel] /compact 完成 sessionId=${sessionId} status=${result.status}`);
+            void vscode.window.showInformationMessage(message);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.error(`[ChatPanel] /compact 失败 sessionId=${sessionId} error=${message}`);
+            void vscode.window.showWarningMessage(message);
+          }
+          break;
+        }
         let text = userText;
         // 已选 Skill 引用块转成斜杠命令文本（如 /plan），前置到用户消息
         if (skills.length > 0) {
@@ -295,9 +1100,102 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._sessionManager.cancel(sessionId);
         break;
       }
+      case 'compactContext': {
+        try {
+          const result = await this._sessionManager.compactContext(msg.sessionId as string);
+          const message = result.status === 'compacted'
+            ? '上下文压缩完成'
+            : result.status === 'skipped'
+              ? '当前没有可压缩的上下文'
+              : `上下文压缩失败：${result.error ?? '未知错误'}`;
+          logger.log(`[ChatPanel] 手动压缩完成 sessionId=${msg.sessionId} status=${result.status}`);
+          void vscode.window.showInformationMessage(message);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error(`[ChatPanel] 手动压缩失败 sessionId=${msg.sessionId} error=${message}`);
+          void vscode.window.showWarningMessage(message);
+        }
+        break;
+      }
+      case 'switchModel': {
+        // /model 命令：QuickPick 选择已启用模型并切换当前默认模型（复用设置页「设为默认」链路：持久化 + 重建 Provider）
+        const deps = this._settingsDeps;
+        if (!deps) {
+          break;
+        }
+        try {
+          const view = await deps.modelStore.getSettingsView();
+          const enabled = (view.models ?? []).filter((m) => m.enabled);
+          if (enabled.length === 0) {
+            const choice = await vscode.window.showInformationMessage('尚未配置可用的模型，请先到设置页配置模型', '打开设置');
+            if (choice === '打开设置') {
+              this._showSettingsPanel();
+            }
+            break;
+          }
+          const picked = await vscode.window.showQuickPick(
+            enabled.map((m) => ({
+              label: m.model,
+              description: m.provider,
+              detail: m.isDefault ? '当前默认模型' : m.apiKeyConfigured ? '已配置 API Key' : '未配置 API Key',
+              modelId: m.id,
+            })),
+            { placeHolder: '选择要切换的模型' }
+          );
+          if (!picked) {
+            break; // 用户取消选择
+          }
+          const config = await deps.modelStore.setDefaultModel(picked.modelId);
+          deps.onModelConfigSaved?.(config);
+          logger.log(`[ChatPanel] /model 已切换默认模型 id=${picked.modelId} model=${picked.label}`);
+        } catch (err) {
+          logger.error(`[ChatPanel] /model 切换模型失败: ${err instanceof Error ? err.message : String(err)}`);
+          vscode.window.showErrorMessage(`切换模型失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+      case 'requestModelPicker': {
+        const deps = this._settingsDeps;
+        if (!deps) {
+          break;
+        }
+        try {
+          const view = await deps.modelStore.getSettingsView();
+          const models = (view.models ?? [])
+            .filter((model) => model.enabled)
+            .map((model) => ({ id: model.id, model: model.model, provider: model.provider, isDefault: model.isDefault }));
+          webview.postMessage({ command: 'modelPicker', models });
+          logger.log(`[ChatPanel] 已返回模型弹窗候选项 count=${models.length}`);
+        } catch (err) {
+          logger.error(`[ChatPanel] 获取模型弹窗候选项失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+      case 'selectModel': {
+        const deps = this._settingsDeps;
+        const modelId = typeof msg.modelId === 'string' ? msg.modelId : '';
+        if (!deps || !modelId) {
+          logger.error(`[ChatPanel] 拒绝无效模型切换请求 modelId=${modelId || '空'}`);
+          break;
+        }
+        try {
+          const view = await deps.modelStore.getSettingsView();
+          const selected = (view.models ?? []).find((model) => model.id === modelId && model.enabled);
+          if (!selected) {
+            throw new Error('未找到可用的目标模型');
+          }
+          const config = await deps.modelStore.setDefaultModel(modelId);
+          deps.onModelConfigSaved?.(config);
+          logger.log(`[ChatPanel] 模型弹窗已切换默认模型 id=${modelId} model=${selected.model}`);
+        } catch (err) {
+          logger.error(`[ChatPanel] 模型弹窗切换失败: ${err instanceof Error ? err.message : String(err)}`);
+          vscode.window.showErrorMessage(`切换模型失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
       case 'loadHistory': {
-        const history = this._sessionManager.loadHistory(msg.sessionId as string);
-        view.webview.postMessage({ command: 'historyLoaded', messages: history });
+        const sessionId = msg.sessionId as string;
+        this._pushHistory(webview, sessionId);
         break;
       }
       case 'approvalDecision': {
@@ -312,10 +1210,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
-      case 'openDiff': {
-        const filePath = msg.file_path as string;
-        if (filePath) {
-          vscode.commands.executeCommand('vscode.open', vscode.Uri.file(filePath));
+      case 'openChangeReview': {
+        const sessionId = msg.sessionId as string;
+        const changeSetId = msg.changeSetId as string;
+        if (sessionId && changeSetId) {
+          this._openChangeReview(sessionId, changeSetId);
         }
         break;
       }
@@ -332,12 +1231,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'requestSlashCommands': {
         // webview 主动拉取斜杠命令分组（应对 webview 重建后的数据丢失）
-        this._pushSlashCommands(view);
+        this._pushSlashCommands(webview);
         break;
       }
-      case 'requestWorkspaceFiles': {        const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+      case 'requestWorkspaceFiles': {
+        const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
         if (workspaceFolders.length === 0) {
-          view.webview.postMessage({ command: 'workspaceFiles', files: [] });
+          webview.postMessage({ command: 'workspaceFiles', files: [] });
           break;
         }
         const uris = await vscode.workspace.findFiles(
@@ -357,7 +1257,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return { path: displayPath, name: path.basename(uri.fsPath) };
           })
           .sort((a, b) => a.path.localeCompare(b.path));
-        view.webview.postMessage({ command: 'workspaceFiles', files });
+        webview.postMessage({ command: 'workspaceFiles', files });
         break;
       }
       case 'renameSession': {
@@ -373,7 +1273,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // 前端打开历史下拉时请求最新会话列表
         const sessions = this._sessionManager.listSessions();
         logger.log(`[ChatPanel] 返回会话列表 count=${sessions.length}`);
-        view.webview.postMessage({ command: 'sessionList', sessions });
+        webview.postMessage({ command: 'sessionList', sessions });
         break;
       }
       case 'openSession': {
@@ -401,12 +1301,67 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this._sessionManager.deleteSession(sessionId);
           if (this._currentSessionId === sessionId) {
             this._currentSessionId = undefined;
+            // 显式通知前端当前会话已被删除（空会话可能不在会话列表中，
+            // 前端不能再靠「列表缺当前会话」推断删除，否则会误禁用输入框）
+            webview.postMessage({ command: 'currentSessionDeleted' });
           }
         }
         // 无论是否删除都回推最新列表，前端据此判断当前会话是否已被删除
-        view.webview.postMessage({ command: 'sessionList', sessions: this._sessionManager.listSessions() });
+        webview.postMessage({ command: 'sessionList', sessions: this._sessionManager.listSessions() });
         break;
       }
+      case 'deleteMessage': {
+        // 删除单条消息（含配对补删），处理后回推最新历史刷新前端
+        const sessionId = msg.sessionId as string;
+        const seq = msg.seq as number;
+        if (!sessionId || typeof seq !== 'number') {
+          break;
+        }
+        logger.log(`[ChatPanel] 删除消息 sessionId=${sessionId} seq=${seq}`);
+        this._sessionManager.deleteMessage(sessionId, seq);
+        this._pushHistory(webview, sessionId);
+        break;
+      }
+      case 'rollbackTurn': {
+        // 回滚用户输入 turn：确认后恢复文件 + 截断消息，回推最新历史并回填输入框
+        const sessionId = msg.sessionId as string;
+        const seq = msg.seq as number;
+        if (!sessionId || typeof seq !== 'number') {
+          break;
+        }
+        const confirm = await vscode.window.showWarningMessage(
+          '回滚将删除该消息及其后全部对话并复原相关文件改动，该操作不可恢复。确定继续？',
+          { modal: true },
+          '回滚'
+        );
+        if (confirm === '回滚') {
+          try {
+            const text = await this._sessionManager.rollbackTurn(sessionId, seq);
+            webview.postMessage({ command: 'rollbackRestored', text });
+          } catch (err) {
+            logger.error(`[ChatPanel] 回滚失败 sessionId=${sessionId} seq=${seq} error=${err instanceof Error ? err.message : String(err)}`);
+            vscode.window.showErrorMessage(`回滚失败：${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        // 无论是否确认都回推最新历史，前端据此刷新（取消时内容不变）
+        this._pushHistory(webview, sessionId);
+        break;
+      }
+    }
+  }
+
+  /**
+   * 回推会话最新历史与任务快照（删除消息 / 回滚 / 加载历史后刷新前端）。
+   * @param webview 聊天面板 webview
+   * @param sessionId 会话 ID
+   * @returns 无返回值
+   */
+  private _pushHistory(webview: vscode.Webview, sessionId: string): void {
+    const history = this._sessionManager.loadHistory(sessionId);
+    webview.postMessage({ command: 'historyLoaded', messages: history });
+    if (this._todoStore) {
+      const snapshot = this._todoStore.read(sessionId);
+      webview.postMessage({ command: 'todoState', snapshot, summary: summarizeTodos(snapshot) });
     }
   }
 
@@ -474,10 +1429,99 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private _getHtml(webview: vscode.Webview): string {
-    const nonce = getNonce();
-    const markedUri = webview.asWebviewUri(
-      vscode.Uri.file(path.join(this._context.extensionPath, 'dist', 'webview', 'marked.js'))
+  /**
+   * 生成最小 Webview HTML shell：仅包含根挂载节点、外部样式链接与外部模块脚本。
+   * 资源 URL 由 `webview.asWebviewUri()` 生成并受 `localResourceRoots` 约束；
+   * 界面样式、DOM 与交互全部由 `dist/webview-ui/` 的 React bundle 承担。
+   *
+   * @param webview 目标 Webview（用于生成可加载的资源 URI）
+   * @returns Webview HTML 字符串
+   */
+  /**
+   * 打开或复用独立的代码变更查看面板。
+   * @param sessionId 来源会话 ID。
+   * @param changeSetId 要查看的变更集 ID。
+   * @returns void。
+   */
+  private _openChangeReview(sessionId: string, changeSetId: string): void {
+    this._changeReviewTarget = { sessionId, changeSetId };
+    if (this._changeReviewPanel) {
+      this._changeReviewPanel.reveal(vscode.ViewColumn.Active);
+      void this._pushChangeReviewSummary(this._changeReviewPanel.webview);
+      return;
+    }
+    const panel = vscode.window.createWebviewPanel(
+      'yunxiaoAgent.changeReviewPanel',
+      '代码变更',
+      vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [
+          vscode.Uri.file(path.join(this._context.extensionPath, 'dist')),
+          vscode.Uri.file(path.join(this._context.extensionPath, 'media')),
+        ],
+      },
+    );
+    panel.iconPath = vscode.Uri.file(path.join(this._context.extensionPath, 'media', 'icon.png'));
+    panel.webview.html = this._getHtml(panel.webview, 'change-review');
+    panel.webview.onDidReceiveMessage(async (msg: { command: string; fileId?: string }) => {
+      if (msg.command === 'requestChangeReview') {
+        await this._pushChangeReviewSummary(panel.webview);
+      } else if (msg.command === 'requestChangeReviewFile' && msg.fileId) {
+        await this._pushChangeReviewFile(panel.webview, msg.fileId);
+      }
+    }, undefined, this._context.subscriptions);
+    panel.onDidDispose(() => {
+      if (this._changeReviewPanel === panel) {
+        this._changeReviewPanel = undefined;
+      }
+      logger.log('[ChatPanel] 代码变更面板已关闭');
+    }, undefined, this._context.subscriptions);
+    this._changeReviewPanel = panel;
+    logger.log(`[ChatPanel] 打开代码变更面板 sessionId=${sessionId} changeSetId=${changeSetId}`);
+  }
+
+  /**
+   * 向独立代码变更面板发送当前目标的文件概览。
+   * @param webview 接收消息的 Webview。
+   * @returns 完成 Promise。
+   */
+  private async _pushChangeReviewSummary(webview: vscode.Webview): Promise<void> {
+    const target = this._changeReviewTarget;
+    const summary = target && this._changeJournal
+      ? await this._changeJournal.getSummary(target.sessionId, target.changeSetId)
+      : undefined;
+    webview.postMessage({ command: 'changeReviewSummary', summary });
+  }
+
+  /**
+   * 向独立代码变更面板发送一个文件的前后快照。
+   * @param webview 接收消息的 Webview。
+   * @param fileId 文件稳定标识。
+   * @returns 完成 Promise。
+   */
+  private async _pushChangeReviewFile(webview: vscode.Webview, fileId: string): Promise<void> {
+    const target = this._changeReviewTarget;
+    const file = target && this._changeJournal
+      ? await this._changeJournal.getFileDetail(target.sessionId, target.changeSetId, fileId)
+      : undefined;
+    webview.postMessage({
+      command: 'changeReviewFile',
+      file: file ? {
+        ...file,
+        before: truncateChangeReviewText(file.before),
+        after: truncateChangeReviewText(file.after),
+      } : undefined,
+    });
+  }
+
+  private _getHtml(webview: vscode.Webview, page: 'chat' | 'settings' | 'change-review' = 'chat'): string {
+    const scriptUri = webview.asWebviewUri(
+      vscode.Uri.file(path.join(this._context.extensionPath, 'dist', 'webview-ui', 'index.js'))
+    );
+    const styleUri = webview.asWebviewUri(
+      vscode.Uri.file(path.join(this._context.extensionPath, 'dist', 'webview-ui', 'index.css'))
     );
 
     return `<!DOCTYPE html>
@@ -485,2748 +1529,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' ${webview.cspSource}; style-src 'unsafe-inline' ${webview.cspSource};">
-  <title>云效 Agent</title>
-  <style>
-${this._getCss()}
-  </style>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource}; img-src ${webview.cspSource} data:; font-src ${webview.cspSource};">
+    <title>${page === 'settings' ? '云效 Agent 设置' : page === 'change-review' ? '代码变更' : '云效 Agent'}</title>
+  <link rel="stylesheet" href="${styleUri}">
 </head>
-<body>
-${this._getBodyHtml()}
-  <script nonce="${nonce}" src="${markedUri}"></script>
-  <script nonce="${nonce}">
-${this._getJs()}
-  </script>
+<body data-view="${page}">
+  <div id="root"></div>
+  <script type="module" src="${scriptUri}"></script>
 </body>
 </html>`;
-  }
-
-  private _getCss(): string {
-    return `
-    /* ── Design tokens ── */
-    :root {
-      --bg: #f7f8fa;
-      --fg: #20252d;
-      --input-bg: #ffffff;
-      --input-fg: #20252d;
-      --input-border: #e4e7ec;
-      --input-placeholder: #9aa1ad;
-      --btn-bg: #176b5e;
-      --btn-fg: #ffffff;
-      --btn-hover: #12584d;
-      --btn-secondary-bg: #ffffff;
-      --btn-secondary-fg: #20252d;
-      --font: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
-      --font-size: var(--vscode-font-size, 13px);
-      --mono: var(--vscode-editor-font-family, 'SF Mono', Monaco, Menlo, Consolas, monospace);
-      --border: #e4e7ec;
-      --border-light: #eef0f3;
-      --radius: 6px;
-      --radius-lg: 8px;
-      --accent: #176b5e;
-      /* 时间线轨道与步骤节点 */
-      --rail: color-mix(in srgb, var(--fg) 16%, transparent);
-      --rail-active: var(--accent);
-      --step-bg: color-mix(in srgb, var(--fg) 4%, transparent);
-      --step-bg-hover: color-mix(in srgb, var(--fg) 8%, transparent);
-      --label-tracking: 0.08em;
-      --success: var(--vscode-testing-iconPassed, #3fb950);
-      --error: var(--vscode-errorForeground, #f85149);
-      --warning: var(--vscode-editorWarning-foreground, #d29922);
-      --muted: #7b8491;
-      --hover-bg: #f1f5f4;
-      --focus: #4ba998;
-      --code-bg: #f3f5f7;
-      --diff-add-bg: var(--vscode-diffEditor-insertedTextBackground, rgba(46,160,67,0.15));
-      --diff-del-bg: var(--vscode-diffEditor-removedTextBackground, rgba(248,81,73,0.15));
-      --diff-add-line: var(--vscode-diffEditor-insertedLineBackground, rgba(46,160,67,0.1));
-      --diff-del-line: var(--vscode-diffEditor-removedLineBackground, rgba(248,81,73,0.1));
-    }
-
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    html, body {
-      height: 100%;
-      width: 100%;
-      overflow: hidden;
-    }
-
-    body {
-      font-family: var(--font);
-      font-size: var(--font-size);
-      color: var(--fg);
-      background: var(--bg);
-      display: flex;
-      flex-direction: column;
-      line-height: 1.5;
-    }
-
-    /* ── Scrollbar ── */
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb {
-      background: rgba(128,128,128,0.25);
-      border-radius: 3px;
-    }
-    ::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,0.4); }
-
-    /* ── Header ── */
-    #header {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 8px 10px;
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-      position: relative;
-    }
-
-    /* ── Session name input ── */
-    .session-name-input {
-      flex: 1;
-      min-width: 0;
-      background: transparent;
-      color: var(--fg);
-      border: 1px solid transparent;
-      border-radius: var(--radius);
-      padding: 4px 8px;
-      font-family: var(--font);
-      font-size: 13px;
-      font-weight: 500;
-      outline: none;
-      transition: border-color 0.15s, background 0.15s;
-    }
-    .session-name-input:hover { border-color: var(--border-light); }
-    .session-name-input:focus {
-      border-color: var(--focus);
-      background: var(--input-bg);
-    }
-
-    /* ── Model info display ── */
-    .model-info {
-      flex: 1;
-      min-width: 0;
-      padding: 4px 8px;
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    /* ── Buttons ── */
-    .btn {
-      background: var(--btn-bg);
-      color: var(--btn-fg);
-      border: none;
-      padding: 5px 10px;
-      border-radius: var(--radius);
-      cursor: pointer;
-      font-family: var(--font);
-      font-size: 12px;
-      font-weight: 500;
-      white-space: nowrap;
-      transition: background 0.12s, opacity 0.12s;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 4px;
-    }
-    .btn:hover:not(:disabled) { background: var(--btn-hover); }
-    .btn:active:not(:disabled) { transform: scale(0.97); }
-    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-    .btn-icon {
-      padding: 5px;
-      background: transparent;
-      color: var(--fg);
-      border-radius: var(--radius);
-    }
-    .btn-icon:hover:not(:disabled) { background: var(--hover-bg); }
-
-    .btn-stop {
-      padding: 4px 8px;
-      background: var(--vscode-inputValidation-errorBackground, #c72e2e);
-      color: #fff;
-    }
-    .btn-stop:hover:not(:disabled) { opacity: 0.85; }
-
-    /* ── Spinner ── */
-    .spinner {
-      width: 11px;
-      height: 11px;
-      border: 1.5px solid transparent;
-      border-top-color: currentColor;
-      border-right-color: currentColor;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ── Messages area ── */
-    #messages {
-      flex: 1;
-      overflow-y: auto;
-      padding: 14px 12px 8px;
-      display: flex;
-      flex-direction: column;
-      scroll-behavior: smooth;
-    }
-
-    .placeholder {
-      text-align: center;
-      color: var(--muted);
-      margin: auto;
-      font-size: 12px;
-      line-height: 1.7;
-      padding: 30px 14px;
-      animation: rise 0.35s ease both;
-    }
-    .placeholder svg { opacity: 0.28; margin-bottom: 12px; }
-    .placeholder-title {
-      font-size: 13px;
-      font-weight: 600;
-      letter-spacing: 0.02em;
-      margin-bottom: 5px;
-      color: var(--fg);
-      opacity: 0.75;
-    }
-
-    .msg-row {
-      display: flex;
-      flex-direction: column;
-      max-width: 100%;
-      margin-bottom: 18px;
-      animation: rise 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
-    }
-    @keyframes rise {
-      from { opacity: 0; transform: translateY(4px); }
-      to   { opacity: 1; transform: none; }
-    }
-
-    .msg-label {
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: var(--label-tracking);
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 6px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .message {
-      line-height: 1.65;
-      font-size: 13px;
-      word-break: break-word;
-    }
-
-    /* 用户消息：靠右，内敛的实心块 */
-    .msg-row.user-row { align-items: flex-end; }
-    .message.user {
-      background: var(--step-bg);
-      border: 1px solid var(--border);
-      color: var(--fg);
-      padding: 8px 12px;
-      border-radius: 10px 10px 3px 10px;
-      white-space: pre-wrap;
-      max-width: 90%;
-    }
-
-    /* 助手最终回复：全宽正文，不用气泡 */
-    .message.assistant {
-      max-width: 100%;
-      padding-left: 1px;
-    }
-
-    /* Markdown styling */
-    .message.assistant p { margin: 0 0 8px; }
-    .message.assistant p:last-child { margin-bottom: 0; }
-    .message.assistant pre {
-      background: var(--code-bg);
-      padding: 10px 12px;
-      border-radius: 6px;
-      overflow-x: auto;
-      margin: 6px 0;
-      font-family: var(--mono);
-      font-size: 12px;
-      line-height: 1.5;
-      border: 1px solid var(--border-light);
-    }
-    .message.assistant code {
-      font-family: var(--mono);
-      font-size: 0.88em;
-      background: var(--code-bg);
-      padding: 1px 5px;
-      border-radius: 3px;
-    }
-    .message.assistant pre code { background: none; padding: 0; }
-    .message.assistant ul,
-    .message.assistant ol { padding-left: 20px; margin: 6px 0; }
-    .message.assistant li { margin: 2px 0; }
-    .message.assistant a { color: var(--accent); text-decoration: none; }
-    .message.assistant a:hover { text-decoration: underline; }
-    .message.assistant blockquote {
-      border-left: 3px solid var(--vscode-textBlockQuote-border, rgba(128,128,128,0.4));
-      padding-left: 12px;
-      margin: 6px 0;
-      opacity: 0.8;
-    }
-    .message.assistant h1,
-    .message.assistant h2,
-    .message.assistant h3 { margin: 10px 0 6px; font-size: 1em; font-weight: 600; }
-    .message.assistant h1 { font-size: 1.2em; }
-    .message.assistant h2 { font-size: 1.1em; }
-    .message.assistant table {
-      border-collapse: collapse;
-      margin: 8px 0;
-      font-size: 12px;
-      width: 100%;
-    }
-    .message.assistant th,
-    .message.assistant td {
-      border: 1px solid var(--border);
-      padding: 5px 10px;
-    }
-    .message.assistant th {
-      background: var(--code-bg);
-      font-weight: 600;
-    }
-
-    /* streaming cursor */
-    .cursor::after {
-      content: '▋';
-      animation: blink 0.9s step-start infinite;
-      opacity: 0.7;
-      margin-left: 1px;
-    }
-    @keyframes blink { 50% { opacity: 0; } }
-
-    /* ══ 回合（turn）容器 ══
-       一个 turn = 思考/工具步骤与回复气泡按发生顺序交错的消息流。 */
-    .turn {
-      display: flex;
-      flex-direction: column;
-      margin-bottom: 18px;
-    }
-
-    /* ── 时间线步骤（思考 / 工具 / 计划共用，内联于消息流） ── */
-    .step {
-      position: relative;
-      padding-left: 22px;
-      margin-bottom: 10px;
-      animation: rise 0.2s ease both;
-    }
-
-    /* 节点圆点，压在轨道上 */
-    .step-dot {
-      position: absolute;
-      left: 3px;
-      top: 6px;
-      width: 9px;
-      height: 9px;
-      border-radius: 50%;
-      background: var(--bg);
-      border: 1.5px solid var(--rail);
-      box-sizing: border-box;
-      z-index: 1;
-    }
-    .step.running .step-dot {
-      border-color: var(--rail-active);
-      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
-    }
-    .step.success .step-dot { border-color: var(--success); background: var(--success); }
-    .step.error   .step-dot { border-color: var(--error);   background: var(--error); }
-
-    .step-head {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      padding: 4px 6px 4px 0;
-      border-radius: var(--radius);
-      font-size: 12px;
-      min-height: 22px;
-    }
-    .step.clickable > .step-head { cursor: pointer; }
-    .step.clickable > .step-head:hover { background: var(--step-bg-hover); }
-
-    .step-icon {
-      width: 14px;
-      height: 14px;
-      flex-shrink: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--muted);
-    }
-    .step-icon svg { width: 13px; height: 13px; }
-    .step.running .step-icon { color: var(--accent); }
-
-    /* 工具名用等宽字体，与散文正文形成对照 */
-    .step-name {
-      font-family: var(--mono);
-      font-size: 11.5px;
-      color: var(--fg);
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
-
-    /* 主要参数就地预览，省去展开动作 */
-    .step-arg {
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--muted);
-      flex: 1;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      direction: rtl;
-      text-align: left;
-    }
-
-    .step-status {
-      flex-shrink: 0;
-      display: flex;
-      align-items: center;
-      color: var(--muted);
-      width: 13px;
-      height: 13px;
-    }
-    .step.running .step-status { color: var(--accent); }
-    .step.success .step-status { color: var(--success); }
-    .step.error   .step-status { color: var(--error); }
-
-    .step-chevron {
-      width: 9px;
-      height: 9px;
-      flex-shrink: 0;
-      color: var(--muted);
-      opacity: 0;
-      transition: transform 0.2s, opacity 0.15s;
-    }
-    .step.clickable:hover .step-chevron { opacity: 0.7; }
-    .step.expanded .step-chevron { opacity: 0.7; transform: rotate(180deg); }
-
-    /* 步骤详情 */
-    .step-detail {
-      display: none;
-      margin: 2px 0 6px;
-      border-left: 1px solid var(--border);
-      padding-left: 10px;
-    }
-    .step.expanded .step-detail { display: block; }
-
-    .detail-label {
-      font-size: 9px;
-      font-weight: 600;
-      letter-spacing: var(--label-tracking);
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 3px;
-    }
-    .detail-block {
-      font-family: var(--mono);
-      font-size: 11px;
-      line-height: 1.55;
-      white-space: pre-wrap;
-      word-break: break-word;
-      background: var(--step-bg);
-      border-radius: 4px;
-      padding: 6px 8px;
-      max-height: 200px;
-      overflow: auto;
-      margin-bottom: 7px;
-    }
-    .detail-block:last-child { margin-bottom: 0; }
-    .detail-block.is-error { color: var(--error); }
-
-    /* ── 思考步骤 ── */
-    .step.thought .step-body {
-      width: 100%;
-      min-width: 0;
-      font-size: 12px;
-      line-height: 1.6;
-      color: var(--muted);
-      padding: 1px 0 5px;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-
-    /* ── 计划步骤 ── */
-    .step.plan ol {
-      margin: 2px 0 6px;
-      padding-left: 18px;
-      font-size: 12px;
-      color: var(--fg);
-    }
-    .step.plan li { margin: 2px 0; line-height: 1.55; }
-
-    /* ── Approval card ── */
-    .approval-card {
-      background: var(--vscode-inputValidation-warningBackground, rgba(210,153,34,0.08));
-      border: 1px solid var(--warning);
-      border-left-width: 3px;
-      border-radius: var(--radius-lg);
-      padding: 11px 12px;
-      margin: 4px 0 10px;
-      animation: rise 0.2s ease both;
-    }
-    /* 决定作出后卡片退场，不留常驻残影 */
-    .approval-card.resolving {
-      animation: fold 0.22s ease forwards;
-      pointer-events: none;
-      overflow: hidden;
-    }
-    @keyframes fold {
-      from { opacity: 1; transform: none; }
-      to   { opacity: 0; transform: translateY(-3px); }
-    }
-
-    .approval-header {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      margin-bottom: 10px;
-    }
-
-    .approval-icon {
-      width: 20px;
-      height: 20px;
-      flex-shrink: 0;
-      color: var(--warning);
-      margin-top: 1px;
-    }
-
-    .approval-content { flex: 1; min-width: 0; }
-
-    .approval-tool-name {
-      font-weight: 600;
-      font-size: 12px;
-      font-family: var(--mono);
-      margin-bottom: 5px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .approval-tool-name .step-icon { color: var(--warning); }
-
-    .approval-kicker {
-      font-family: var(--font);
-      font-size: 9px;
-      font-weight: 600;
-      letter-spacing: var(--label-tracking);
-      text-transform: uppercase;
-      color: var(--warning);
-      margin-left: auto;
-      flex-shrink: 0;
-    }
-
-    .approval-summary {
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--fg);
-      line-height: 1.5;
-      margin-bottom: 6px;
-      white-space: pre-wrap;
-      word-break: break-word;
-      max-height: 96px;
-      overflow: hidden;
-      position: relative;
-    }
-    /* 长摘要（如 diff）底部淡出，避免撑爆卡片 */
-    .approval-summary.clipped::after {
-      content: '';
-      position: absolute;
-      left: 0; right: 0; bottom: 0;
-      height: 28px;
-      background: linear-gradient(transparent, var(--bg));
-    }
-    .approval-summary.open {
-      max-height: 340px;
-      overflow: auto;
-    }
-    .approval-summary.open::after { display: none; }
-
-    .approval-more {
-      font-size: 11px;
-      color: var(--accent);
-      cursor: pointer;
-      margin-bottom: 8px;
-      display: inline-block;
-      user-select: none;
-    }
-    .approval-more:hover { text-decoration: underline; }
-
-    .approval-file-path {
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--accent);
-      background: var(--code-bg);
-      padding: 3px 6px;
-      border-radius: 3px;
-      display: inline-block;
-      word-break: break-all;
-    }
-
-    .approval-actions {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-    }
-
-    .approval-btn {
-      padding: 5px 12px;
-      border-radius: var(--radius);
-      font-size: 12px;
-      font-weight: 500;
-      cursor: pointer;
-      border: 1px solid transparent;
-      font-family: var(--font);
-      transition: background 0.12s, border-color 0.12s, transform 0.1s;
-    }
-    .approval-btn:active { transform: scale(0.97); }
-
-    .approval-btn.allow {
-      background: var(--btn-bg);
-      color: var(--btn-fg);
-      border-color: var(--btn-bg);
-    }
-    .approval-btn.allow:hover { background: var(--btn-hover); }
-
-    .approval-btn.always {
-      background: transparent;
-      color: var(--btn-bg);
-      border-color: var(--btn-bg);
-    }
-    .approval-btn.always:hover { background: rgba(14,99,156,0.1); }
-
-    .approval-btn.deny {
-      background: transparent;
-      color: var(--error);
-      border-color: var(--error);
-    }
-    .approval-btn.deny:hover { background: rgba(248,81,73,0.1); }
-
-    /* ── Diff card ── */
-    .diff-card {
-      background: var(--code-bg);
-      border: 1px solid var(--border-light);
-      border-radius: var(--radius-lg);
-      margin: 8px 0;
-      overflow: hidden;
-    }
-
-    .diff-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 10px;
-      cursor: pointer;
-      user-select: none;
-      transition: background 0.12s;
-      background: var(--vscode-editor-background, #1e1e1e);
-    }
-    .diff-header:hover { background: var(--hover-bg); }
-
-    .diff-icon {
-      width: 16px;
-      height: 16px;
-      flex-shrink: 0;
-      color: var(--accent);
-    }
-
-    .diff-filename {
-      flex: 1;
-      font-family: var(--mono);
-      font-size: 12px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .diff-stats {
-      display: flex;
-      gap: 8px;
-      font-size: 11px;
-      font-family: var(--mono);
-      flex-shrink: 0;
-    }
-    .diff-additions { color: var(--success); }
-    .diff-deletions { color: var(--error); }
-
-    .diff-chevron {
-      width: 12px;
-      height: 12px;
-      flex-shrink: 0;
-      transition: transform 0.2s;
-      color: var(--muted);
-    }
-    .diff-card.expanded .diff-chevron { transform: rotate(180deg); }
-
-    .diff-body {
-      max-height: 0;
-      overflow: hidden;
-      transition: max-height 0.3s ease;
-    }
-    .diff-card.expanded .diff-body {
-      max-height: 500px;
-    }
-
-    .diff-content {
-      padding: 0;
-      overflow-x: auto;
-      font-family: var(--mono);
-      font-size: 11px;
-      line-height: 1.5;
-      border-top: 1px solid var(--border-light);
-    }
-
-    .diff-table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    .diff-table td {
-      padding: 1px 8px;
-      white-space: pre;
-      vertical-align: top;
-    }
-    .diff-line-num {
-      width: 36px;
-      text-align: right;
-      color: var(--muted);
-      user-select: none;
-      background: var(--vscode-editorGutter-background, transparent);
-      font-size: 10px;
-    }
-    .diff-line-content { padding-left: 8px; }
-
-    .diff-add { background: var(--diff-add-line); }
-    .diff-add .diff-line-content { background: var(--diff-add-bg); }
-    .diff-del { background: var(--diff-del-line); }
-    .diff-del .diff-line-content { background: var(--diff-del-bg); }
-    .diff-ctx { color: var(--muted); }
-
-    .diff-footer {
-      padding: 6px 10px;
-      border-top: 1px solid var(--border-light);
-      background: var(--vscode-editor-background, #1e1e1e);
-    }
-    .diff-footer a {
-      color: var(--accent);
-      font-size: 11px;
-      text-decoration: none;
-      cursor: pointer;
-    }
-    .diff-footer a:hover { text-decoration: underline; }
-
-    /* ── Error bar ── */
-    #error {
-      padding: 6px 10px;
-      color: var(--error);
-      font-size: 11px;
-      flex-shrink: 0;
-      border-top: 1px solid transparent;
-      background: var(--vscode-inputValidation-errorBackground, transparent);
-    }
-    #error:not(:empty) { border-color: var(--border); }
-    #error:empty { display: none; }
-
-    /* ── Input area ── */
-    #inputArea {
-      position: relative;
-      padding: 8px 10px 10px;
-      border-top: 1px solid var(--border);
-      flex-shrink: 0;
-      background: #ffffff;
-    }
-
-    #filePicker, #slashCommandPicker {
-      position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); display: none;
-      overflow: hidden; background: var(--vscode-quickInput-background, var(--vscode-editor-background, #252526));
-      border: 1px solid var(--vscode-widget-border, var(--border)); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.18); z-index: 110;
-      animation: picker-rise 0.12s ease-out both;
-    }
-    #filePicker.show, #slashCommandPicker.show { display: block; }
-    .file-picker-heading { display: flex; justify-content: space-between; padding: 8px 10px 6px; color: var(--muted); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
-    .file-picker-hint { opacity: 0.7; text-transform: none; letter-spacing: 0; }
-    #filePickerList { max-height: 220px; overflow-y: auto; padding: 0 4px 4px; }
-    .file-option { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; text-align: left; font: inherit; user-select: none; }
-    /* 鼠标悬停为浅色预览，键盘选中为深色高亮，两者区分避免“两个选中”的观感 */
-    .file-option:hover { background: color-mix(in srgb, var(--vscode-list-activeSelectionBackground, var(--hover-bg)) 45%, transparent); }
-    .file-option.active { background: var(--vscode-list-activeSelectionBackground, var(--hover-bg)); color: var(--vscode-list-activeSelectionForeground, var(--fg)); }
-    .file-option-icon { color: var(--muted); flex: 0 0 auto; }
-    .file-option-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-    .file-picker-empty { padding: 12px 10px; color: var(--muted); font-size: 12px; }
-    #slashCommandList { max-height: 264px; overflow-y: auto; padding: 4px 4px 6px; }
-    .slash-command-group-label { padding: 7px 10px 3px; color: var(--vscode-descriptionForeground, var(--muted)); font-size: 9px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
-    .slash-command-option {
-      position: relative;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      width: 100%;
-      min-height: 30px;
-      padding: 4px 10px;
-      border: 0;
-      border-radius: 6px;
-      background: transparent;
-      color: var(--fg);
-      cursor: pointer;
-      text-align: left;
-      font: inherit;
-      user-select: none;
-      transition: background 0.1s ease;
-    }
-    /* 鼠标悬停为浅色预览，键盘选中为深色高亮，两者区分避免“两个选中”的观感 */
-    .slash-command-option:hover { background: color-mix(in srgb, var(--vscode-quickInputList-focusBackground, var(--hover-bg)) 45%, transparent); }
-    .slash-command-option.active {
-      color: var(--vscode-quickInputList-focusForeground, var(--fg));
-      background: var(--vscode-quickInputList-focusBackground, var(--hover-bg));
-    }
-    /* 选中指示条：对齐 Claude Code for VSCode 的列表聚焦样式 */
-    .slash-command-option.active::before {
-      content: '';
-      position: absolute;
-      left: 0; top: 5px; bottom: 5px;
-      width: 2px;
-      border-radius: 1px;
-      background: var(--accent);
-    }
-    .slash-command-icon {
-      display: grid;
-      place-items: center;
-      flex: 0 0 auto;
-      width: 18px;
-      height: 18px;
-      border-radius: 4px;
-      color: var(--accent);
-      background: color-mix(in srgb, var(--accent) 10%, transparent);
-      font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 700;
-    }
-    .slash-command-copy { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1; }
-    .slash-command-name { font-family: var(--mono); font-size: 12px; font-weight: 600; white-space: nowrap; }
-    .slash-command-description { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
-    .slash-command-key { flex: 0 0 auto; color: var(--muted); font-size: 9px; }
-    @keyframes picker-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-
-    #inputWrapper {
-      display: flex;
-      flex-direction: column;
-      align-items: stretch;
-      gap: 8px;
-      background: #ffffff;
-      border: 1px solid var(--input-border);
-      border-radius: 10px;
-      padding: 8px 10px;
-      transition: border-color 0.15s, box-shadow 0.15s;
-    }
-    #inputWrapper:focus-within {
-      border-color: var(--focus);
-      box-shadow: 0 0 0 1px var(--focus);
-    }
-
-    .file-reference-list {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 5px;
-    }
-    .file-reference-list:empty { display: none; }
-    .file-reference-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      min-width: 0;
-      max-width: 100%;
-      height: 24px;
-      padding: 0 3px 0 5px;
-      border: 1px solid var(--border-light);
-      border-radius: 5px;
-      color: var(--input-fg);
-      background: var(--vscode-editor-background, #ffffff);
-      font: inherit;
-      transition: border-color 0.15s, background 0.15s;
-    }
-    .file-reference-chip:hover {
-      border-color: var(--input-border);
-      background: var(--hover-bg);
-    }
-    .file-reference-extension {
-      display: grid;
-      place-items: center;
-      flex: 0 0 auto;
-      min-width: 17px;
-      height: 16px;
-      padding: 0 2px;
-      border-radius: 3px;
-      color: var(--vscode-editor-background, #ffffff);
-      background: var(--accent);
-      font-family: var(--mono);
-      font-size: 8px;
-      font-weight: 700;
-      line-height: 1;
-      text-transform: uppercase;
-    }
-    .file-reference-name {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-size: 11px;
-      line-height: 1;
-    }
-    .file-reference-remove {
-      display: grid;
-      place-items: center;
-      flex: 0 0 auto;
-      width: 16px;
-      height: 16px;
-      margin-left: 1px;
-      padding: 0;
-      border: 0;
-      border-radius: 3px;
-      color: var(--muted);
-      background: transparent;
-      cursor: pointer;
-      font-family: var(--font);
-      font-size: 14px;
-      line-height: 1;
-      transition: color 0.15s, background 0.15s;
-    }
-    .file-reference-remove:hover {
-      color: var(--error);
-      background: color-mix(in srgb, var(--error) 10%, transparent);
-    }
-    .file-reference-remove:focus-visible {
-      outline: 1px solid var(--focus);
-      outline-offset: 1px;
-    }
-
-    /* Skill 引用块：选中 skill 命令后在对话框生成，带入场动画 */
-    .skill-reference-list { margin-bottom: 2px; }
-    .skill-reference-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      min-width: 0;
-      max-width: 100%;
-      height: 24px;
-      padding: 0 3px 0 5px;
-      border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-      border-radius: 5px;
-      color: var(--input-fg);
-      background: color-mix(in srgb, var(--accent) 8%, var(--vscode-editor-background, #ffffff));
-      font: inherit;
-      animation: chip-pop 0.18s ease-out;
-      transition: border-color 0.15s, background 0.15s;
-    }
-    .skill-reference-chip:hover {
-      border-color: var(--accent);
-      background: color-mix(in srgb, var(--accent) 14%, var(--vscode-editor-background, #ffffff));
-    }
-    .skill-reference-prefix {
-      display: grid;
-      place-items: center;
-      flex: 0 0 auto;
-      min-width: 17px;
-      height: 16px;
-      padding: 0 2px;
-      border-radius: 3px;
-      color: #ffffff;
-      background: var(--accent);
-      font-family: var(--mono);
-      font-size: 10px;
-      font-weight: 700;
-      line-height: 1;
-    }
-    .skill-reference-name {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-family: var(--mono);
-      font-size: 11px;
-      line-height: 1;
-    }
-    @keyframes chip-pop {
-      from { opacity: 0; transform: scale(0.85) translateY(2px); }
-      to { opacity: 1; transform: scale(1) translateY(0); }
-    }
-
-    #input {
-      flex: 1;
-      width: 100%;
-      background: transparent;
-      color: var(--input-fg);
-      border: none;
-      padding: 3px 0;
-      font-family: var(--font);
-      font-size: 13px;
-      line-height: 1.5;
-      resize: none;
-      min-height: 22px;
-      max-height: 120px;
-      outline: none;
-    }
-    #input::placeholder { color: var(--input-placeholder); }
-    #input:disabled { cursor: not-allowed; opacity: 0.5; }
-
-    /* ── Input toolbar ── */
-    .input-toolbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 8px 2px 0;
-      gap: 6px;
-    }
-    .toolbar-left, .toolbar-right {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-
-    .open-file-btn {
-      width: 28px;
-      height: 28px;
-      padding: 0;
-      border: 1px solid transparent;
-      color: var(--muted);
-      transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s;
-    }
-    .open-file-btn:hover:not(:disabled) {
-      color: var(--fg);
-      background: var(--hover-bg);
-      border-color: var(--border-light);
-    }
-    .open-file-btn:active:not(:disabled) { transform: scale(0.92); }
-    .open-file-btn:focus-visible { outline: 1px solid var(--focus); outline-offset: 1px; }
-    .open-file-btn svg { width: 15px; height: 15px; }
-
-    .chevron {
-      width: 12px;
-      height: 12px;
-      flex-shrink: 0;
-      transition: transform 0.2s;
-      color: var(--muted);
-    }
-
-    #sendBtn, #stopBtn {
-      width: 28px;
-      height: 28px;
-      padding: 0;
-      border-radius: 6px;
-      flex-shrink: 0;
-    }
-
-    .session-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
-    .session-actions .btn-icon { width: 26px; height: 26px; padding: 0; color: var(--muted); }
-    .session-actions .btn-icon:hover:not(:disabled) { color: var(--fg); }
-
-    /* ── History dropdown ── */
-    .history-dropdown {
-      position: absolute;
-      top: calc(100% - 4px);
-      right: 8px;
-      width: 320px;
-      max-width: calc(100vw - 20px);
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
-      z-index: 50;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-    .history-dropdown[hidden] { display: none; }
-    .history-dropdown-header {
-      padding: 8px 12px;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--muted);
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-    }
-    .history-list { overflow-y: auto; max-height: 55vh; }
-    .history-item {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 12px;
-      cursor: pointer;
-    }
-    .history-item:hover { background: var(--hover-bg); }
-    .history-item.active .history-item-title { color: var(--accent); }
-    .history-item-main { flex: 1; min-width: 0; }
-    .history-item-title {
-      font-size: 13px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .history-item-meta { font-size: 11px; color: var(--muted); }
-    .history-item-del {
-      flex-shrink: 0;
-      width: 22px;
-      height: 22px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: transparent;
-      border: none;
-      border-radius: 4px;
-      color: var(--muted);
-      cursor: pointer;
-      padding: 0;
-    }
-    .history-item-del:hover { color: var(--error); background: var(--hover-bg); }
-    .history-empty { padding: 16px 12px; text-align: center; color: var(--muted); font-size: 12px; }
-
-    #hint {
-      text-align: center;
-      font-size: 10px;
-      color: var(--muted);
-      margin-top: 5px;
-      opacity: 0.7;
-    }
-
-    /* ── Message action bar ── */
-    .msg-actions {
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      gap: 2px;
-      margin-top: 6px;
-      opacity: 0;
-      transition: opacity 0.15s ease;
-    }
-    .msg-row:hover .msg-actions,
-    .msg-row:focus-within .msg-actions {
-      opacity: 1;
-    }
-
-    .msg-action-btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 4px;
-      height: 26px;
-      padding: 0 8px;
-      border: none;
-      background: transparent;
-      color: var(--muted);
-      border-radius: 6px;
-      cursor: pointer;
-      font-family: var(--font);
-      font-size: 11px;
-      transition: all 0.12s ease;
-    }
-    .msg-action-btn:hover:not(:disabled) {
-      background: var(--hover-bg);
-      color: var(--fg);
-    }
-    .msg-action-btn:active:not(:disabled) {
-      transform: scale(0.95);
-    }
-    .msg-action-btn:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
-    .msg-action-btn svg {
-      width: 14px;
-      height: 14px;
-      flex-shrink: 0;
-    }
-    .msg-action-btn.liked {
-      color: var(--accent);
-    }
-    .msg-action-btn.liked svg {
-      fill: currentColor;
-    }
-
-    /* ── User message hover state ── */
-    .msg-row.user-row .message.user {
-      transition: border-color 0.15s, background 0.15s;
-    }
-    .msg-row.user-row:hover .message.user {
-      border-color: var(--input-border);
-      background: var(--hover-bg);
-    }
-
-    /* ── Delete action button ── */
-    .msg-action-btn.delete-btn:hover:not(:disabled) {
-      color: var(--error);
-      background: color-mix(in srgb, var(--error) 10%, transparent);
-    }
-
-    .token-usage {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 0 8px;
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--muted);
-      user-select: none;
-    }
-    .token-usage svg {
-      width: 12px;
-      height: 12px;
-      opacity: 0.7;
-      flex-shrink: 0;
-    }
-    .token-progress {
-      display: inline-block;
-      width: 24px;
-      height: 3px;
-      overflow: hidden;
-      border-radius: 999px;
-      background: var(--vscode-progressBar-background, var(--border));
-      opacity: 0.35;
-    }
-    .token-progress-fill {
-      display: block;
-      width: 0;
-      height: 100%;
-      border-radius: inherit;
-      background: var(--accent);
-    }
-
-    /* ── Session-level token usage bar ── */
-    #sessionTokenBar {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 6px 12px;
-      padding: 6px 14px;
-      font-size: 11px;
-      color: var(--muted);
-      border-bottom: 1px solid var(--border, rgba(128,128,128,0.15));
-      background: color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 97%, var(--accent) 3%);
-      user-select: none;
-    }
-    #sessionTokenBar .stb-total {
-      font-family: var(--mono);
-      font-weight: 600;
-      color: var(--accent);
-    }
-    #sessionTokenBar .stb-items {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px 10px;
-      font-family: var(--mono);
-      font-size: 10px;
-    }
-    #sessionTokenBar .stb-item .stb-label {
-      opacity: 0.75;
-    }
-    #sessionTokenBar .stb-item .stb-val {
-      color: var(--fg, inherit);
-    }
-    #sessionTokenBar .stb-item .stb-approx {
-      opacity: 0.55;
-    }`;
-  }
-
-  private _getBodyHtml(): string {
-    return `
-  <div id="header">
-    <input id="sessionNameInput" class="session-name-input" type="text" value="Untitled" placeholder="会话名称" />
-    <div class="session-actions">
-      <button id="newSessionIconBtn" class="btn btn-icon" title="新建会话">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M7.25 1a.75.75 0 0 1 .75.75V7h5.25a.75.75 0 0 1 0 1.5H8v5.25a.75.75 0 0 1-1.5 0V8.5H1.25a.75.75 0 0 1 0-1.5H6.5V1.75A.75.75 0 0 1 7.25 1z"/></svg>
-      </button>
-      <button id="historyIconBtn" class="btn btn-icon" title="历史会话">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5A5.5 5.5 0 1 1 2.5 8 5.5 5.5 0 0 1 8 2.5z"/><path d="M7.25 4.5v3.42L10.3 9.5l.4-1.16-2.45-1.2V4.5h-1z"/></svg>
-      </button>
-    </div>
-    <!-- 历史下拉：必须是 #header 的子元素，绝对定位才相对 header 底部展开 -->
-    <div id="historyDropdown" class="history-dropdown" hidden>
-      <div class="history-dropdown-header">历史会话</div>
-      <div id="historyList" class="history-list"></div>
-    </div>
-  </div>
-
-  <div id="sessionTokenBar" hidden>
-    <span>会话 Token</span>
-    <span class="stb-total">0</span>
-    <span class="stb-items"></span>
-  </div>
-
-  <div id="messages">
-    <div class="placeholder">
-      <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor" style="display:block;margin:0 auto 10px;">
-        <path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
-      </svg>
-      <div class="placeholder-title">欢迎使用云效 Agent</div>
-      输入消息开始对话，用 @ 引用文件
-    </div>
-  </div>
-
-  <div id="error"></div>
-
-  <div id="inputArea">
-    <div id="slashCommandPicker" role="listbox" aria-label="选择 Slash 命令">
-      <div class="file-picker-heading"><span>Slash 命令</span><span class="file-picker-hint">↑↓ 选择 · Enter 执行 · Esc 关闭</span></div>
-      <div id="slashCommandList"></div>
-    </div>
-    <div id="filePicker" role="listbox" aria-label="选择工作区文件">
-      <div class="file-picker-heading"><span>工作区文件</span><span class="file-picker-hint">↑↓ 选择 · Enter 确认 · Esc 关闭</span></div>
-      <div id="filePickerList"></div>
-    </div>
-    <div id="inputWrapper">
-      <div id="fileReferenceList" class="file-reference-list" aria-label="已引用文件"></div>
-      <div id="skillReferenceList" class="file-reference-list skill-reference-list" aria-label="已选 Skill"></div>
-      <textarea id="input" rows="1" placeholder="输入消息... 使用 @ 引用文件" disabled></textarea>
-    </div>
-    <div id="inputToolbar" class="input-toolbar">
-      <div class="toolbar-left">
-        <button id="openFileBtn" class="btn btn-icon open-file-btn" title="打开文件" aria-label="打开文件">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M8 2v12M2 8h12" />
-          </svg>
-        </button>
-      </div>
-      <div class="toolbar-right">
-        <div class="model-info">
-          <span id="modelName">--</span>
-        </div>
-        <button id="sendBtn" class="btn btn-icon" disabled title="发送 (Enter)">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M1.5 1.5l13 6.5-13 6.5V8.75l8-1.25-8-1.25V1.5z"/>
-          </svg>
-        </button>
-        <button id="stopBtn" class="btn btn-stop btn-icon" style="display:none" title="停止">
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-            <rect x="1" y="1" width="8" height="8" rx="1"/>
-          </svg>
-        </button>
-      </div>
-    </div>
-    <div id="hint">Enter 发送 &middot; Shift+Enter 换行 &middot; 中文输入法下 Enter 确认候选词 &middot; / 命令 &middot; @ 引用文件</div>
-  </div>
-`;
-  }
-
-  private _getJs(): string {
-    return `
-    const vscode = acquireVsCodeApi();
-
-    // ── DOM refs ──
-    const messagesEl   = document.getElementById('messages');
-    const inputEl      = document.getElementById('input');
-    const sendBtn      = document.getElementById('sendBtn');
-    const stopBtn      = document.getElementById('stopBtn');
-    const openFileBtn  = document.getElementById('openFileBtn');
-    const newSessBtn   = document.getElementById('newSessionIconBtn');
-    const historyBtn   = document.getElementById('historyIconBtn');
-    const historyDropdown = document.getElementById('historyDropdown');
-    const historyList  = document.getElementById('historyList');
-    const sessionNameInput = document.getElementById('sessionNameInput');
-    const errorEl      = document.getElementById('error');
-    const filePicker   = document.getElementById('filePicker');
-    const filePickerList = document.getElementById('filePickerList');
-    const fileReferenceList = document.getElementById('fileReferenceList');
-    const skillReferenceList = document.getElementById('skillReferenceList');
-    const slashCommandPicker = document.getElementById('slashCommandPicker');
-    const slashCommandList = document.getElementById('slashCommandList');
-
-    // ── State ──
-    let currentSessionId = null;
-    let isStreaming = false;
-    let workspaceFiles = [];
-    let filePickerIndex = 0;
-    let filePickerAtStart = -1;
-    let filteredFiles = [];
-    let selectedFiles = [];
-    let slashCommandIndex = 0;
-    let filteredSlashCommands = [];
-    let slashCommandGroups = [];
-    let selectedSkills = []; // 已选 Skill 引用块（选中后生成 chip，发送时随消息提交）
-
-    /* 「回合」模型：一轮对话 = 过程时间线（思考/工具/审批）+ 最终回复。
-       时间线容器先于回复气泡插入 DOM，因此过程天然呈现在回复之上。 */
-    let currentTurn = null;        // { rootEl }
-    let currentAssistantEl = null; // 当前流式回复气泡
-    let currentAssistantRow = null; // 当前流式回复消息行（包含操作栏）
-    let currentAssistantTxt = '';
-    let currentThoughtEl = null;
-    let currentThoughtTxt = '';
-    const toolEntries = new Map();   // call_id -> { stepEl, detailEl, state, tool }
-    const approvalCards = new Map(); // call_id -> card element
-    const diffCards = new Map();     // call_id -> card element
-
-    // ── Tool icons ──
-    function getToolIconSvg(toolName) {
-      const name = (toolName || '').toLowerCase();
-      if (name.includes('read') || name.includes('file')) {
-        return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M9 1H3a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V5L9 1zM4 14V2h4v4h4v8H4z"/></svg>';
-      }
-      if (name.includes('edit') || name.includes('write')) {
-        return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M12.147 1.146a.5.5 0 0 1 .707 0l2 2a.5.5 0 0 1 0 .708l-9 9a.5.5 0 0 1-.232.138l-4 1a.5.5 0 0 1-.6-.6l1-4a.5.5 0 0 1 .138-.233l9-9zM4.5 11.5l-.793 2.293L6 13h5V8H6v3.5zM12 3.707L11.293 3 9 5.293 9.707 6 12 3.707z"/></svg>';
-      }
-      if (name.includes('search') || name.includes('find')) {
-        return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 6.5a5 5 0 1 1-10 0 5 5 0 0 1 10 0zm-.707 4.096a6 6 0 1 1 .707-.707l3.207 3.207-.707.707-3.207-3.207z"/></svg>';
-      }
-      if (name.includes('delete') || name.includes('remove')) {
-        return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M6 1h4v1h3v1H3V2h3V1zM4 4h8v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4zm2 2v7h1V6H6zm3 0v7h1V6H9z"/></svg>';
-      }
-      if (name.includes('move') || name.includes('rename')) {
-        return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M7.5 1L11 4.5H9v4H7v-4H5L7.5 1zM5 15l3.5-3.5H7v-4h2v4h2.5L7.5 15H5z"/></svg>';
-      }
-      if (name.includes('list') || name.includes('dir')) {
-        return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h6v2H2V2zm0 4h12v2H2V6zm0 4h12v2H2v-2zm0 4h8v2H2v-2z"/></svg>';
-      }
-      if (name.includes('diff')) {
-        return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1v14M1 8h14" stroke="currentColor" stroke-width="1" fill="none"/><path d="M5 4h6v1H5V4zm0 3h6v1H5V7zm0 3h4v1H5v-1z"/></svg>';
-      }
-      if (name.includes('terminal') || name.includes('exec')) {
-        return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M1 2h14v12H1V2zm1 2v8h12V4H2zm2 1.5L5.5 7 4 8.5V5.5zm0 3L5.5 10 4 11.5v-3zM7 9h4v1H7V9z"/></svg>';
-      }
-      if (name.includes('git') || name.includes('commit') || name.includes('branch') || name.includes('stash') || name.includes('status')) {
-        return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm10 10a2 2 0 1 1-4 0 2 2 0 0 1 4 0zM7 3H5.9a3 3 0 0 1 0 6h4.2a3 3 0 0 1 0 6H11v2H9v-4h1a1 1 0 0 0 0-2H5.9a5 5 0 0 0 0-10H7V1l3 2.5L7 6V3z"/></svg>';
-      }
-      // default gear icon
-      return '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm4.9 1.3l1.8-.5-.5-1.8-1.7.6a5 5 0 0 0-1.5-.9l-.4-1.8h-2l-.4 1.8a5 5 0 0 0-1.5.9l-1.7-.6-.5 1.8 1.8.5a5 5 0 0 0 0 1.8l-1.8.5.5 1.8 1.7-.6a5 5 0 0 0 1.5.9l.4 1.8h2l.4-1.8a5 5 0 0 0 1.5-.9l1.7.6.5-1.8-1.8-.5a5 5 0 0 0 0-1.8z"/></svg>';
-    }
-
-    function getStatusIcon(state) {
-      switch (state) {
-        case 'running': return '<div class="spinner"></div>';
-        case 'success': return '<svg viewBox="0 0 16 16" fill="currentColor" style="width:12px;height:12px;"><path d="M6.5 10.5L3.5 7.5l-.7.7L6.5 12l7-7-.7-.7-6.3 6.2z"/></svg>';
-        case 'error': return '<svg viewBox="0 0 16 16" fill="currentColor" style="width:12px;height:12px;"><path d="M8 1a7 7 0 1 0 0 14 7 7 0 0 0 0-14zm3.5 9.5L10 11.5 8 9.5 6 11.5 4.5 10l2-2-2-2L6 4.5l2 2 2-2 1.5 1.5-2 2 2 2z"/></svg>';
-        case 'pending':
-        default: return '<svg viewBox="0 0 16 16" fill="currentColor" style="width:12px;height:12px;opacity:0.5;"><path d="M8 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12zm0 1a5 5 0 1 1 0 10 5 5 0 0 1 0-10zm-1 1v5l4 2.5.7-1-3.7-2.2V4H7z"/></svg>';
-      }
-    }
-
-    document.addEventListener('click', (e) => {
-      if (!filePicker.contains(e.target) && e.target !== inputEl) {
-        closeFilePicker();
-      }
-      if (!slashCommandPicker.contains(e.target) && e.target !== inputEl) {
-        closeSlashCommandPicker();
-      }
-      if (!historyDropdown.hidden && !historyDropdown.contains(e.target) && !historyBtn.contains(e.target)) {
-        closeHistoryDropdown();
-      }
-    });
-
-    // ══ 回合与过程时间线 ══
-
-    /** 取得（或懒创建）当前回合。回合内思考/工具步骤与回复气泡按发生顺序交错排列。 */
-    function ensureTurn() {
-      if (currentTurn) return currentTurn;
-      clearPlaceholder();
-
-      const root = document.createElement('div');
-      root.className = 'turn';
-      messagesEl.appendChild(root);
-
-      currentTurn = { rootEl: root };
-      return currentTurn;
-    }
-
-    /** 把一个步骤（思考/工具/计划）挂到当前回合消息流末尾，与回复按时间顺序交错。 */
-    function addStep(el) {
-      const turn = ensureTurn();
-      turn.rootEl.appendChild(el);
-      smartScrollToBottom();
-      return turn;
-    }
-
-    /** 回合收尾：清空回合引用与思考块状态，准备下一回合。 */
-    function finishTurn() {
-      if (!currentTurn) return;
-      currentTurn = null;
-      currentThoughtEl = null;
-      currentThoughtTxt = '';
-    }
-
-    /** 从工具入参里挑一个最有信息量的字段做行内预览。 */
-    function summarizeArgs(args) {
-      if (!args || typeof args !== 'object') {
-        return typeof args === 'string' ? args : '';
-      }
-      const keys = ['path', 'file_path', 'pattern', 'query', 'command', 'dir', 'url', 'message', 'name'];
-      for (const k of keys) {
-        const v = args[k];
-        if (typeof v === 'string' && v) return v;
-      }
-      return '';
-    }
-
-    function stringify(v) {
-      if (v === null || v === undefined) return '';
-      return typeof v === 'string' ? v : JSON.stringify(v, null, 2);
-    }
-
-    function truncate(s, max) {
-      return s.length > max ? s.slice(0, max) + '\\n… (已截断)' : s;
-    }
-
-    function showToolState(tool, state, error, callId, args, output) {
-      let entry = toolEntries.get(callId);
-
-      if (!entry) {
-        const step = document.createElement('div');
-        step.className = 'step tool clickable ' + state;
-        step.innerHTML = \`
-          <span class="step-dot"></span>
-          <div class="step-head">
-            <span class="step-icon">\${getToolIconSvg(tool)}</span>
-            <span class="step-name">\${escapeHtml(tool)}</span>
-            <span class="step-arg"></span>
-            <span class="step-status">\${getStatusIcon(state)}</span>
-            <svg class="step-chevron" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M4 6l4 4 4-4H4z"/>
-            </svg>
-          </div>
-        \`;
-
-        const detail = document.createElement('div');
-        detail.className = 'step-detail';
-        step.appendChild(detail);
-
-        step.querySelector('.step-head').addEventListener('click', () => {
-          step.classList.toggle('expanded');
-        });
-
-        entry = {
-          stepEl: step,
-          detailEl: detail,
-          state,
-          tool,
-          args: undefined,
-          output: undefined,
-          error: undefined,
-        };
-        toolEntries.set(callId, entry);
-        addStep(step);
-      }
-
-      // 状态推进：保留展开态
-      entry.state = state;
-      entry.args = args !== undefined && args !== null ? args : entry.args;
-      entry.output = output !== undefined && output !== null ? output : entry.output;
-      entry.error = error || entry.error;
-      const wasExpanded = entry.stepEl.classList.contains('expanded');
-      entry.stepEl.className =
-        'step tool clickable ' + state + (wasExpanded ? ' expanded' : '');
-      entry.stepEl.querySelector('.step-status').innerHTML = getStatusIcon(state);
-
-      const argPreview = summarizeArgs(entry.args);
-      if (argPreview) {
-        entry.stepEl.querySelector('.step-arg').textContent = argPreview;
-      }
-
-      let html = '';
-      if (entry.args !== undefined && entry.args !== null) {
-        html += \`<div class="detail-label">参数</div><div class="detail-block">\${escapeHtml(truncate(stringify(entry.args), 1200))}</div>\`;
-      }
-      if (entry.error) {
-        html += \`<div class="detail-label">错误</div><div class="detail-block is-error">\${escapeHtml(entry.error)}</div>\`;
-      } else if (entry.output !== undefined && entry.output !== null) {
-        html += \`<div class="detail-label">结果</div><div class="detail-block">\${escapeHtml(truncate(stringify(entry.output), 2000))}</div>\`;
-      }
-      entry.detailEl.innerHTML = html;
-
-      smartScrollToBottom();
-    }
-
-    // ══ 审批卡片 ══
-
-    /** 决定已作出：卡片退场并销毁，不在时间线里留常驻残影。 */
-    function dismissApprovalCard(callId) {
-      const card = approvalCards.get(callId);
-      if (!card) return;
-      approvalCards.delete(callId);
-      card.classList.add('resolving');
-      const drop = () => card.remove();
-      card.addEventListener('animationend', drop, { once: true });
-      setTimeout(drop, 400); // 动画被跳过时的兜底
-    }
-
-    function showApprovalCard(callId, toolName, summary, filePath) {
-      if (approvalCards.has(callId)) return;
-
-      const card = document.createElement('div');
-      card.className = 'approval-card';
-      card.innerHTML = \`
-        <div class="approval-header">
-          <svg class="approval-icon" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
-          </svg>
-          <div class="approval-content">
-            <div class="approval-tool-name">
-              <span class="step-icon">\${getToolIconSvg(toolName)}</span>
-              \${escapeHtml(toolName)}
-              <span class="approval-kicker">待确认</span>
-            </div>
-            <div class="approval-summary">\${escapeHtml(summary)}</div>
-            \${filePath ? \`<div class="approval-file-path">\${escapeHtml(filePath)}</div>\` : ''}
-          </div>
-        </div>
-        <div class="approval-actions">
-          <button class="approval-btn allow" data-decision="allow">允许一次</button>
-          <button class="approval-btn always" data-decision="always">始终允许</button>
-          <button class="approval-btn deny" data-decision="deny">拒绝</button>
-        </div>
-      \`;
-
-      card.querySelectorAll('.approval-btn').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          vscode.postMessage({
-            command: 'approvalDecision',
-            call_id: callId,
-            decision: btn.getAttribute('data-decision'),
-          });
-          dismissApprovalCard(callId);
-        });
-      });
-
-      // 审批也属于「过程」，进时间线
-      addStep(card);
-      approvalCards.set(callId, card);
-
-      // 入 DOM 后才能量高度：长摘要（diff 等）折起，需要时再展开
-      const summaryEl = card.querySelector('.approval-summary');
-      if (summaryEl.scrollHeight > summaryEl.clientHeight + 4) {
-        summaryEl.classList.add('clipped');
-        const more = document.createElement('span');
-        more.className = 'approval-more';
-        more.textContent = '展开全部';
-        more.addEventListener('click', () => {
-          const open = summaryEl.classList.toggle('open');
-          summaryEl.classList.toggle('clipped', !open);
-          more.textContent = open ? '收起' : '展开全部';
-        });
-        summaryEl.parentNode.insertBefore(more, summaryEl.nextSibling);
-      }
-
-      smartScrollToBottom();
-    }
-
-    // ── Diff cards ──
-    function showDiffCard(callId, filePath, diffHtml, additions, deletions) {
-      clearPlaceholder();
-      if (diffCards.has(callId)) {
-        const existing = diffCards.get(callId);
-        existing.remove();
-      }
-
-      const card = document.createElement('div');
-      card.className = 'diff-card';
-      card.innerHTML = \`
-        <div class="diff-header">
-          <svg class="diff-icon" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M8.5 1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6.5L8.5 1zM9 2.5L12.5 6H9V2.5zM5 14V2h3v5h5v7H5z"/>
-          </svg>
-          <span class="diff-filename">\${escapeHtml(filePath)}</span>
-          <span class="diff-stats">
-            <span class="diff-additions">+\${additions || 0}</span>
-            <span class="diff-deletions">-\${deletions || 0}</span>
-          </span>
-          <svg class="diff-chevron" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M4 6l4 4 4-4H4z"/>
-          </svg>
-        </div>
-        <div class="diff-body">
-          <div class="diff-content">
-            <table class="diff-table">\${diffHtml || ''}</table>
-          </div>
-          <div class="diff-footer">
-            <a onclick="vscode.postMessage({command: 'openDiff', file_path: '\${filePath.replace(/'/g, "\\\\'")}'})">在差异编辑器中打开 →</a>
-          </div>
-        </div>
-      \`;
-
-      card.querySelector('.diff-header').addEventListener('click', () => {
-        card.classList.toggle('expanded');
-      });
-
-      addStep(card);
-      diffCards.set(callId, card);
-      smartScrollToBottom();
-    }
-
-    // ── Utility ──
-    function escapeHtml(str) {
-      if (str === null || str === undefined) return '';
-      const div = document.createElement('div');
-      div.textContent = String(str);
-      return div.innerHTML;
-    }
-
-    function escapeAttribute(str) {
-      return escapeHtml(str).replace(/"/g, '&quot;');
-    }
-
-    // ── Event bindings ──
-    sendBtn.addEventListener('click', handleSend);
-
-    stopBtn.addEventListener('click', () => {
-      if (currentSessionId) {
-        vscode.postMessage({ command: 'stopStream', sessionId: currentSessionId });
-      }
-    });
-
-    newSessBtn.addEventListener('click', startNewSession);
-
-    // ── History dropdown ──
-    historyBtn.addEventListener('click', toggleHistoryDropdown);
-
-    openFileBtn.addEventListener('click', () => {
-      vscode.postMessage({ command: 'openFile' });
-    });
-
-    // ── Session name editing ──
-    sessionNameInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); sessionNameInput.blur(); }
-    });
-    sessionNameInput.addEventListener('blur', () => {
-      const name = sessionNameInput.value.trim() || 'Untitled';
-      sessionNameInput.value = name;
-      if (currentSessionId) {
-        vscode.postMessage({ command: 'renameSession', sessionId: currentSessionId, name });
-      }
-    });
-
-    /** 弹窗键盘处理（上下选择 / Enter 确认 / Esc 关闭）。返回 true 表示按键已被弹窗消费。 */
-    function handlePickerKeys(e) {
-      if (slashCommandPicker.classList.contains('show')) {
-        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-          e.preventDefault();
-          if (filteredSlashCommands.length === 0) return true;
-          slashCommandIndex = (
-            slashCommandIndex
-            + (e.key === 'ArrowDown' ? 1 : -1)
-            + filteredSlashCommands.length
-          ) % filteredSlashCommands.length;
-          renderSlashCommands();
-          return true;
-        }
-        if (e.key === 'Enter') { e.preventDefault(); selectSlashCommand(filteredSlashCommands[slashCommandIndex]); return true; }
-        if (e.key === 'Escape') { e.preventDefault(); closeSlashCommandPicker(); return true; }
-      }
-      if (filePicker.classList.contains('show')) {
-        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-          e.preventDefault();
-          if (filteredFiles.length === 0) return true;
-          filePickerIndex = (filePickerIndex + (e.key === 'ArrowDown' ? 1 : -1) + filteredFiles.length) % filteredFiles.length;
-          renderFilePicker();
-          return true;
-        }
-        if (e.key === 'Enter') { e.preventDefault(); selectFile(filteredFiles[filePickerIndex]); return true; }
-        if (e.key === 'Escape') { e.preventDefault(); closeFilePicker(); return true; }
-      }
-      return false;
-    }
-
-    inputEl.addEventListener('keydown', (e) => {
-      if (handlePickerKeys(e)) return;
-      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); handleSend(); }
-    });
-
-    // 弹窗按键兜底：鼠标点击弹窗（滚动条/选项）可能使 textarea 失焦，
-    // 改为在 document 层继续响应，保证鼠标操作弹窗后键盘上下/Enter/Esc 依然有效
-    document.addEventListener('keydown', (e) => {
-      if (e.target === inputEl) return; // textarea 聚焦时已由 inputEl 处理，避免重复
-      handlePickerKeys(e);
-    });
-
-    inputEl.addEventListener('input', autoResize);
-    inputEl.addEventListener('input', handleSlashTrigger);
-
-    // ── Slash 命令选择 ──
-    function handleSlashTrigger() {
-      const cursorPos = inputEl.selectionStart;
-      const text = inputEl.value;
-      const commandText = text.substring(0, cursorPos);
-      if (
-        cursorPos !== text.length
-        || !commandText.startsWith('/')
-        || /\s/.test(commandText)
-      ) {
-        closeSlashCommandPicker();
-        return;
-      }
-
-      const query = commandText.slice(1).toLowerCase();
-      // 展平分组并按命令词前缀过滤（附带所属分组标签供分组渲染）
-      const flat = [];
-      for (const group of slashCommandGroups) {
-        for (const cmd of (group.commands || [])) {
-          if (cmd.command.toLowerCase().startsWith(query)) {
-            flat.push(Object.assign({}, cmd, { groupLabel: group.label }));
-          }
-        }
-      }
-      filteredSlashCommands = flat;
-      if (filteredSlashCommands.length === 0) {
-        closeSlashCommandPicker();
-        return;
-      }
-
-      closeFilePicker();
-      slashCommandIndex = Math.min(
-        slashCommandIndex,
-        filteredSlashCommands.length - 1,
-      );
-      slashCommandPicker.classList.add('show');
-      renderSlashCommands();
-    }
-
-    function renderSlashCommands() {
-      // 按分组标签聚合渲染：分组标题 + 组内命令
-      const byGroup = {};
-      for (const cmd of filteredSlashCommands) {
-        (byGroup[cmd.groupLabel] = byGroup[cmd.groupLabel] || []).push(cmd);
-      }
-      let idx = 0;
-      let html = '';
-      for (const label of Object.keys(byGroup)) {
-        html += '<div class="slash-command-group-label">' + escapeHtml(label) + '</div>';
-        for (const command of byGroup[label]) {
-          // skill 命令选中后生成引用块加入对话框（不直接发送），基础命令回车直达
-          const keyHint = (command.id && command.id.indexOf('skill.') === 0) ? '↵ 加入对话框' : 'Enter';
-          html += '<button class="slash-command-option' + (idx === slashCommandIndex ? ' active' : '') +
-            '" role="option" data-index="' + idx + '">' +
-            '<span class="slash-command-icon">/</span>' +
-            '<span class="slash-command-copy"><span class="slash-command-name">' +
-            escapeHtml(command.label) + '</span><span class="slash-command-description">' +
-            escapeHtml(command.description || '') + '</span></span>' +
-            '<span class="slash-command-key">' + keyHint + '</span></button>';
-          idx++;
-        }
-      }
-      slashCommandList.innerHTML = html;
-      slashCommandList.querySelectorAll('.slash-command-option').forEach((option) => {
-        option.addEventListener('mousedown', (e) => e.preventDefault());
-        option.addEventListener('click', () => {
-          selectSlashCommand(filteredSlashCommands[Number(option.dataset.index)]);
-        });
-      });
-      // 高亮项移出可视区时，滚动弹窗列表跟随，保证键盘/鼠标选择始终可见
-      const activeSlashOption = slashCommandList.querySelector('.slash-command-option.active');
-      if (activeSlashOption) activeSlashOption.scrollIntoView({ block: 'nearest' });
-    }
-
-    function selectSlashCommand(command) {
-      if (!command) return;
-      closeSlashCommandPicker();
-      // 特殊动作：直接触发扩展侧命令
-      if (command.action === 'newSession') {
-        vscode.postMessage({ command: 'createSession' });
-        return;
-      }
-      if (command.action === 'stopStream') {
-        if (currentSessionId) {
-          vscode.postMessage({ command: 'stopStream', sessionId: currentSessionId });
-        }
-        return;
-      }
-      // skill 命令：禁止直接发起会话，改为在对话框生成引用块（chip），由用户确认后发送
-      if (command.id && command.id.indexOf('skill.') === 0) {
-        addSkillCommand(command);
-        return;
-      }
-      // 回填命令文本
-      inputEl.value = '/' + command.command;
-      autoResize();
-      if (command.send) {
-        // send=true：直接发送；send=false：回填后由用户编辑
-        handleSend();
-      } else {
-        inputEl.focus();
-      }
-    }
-
-    /** 选中 skill 命令：加入已选列表并在对话框生成引用块（带入场动画），等待用户确认发送。 */
-    function addSkillCommand(command) {
-      if (!command) return;
-      if (!selectedSkills.some((s) => s.id === command.id)) {
-        selectedSkills.push(command);
-      }
-      renderSkillReferences();
-      closeSlashCommandPicker();
-      inputEl.focus();
-    }
-
-    /** 渲染已选 Skill 引用块列表（支持逐个移除）。 */
-    function renderSkillReferences() {
-      skillReferenceList.innerHTML = selectedSkills.map((skill, index) =>
-        '<span class="skill-reference-chip" title="' + escapeAttribute(skill.description || '') + '">' +
-        '<span class="skill-reference-prefix">/</span>' +
-        '<span class="skill-reference-name">' + escapeHtml(skill.label) + '</span>' +
-        '<button type="button" class="file-reference-remove" data-index="' + index +
-        '" aria-label="移除 Skill ' + escapeAttribute(skill.label) + '" title="移除">&times;</button></span>'
-      ).join('');
-      skillReferenceList.querySelectorAll('.file-reference-remove').forEach((button) => {
-        button.addEventListener('click', () => {
-          selectedSkills.splice(Number(button.dataset.index), 1);
-          renderSkillReferences();
-          inputEl.focus();
-        });
-      });
-    }
-
-    function closeSlashCommandPicker() {
-      slashCommandPicker.classList.remove('show');
-      filteredSlashCommands = [];
-      slashCommandIndex = 0;
-    }
-
-    // ── @ file selection ──
-    inputEl.addEventListener('input', handleAtTrigger);
-
-    function handleAtTrigger() {
-      const cursorPos = inputEl.selectionStart;
-      const text = inputEl.value.substring(0, cursorPos);
-      const atStart = text.lastIndexOf('@');
-      const prefix = atStart >= 0 ? text.charAt(atStart - 1) : '';
-      if (atStart < 0 || (prefix && !/\\s/.test(prefix)) || /\\s/.test(text.slice(atStart + 1))) {
-        closeFilePicker();
-        return;
-      }
-      filePickerAtStart = atStart;
-      closeSlashCommandPicker();
-      if (workspaceFiles.length === 0) vscode.postMessage({ command: 'requestWorkspaceFiles' });
-      showFilePicker(text.slice(atStart + 1));
-    }
-
-    function showFilePicker(query) {
-      filteredFiles = workspaceFiles.filter((file) => file.path.toLowerCase().includes(query.toLowerCase())).slice(0, 80);
-      filePickerIndex = Math.min(filePickerIndex, Math.max(filteredFiles.length - 1, 0));
-      filePicker.classList.add('show');
-      renderFilePicker();
-    }
-
-    function renderFilePicker() {
-      if (filteredFiles.length === 0) {
-        filePickerList.innerHTML = '<div class="file-picker-empty">没有匹配的工作区文件</div>';
-        return;
-      }
-      filePickerList.innerHTML = filteredFiles.map((file, index) =>
-        '<button class="file-option' + (index === filePickerIndex ? ' active' : '') + '" role="option" data-index="' + index + '">' +
-        '<span class="file-option-icon">▱</span><span class="file-option-path">' + escapeHtml(file.path) + '</span></button>'
-      ).join('');
-      filePickerList.querySelectorAll('.file-option').forEach((option) => {
-        option.addEventListener('mousedown', (e) => e.preventDefault());
-        option.addEventListener('click', () => selectFile(filteredFiles[Number(option.dataset.index)]));
-      });
-      // 高亮项移出可视区时，滚动弹窗列表跟随，保证键盘/鼠标选择始终可见
-      const activeFileOption = filePickerList.querySelector('.file-option.active');
-      if (activeFileOption) activeFileOption.scrollIntoView({ block: 'nearest' });
-    }
-
-    function selectFile(file) {
-      if (!file || filePickerAtStart < 0) return;
-      const cursorPos = inputEl.selectionStart;
-      const before = inputEl.value.substring(0, filePickerAtStart);
-      const after = inputEl.value.substring(cursorPos);
-      inputEl.value = before + after;
-      inputEl.selectionStart = inputEl.selectionEnd = before.length;
-      if (!selectedFiles.some((selected) => selected.path === file.path)) {
-        selectedFiles.push(file);
-      }
-      renderFileReferences();
-      closeFilePicker();
-      inputEl.focus();
-      autoResize();
-    }
-
-    function renderFileReferences() {
-      fileReferenceList.innerHTML = selectedFiles.map((file, index) => {
-        const extension = file.name.includes('.')
-          ? file.name.split('.').pop().slice(0, 3)
-          : 'file';
-        return '<span class="file-reference-chip" title="' + escapeAttribute(file.path) + '">' +
-          '<span class="file-reference-extension">' + escapeHtml(extension) + '</span>' +
-          '<span class="file-reference-name">' + escapeHtml(file.name) + '</span>' +
-          '<button type="button" class="file-reference-remove" data-index="' + index +
-          '" aria-label="取消引用 ' + escapeAttribute(file.name) + '" title="取消引用">&times;</button></span>';
-      }).join('');
-      fileReferenceList.querySelectorAll('.file-reference-remove').forEach((button) => {
-        button.addEventListener('click', () => {
-          selectedFiles.splice(Number(button.dataset.index), 1);
-          renderFileReferences();
-          inputEl.focus();
-        });
-      });
-    }
-
-    function closeFilePicker() {
-      filePicker.classList.remove('show');
-      filePickerAtStart = -1;
-    }
-
-    function autoResize() {
-      inputEl.style.height = 'auto';
-      inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
-    }
-
-    function startNewSession() {
-      sessionNameInput.value = 'Untitled';
-      vscode.postMessage({ command: 'createSession' });
-    }
-
-    // ── History dropdown ──
-    function toggleHistoryDropdown() {
-      if (historyDropdown.hidden) {
-        openHistoryDropdown();
-      } else {
-        closeHistoryDropdown();
-      }
-    }
-
-    function openHistoryDropdown() {
-      historyDropdown.hidden = false;
-      // 每次打开都向 host 请求最新会话列表（host 回 sessionList）
-      vscode.postMessage({ command: 'requestSessions' });
-    }
-
-    function closeHistoryDropdown() {
-      historyDropdown.hidden = true;
-    }
-
-    /** 渲染历史会话下拉列表；若当前会话已被删除则重置会话状态。 */
-    function renderHistoryDropdown(sessions) {
-      historyList.innerHTML = '';
-      if (currentSessionId && !sessions.some((s) => s.sessionId === currentSessionId)) {
-        // 当前会话已被删除：重置指针并回到空对话状态（含流式状态复位，避免 stopBtn 常驻）
-        currentSessionId = null;
-        setStreaming(false);
-        sessionNameInput.value = 'Untitled';
-        resetConversation();
-        updateInteractionState();
-        messagesEl.innerHTML = \`
-          <div class="placeholder">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor" style="display:block;margin:0 auto 10px;">
-              <path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
-            </svg>
-            <div class="placeholder-title">会话已删除</div>
-            点击新建会话开始新的对话
-          </div>\`;
-      }
-      if (sessions.length === 0) {
-        historyList.innerHTML = '<div class="history-empty">暂无历史会话</div>';
-        return;
-      }
-      for (const s of sessions) {
-        const item = document.createElement('div');
-        item.className = 'history-item' + (s.sessionId === currentSessionId ? ' active' : '');
-        const title = s.title || '新会话';
-        item.innerHTML = \`
-          <div class="history-item-main">
-            <div class="history-item-title">\${escapeHtml(title)}</div>
-            <div class="history-item-meta">\${formatRelativeTime(s.updatedAt)} · \${s.messageCount} 条消息</div>
-          </div>
-          <button class="history-item-del" title="删除会话" aria-label="删除会话">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M6 1h4v1h3v1H3V2h3V1zM4 4h8v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4zm2 2v7h1V6H6zm3 0v7h1V6H9z"/></svg>
-          </button>\`;
-        // 打开历史会话：交由 host 切换当前会话指针并回推 openSession
-        item.addEventListener('click', () => {
-          closeHistoryDropdown();
-          vscode.postMessage({ command: 'openSession', sessionId: s.sessionId });
-        });
-        // 删除会话：host 弹确认框，确认后删除并回推最新 sessionList
-        const delBtn = item.querySelector('.history-item-del');
-        delBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          vscode.postMessage({ command: 'deleteSession', sessionId: s.sessionId });
-        });
-        historyList.appendChild(item);
-      }
-    }
-
-    /** 将 ISO 时间格式化为相对时间（刚刚/x 分钟前/x 小时前/x 天前/日期）。 */
-    function formatRelativeTime(iso) {
-      const diff = Date.now() - new Date(iso).getTime();
-      const minute = 60000;
-      const hour = 60 * minute;
-      const day = 24 * hour;
-      if (diff < minute) return '刚刚';
-      if (diff < hour) return Math.floor(diff / minute) + ' 分钟前';
-      if (diff < day) return Math.floor(diff / hour) + ' 小时前';
-      if (diff < 30 * day) return Math.floor(diff / day) + ' 天前';
-      return new Date(iso).toLocaleDateString();
-    }
-
-    function handleSend() {
-      const userText = inputEl.value.trim();
-      const files = selectedFiles.slice();
-      const skills = selectedSkills.slice();
-      if ((!userText && files.length === 0 && skills.length === 0) || !currentSessionId || isStreaming) return;
-
-      finishTurn(); // 收束上一回合，新回合从这条用户消息之后开始
-      // 用户气泡展示引用文件与已选 Skill（纯文本提示，不污染工具调用路径）
-      const displayParts = [];
-      if (files.length > 0) {
-        displayParts.push('引用文件: ' + files.map((file) => file.path).join(', '));
-      }
-      if (skills.length > 0) {
-        displayParts.push('调用 Skill: ' + skills.map((s) => '/' + s.command).join(', '));
-      }
-      if (userText) {
-        displayParts.push(userText);
-      }
-      appendUserMsg(displayParts.join('\\n'));
-      inputEl.value = '';
-      selectedFiles = [];
-      selectedSkills = [];
-      renderFileReferences();
-      renderSkillReferences();
-      autoResize();
-      setStreaming(true);
-      currentAssistantTxt = '';
-      currentAssistantEl = null;
-      currentAssistantRow = null;
-
-      // 文件引用与 Skill 作为独立字段传递，由扩展主进程拼装上下文注入
-      vscode.postMessage({
-        command: 'sendMessage',
-        sessionId: currentSessionId,
-        text: userText,
-        files,
-        skills: skills.map((s) => s.command),
-      });
-    }
-
-    // ── Message rendering ──
-    function clearPlaceholder() {
-      const p = messagesEl.querySelector('.placeholder');
-      if (p) p.remove();
-    }
-
-    /** 清空消息流、所有回合级 DOM 引用与会话级 token 累计条（新建/切换会话后清零）。 */
-    function resetConversation() {
-      messagesEl.innerHTML = '';
-      selectedFiles = [];
-      selectedSkills = [];
-      renderFileReferences();
-      renderSkillReferences();
-      toolEntries.clear();
-      approvalCards.clear();
-      diffCards.clear();
-      currentTurn = null;
-      currentAssistantEl = null;
-      currentAssistantRow = null;
-      currentAssistantTxt = '';
-      currentThoughtEl = null;
-      userTurnCount = 0;
-      currentThoughtTxt = '';
-      // 会话级 token 累计条一并清零：新会话历史为空时不会重新触发 showSessionTokenUsage，
-      // 若不重置会残留上一会话的累计数字
-      const tokenBar = document.getElementById('sessionTokenBar');
-      if (tokenBar) {
-        tokenBar.hidden = true;
-        const totalEl = tokenBar.querySelector('.stb-total');
-        if (totalEl) totalEl.textContent = '0';
-        const itemsEl = tokenBar.querySelector('.stb-items');
-        if (itemsEl) itemsEl.innerHTML = '';
-        tokenBar.title = '';
-      }
-    }
-
-    /** 判断用户是否在底部附近（用于流式输出时决定是否自动跟随） */
-    function isNearBottom() {
-      const threshold = 80;
-      return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < threshold;
-    }
-
-    /** 用户手动滚动时记录位置，阻止流式自动跟随 */
-    let userScrolledAway = false;
-    messagesEl.addEventListener('scroll', () => {
-      if (isNearBottom()) {
-        userScrolledAway = false;
-      } else if (isStreaming) {
-        userScrolledAway = true;
-      }
-    });
-
-    /** 强制滚动到底部（用户消息、新会话等非流式场景） */
-    function scrollToBottom() {
-      userScrolledAway = false;
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
-
-    /** 流式输出期间智能滚动：仅当用户未手动上滑时跟随 */
-    function smartScrollToBottom() {
-      if (!userScrolledAway) {
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-      }
-    }
-
-    function renderMarkdown(el, text) {
-      if (typeof window.marked !== 'undefined') {
-        el.innerHTML = window.marked.parse(text, { breaks: true });
-      } else {
-        el.textContent = text;
-      }
-    }
-
-    /** 用户消息轮次计数器（1-based） */
-    let userTurnCount = 0;
-
-    function appendUserMsg(text) {
-      clearPlaceholder();
-      userTurnCount++;
-      const row = document.createElement('div');
-      row.className = 'msg-row user-row';
-      row.dataset.turn = String(userTurnCount);
-      const bubble = document.createElement('div');
-      bubble.className = 'message user';
-      bubble.textContent = text;
-      row.appendChild(bubble);
-
-      // 悬停操作：删除
-      const actions = document.createElement('div');
-      actions.className = 'msg-actions';
-
-      const deleteBtn = document.createElement('button');
-      deleteBtn.className = 'msg-action-btn delete-btn';
-      deleteBtn.title = '删除此消息';
-      deleteBtn.innerHTML = DELETE_ICON;
-      deleteBtn.addEventListener('click', () => deleteUserMessage(row));
-      actions.appendChild(deleteBtn);
-
-      row.appendChild(actions);
-      messagesEl.appendChild(row);
-      scrollToBottom();
-    }
-
-    /** 删除用户消息及其后续助手回合 */
-    function deleteUserMessage(row) {
-      if (isStreaming) return;
-      const next = row.nextElementSibling;
-      if (next && next.classList.contains('turn')) {
-        next.remove();
-      }
-      row.remove();
-    }
-
-    /** 复制图标 SVG */
-    const COPY_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="8" height="10" rx="1.5"/><path d="M3 5v7a1.5 1.5 0 0 0 1.5 1.5H11"/></svg>\`;
-    const COPIED_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6"/></svg>\`;
-    const LIKE_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5L5.5 6.5v7h6l1.5-4V8h-4l.5-2.5L7 3.5z"/><path d="M5.5 6.5H3.5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h2"/></svg>\`;
-    const LIKED_ICON = \`<svg viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5L5.5 6.5v7h6l1.5-4V8h-4l.5-2.5L7 3.5z"/><path d="M5.5 6.5H3.5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h2"/></svg>\`;
-    const DELETE_ICON = \`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M5.5 4V2.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V4M4.5 4v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4"/><path d="M6.5 7.5v3.5M9.5 7.5v3.5"/></svg>\`;
-
-    /** 执行复制操作 */
-    async function copyText(text, btn) {
-      try {
-        await navigator.clipboard.writeText(text || '');
-      } catch (err) {
-        const textarea = document.createElement('textarea');
-        textarea.value = text || '';
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
-      btn.classList.add('copied');
-      btn.innerHTML = COPIED_ICON;
-      setTimeout(() => {
-        btn.classList.remove('copied');
-        btn.innerHTML = COPY_ICON;
-      }, 2000);
-    }
-
-    /** 格式化数字（千分位） */
-    function formatNumber(n) {
-      if (typeof n !== 'number' || n === 0) return '0';
-      return n.toLocaleString('en-US');
-    }
-
-    /** 按云端上下文上限格式化本轮 Token 用量 */
-    function formatTokenUsage(usage, inputLength) {
-      const total = usage && Number.isFinite(usage.total_tokens) ? usage.total_tokens : 0;
-      const prompt = usage && Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : 0;
-      const completion = usage && Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : 0;
-      if (total <= 0 || !Number.isFinite(inputLength) || inputLength <= 0) {
-        return { text: '--', title: 'Token 用量不可用', percent: null };
-      }
-      const percent = Number(((total / inputLength) * 100).toFixed(1));
-      const ratio = formatNumber(total) + ' / ' + formatNumber(inputLength) + ' (' + percent.toFixed(1) + '%)';
-      return {
-        text: ratio,
-        title: '本轮 Token 消耗：' + ratio + '；输入 ' + formatNumber(prompt) + '，输出 ' + formatNumber(completion),
-        percent,
-      };
-    }
-
-    /** 创建消息操作栏 */
-    function createMsgActions(getText, onDelete) {
-      const actions = document.createElement('div');
-      actions.className = 'msg-actions';
-
-      // Token 用量显示
-      const tokenUsage = document.createElement('span');
-      tokenUsage.className = 'token-usage';
-      tokenUsage.innerHTML = \`
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="8" cy="8" r="6"/>
-          <path d="M8 4v4l2 2"/>
-        </svg>
-        <span class="token-count">--</span>
-        <span class="token-progress" hidden><span class="token-progress-fill"></span></span>
-      \`;
-      tokenUsage.title = 'Token 用量不可用';
-      actions.appendChild(tokenUsage);
-
-      // 复制按钮
-      const copyBtn = document.createElement('button');
-      copyBtn.className = 'msg-action-btn copy-btn';
-      copyBtn.title = '复制回复';
-      copyBtn.innerHTML = COPY_ICON;
-      copyBtn.addEventListener('click', () => copyText(getText(), copyBtn));
-      actions.appendChild(copyBtn);
-
-      // 点赞按钮
-      const likeBtn = document.createElement('button');
-      likeBtn.className = 'msg-action-btn like-btn';
-      likeBtn.title = '点赞';
-      likeBtn.innerHTML = LIKE_ICON;
-      likeBtn.addEventListener('click', () => {
-        likeBtn.classList.toggle('liked');
-        likeBtn.innerHTML = likeBtn.classList.contains('liked') ? LIKED_ICON : LIKE_ICON;
-      });
-      actions.appendChild(likeBtn);
-
-      // 删除按钮
-      if (onDelete) {
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'msg-action-btn delete-btn';
-        deleteBtn.title = '删除此消息';
-        deleteBtn.innerHTML = DELETE_ICON;
-        deleteBtn.addEventListener('click', onDelete);
-        actions.appendChild(deleteBtn);
-      }
-
-      return actions;
-    }
-
-    /** 更新消息的 token 显示 */
-    function updateMsgTokenUsage(row, usage, inputLength) {
-      if (!row) return;
-      const tokenEl = row.querySelector('.token-usage');
-      if (!tokenEl || !usage) return;
-
-      const formatted = formatTokenUsage(usage, inputLength);
-
-      const countEl = tokenEl.querySelector('.token-count');
-      if (countEl) {
-        countEl.textContent = formatted.text;
-      }
-      tokenEl.title = formatted.title;
-
-      const progressEl = tokenEl.querySelector('.token-progress');
-      const progressFillEl = tokenEl.querySelector('.token-progress-fill');
-      if (progressEl && progressFillEl) {
-        progressEl.hidden = formatted.percent === null;
-        progressFillEl.style.width = formatted.percent === null
-          ? '0'
-          : Math.min(formatted.percent, 100) + '%';
-      }
-    }
-
-    /** 回复气泡挂在当前回合消息流末尾——与思考/工具步骤按发生顺序交错。 */
-    function appendAssistantBubble(streaming) {
-      const turn = ensureTurn();
-      const row = document.createElement('div');
-      row.className = 'msg-row';
-      row.innerHTML = '<div class="msg-label">回复</div>';
-      const bubble = document.createElement('div');
-      bubble.className = 'message assistant' + (streaming ? ' cursor' : '');
-      row.appendChild(bubble);
-
-      // 添加操作栏，使用getter函数动态获取最新文本
-      const actions = createMsgActions(() => currentAssistantTxt || bubble.textContent || '', () => {
-        if (isStreaming) return;
-        const turnEl = row.closest('.turn');
-        if (turnEl) turnEl.remove();
-      });
-      row.appendChild(actions);
-
-      turn.rootEl.appendChild(row);
-      currentAssistantRow = row;
-      smartScrollToBottom();
-      return bubble;
-    }
-
-    /** 流式文本轻量追加（纯文本，避免逐 chunk 全量 markdown 重渲染）。 */
-    function updateAssistantMsg(chunk) {
-      currentAssistantTxt += chunk;
-      if (!currentAssistantEl) {
-        currentAssistantEl = appendAssistantBubble(true);
-      }
-      currentAssistantEl.textContent = currentAssistantTxt;
-      smartScrollToBottom();
-    }
-
-    /** 步末终渲染：把当前步已完整的纯文本渲染为 markdown，收尾光标，准备下一条消息。 */
-    function finalizeStepText() {
-      if (currentAssistantEl) {
-        if (currentAssistantTxt) {
-          renderMarkdown(currentAssistantEl, currentAssistantTxt);
-        }
-        currentAssistantEl.classList.remove('cursor');
-      }
-      currentAssistantEl = null;
-      currentAssistantTxt = '';
-      // 步末收尾思考块：结束当前步骤的思考，下一步思考另起一块（避免多步思考聚合在一起）
-      currentThoughtEl = null;
-      currentThoughtTxt = '';
-    }
-
-    function appendMsgFromHistory(role, text, tokenUsage) {
-      if (role === 'user') { appendUserMsg(text); return; }
-      const turn = ensureTurn();
-      const row = document.createElement('div');
-      row.className = 'msg-row';
-      row.innerHTML = '<div class="msg-label">回复</div>';
-      const bubble = document.createElement('div');
-      bubble.className = 'message assistant';
-      row.appendChild(bubble);
-      renderMarkdown(bubble, text);
-
-      // 添加操作栏（历史消息使用闭包捕获text）
-      const actions = createMsgActions(() => text, () => {
-        if (isStreaming) return;
-        const turnEl = row.closest('.turn');
-        if (turnEl) turnEl.remove();
-      });
-      row.appendChild(actions);
-      if (tokenUsage) {
-        updateMsgTokenUsage(row, tokenUsage);
-      }
-
-      turn.rootEl.appendChild(row);
-      finishTurn();
-      scrollToBottom();
-    }
-
-    function mergeStreamText(current, incoming) {
-      if (!incoming) return current;
-      if (!current || incoming.startsWith(current)) return incoming;
-      if (current.startsWith(incoming) || current.endsWith(incoming)) return current;
-      return current + incoming;
-    }
-
-    let compactionEl = null;
-    function showCompaction(active) {
-      if (active && !compactionEl) {
-        compactionEl = document.createElement('div');
-        compactionEl.className = 'step compaction';
-        compactionEl.innerHTML = '<span class="step-dot"></span><span class="step-name">正在压缩上下文…</span>';
-        addStep(compactionEl);
-        smartScrollToBottom();
-      } else if (!active && compactionEl) {
-        const nameEl = compactionEl.querySelector('.step-name');
-        if (nameEl) nameEl.textContent = '上下文压缩完成';
-        compactionEl = null;
-      }
-    }
-
-    function showThought(text) {
-      currentThoughtTxt = mergeStreamText(currentThoughtTxt, text);
-      if (!currentThoughtEl) {
-        const step = document.createElement('div');
-        step.className = 'step thought';
-        step.innerHTML = \`
-          <span class="step-dot"></span>
-          <div class="step-head">
-            <span class="step-icon">
-              <svg viewBox="0 0 16 16" fill="currentColor">
-                <path d="M8 1a5 5 0 0 1 4.9 4.1A3.5 3.5 0 0 1 12.5 12H11v-1h1.5a2.5 2.5 0 0 0 .4-4.97A4 4 0 1 0 4 6.5a3 3 0 0 0-.5 5.97V13h1v-.5A3 3 0 0 0 7 9.5 3.5 3.5 0 0 1 8 2.5z"/>
-              </svg>
-            </span>
-            <span class="step-name">思考</span>
-          </div>
-        \`;
-        const body = document.createElement('div');
-        body.className = 'step-body';
-        step.appendChild(body);
-        addStep(step);
-        currentThoughtEl = step;
-      }
-
-      const body = currentThoughtEl.querySelector('.step-body');
-      body.textContent = currentThoughtTxt;
-      smartScrollToBottom();
-    }
-
-    function showPlan(steps) {
-      const step = document.createElement('div');
-      step.className = 'step plan';
-      step.innerHTML = \`
-        <span class="step-dot"></span>
-        <div class="step-head">
-          <span class="step-icon">
-            <svg viewBox="0 0 16 16" fill="currentColor">
-              <path d="M1 3h10v1H1V3zm0 4h10v1H1V7zm0 4h7v1H1v-1zm12-7v5h1V4h-1zm0 6v3h1v-3h-1z"/>
-            </svg>
-          </span>
-          <span class="step-name">计划</span>
-        </div>
-      \`;
-      const ol = document.createElement('ol');
-      for (const s of steps) {
-        const li = document.createElement('li');
-        li.textContent = s;
-        ol.appendChild(li);
-      }
-      step.appendChild(ol);
-      addStep(step);
-    }
-
-    /** 显示 token 用量信息 */
-    function showTokenUsage(payload) {
-      if (!payload) return;
-      // 优先使用当前回复，引用丢失时回退到最后一条 assistant 消息
-      let row = currentAssistantRow;
-      if (!row && messagesEl) {
-        const assistantMessages = messagesEl.querySelectorAll('.message.assistant');
-        const lastAssistant = assistantMessages.length > 0
-          ? assistantMessages[assistantMessages.length - 1]
-          : null;
-        row = lastAssistant ? lastAssistant.parentElement : null;
-      }
-      if (row) {
-        updateMsgTokenUsage(row, payload.token_usage, payload.input_length);
-        // 更新后清空引用，避免影响后续消息
-        currentAssistantRow = null;
-      }
-    }
-
-    /** 渲染会话级累计条：总量 + 四类拆分 + 上下文占比。估算项带"约"。 */
-    function showSessionTokenUsage(payload) {
-      if (!payload) return;
-      const bar = document.getElementById('sessionTokenBar');
-      if (!bar) return;
-      const total = payload.total_tokens || 0;
-      const b = payload.breakdown || { reasoning: 0, tool_calls: 0, model_output: 0, user_input: 0, context: 0 };
-      bar.hidden = false;
-      bar.querySelector('.stb-total').textContent = formatNumber(total);
-      const itemsEl = bar.querySelector('.stb-items');
-      const items = [
-        { label: '思考', val: b.reasoning || 0, approx: true },
-        { label: '工具', val: b.tool_calls || 0, approx: true },
-        { label: '回复', val: b.model_output || 0, approx: true },
-        { label: '输入', val: b.user_input || 0, approx: true },
-        { label: '上下文', val: b.context || 0, approx: true },
-      ];
-      itemsEl.innerHTML = items.map((it) =>
-        '<span class="stb-item">' +
-          '<span class="stb-label">' + it.label + '</span> ' +
-          '<span class="stb-val">' + (it.approx ? '约' : '') + formatNumber(it.val) + '</span>' +
-        '</span>'
-      ).join('');
-      bar.title = '会话累计 Token：' + formatNumber(total) + '；四类不含上下文';
-    }
-
-    /** 历史重载时按消息聚合会话累计；旧消息无 token 字段时按内容估算补齐（仅展示）。 */
-    function aggregateSessionTokens(messages) {
-      if (!messages || messages.length === 0) return null;
-      let total = 0;
-      const breakdown = { reasoning: 0, tool_calls: 0, model_output: 0, user_input: 0, context: 0 };
-      for (const m of messages) {
-        if (m.role === 'user') {
-          const est = m.inputTokens || Math.ceil((m.content || '').length / 4);
-          breakdown.user_input += est;
-        } else if (m.role === 'assistant') {
-          if (m.tokenUsage) {
-            total += m.tokenUsage.total_tokens || 0;
-            breakdown.reasoning += m.tokenUsage.reasoning || 0;
-            breakdown.tool_calls += m.tokenUsage.tool_calls || 0;
-            breakdown.model_output += m.tokenUsage.model_output || 0;
-            breakdown.user_input += m.tokenUsage.user_input || 0;
-            breakdown.context += m.tokenUsage.context || 0;
-          } else {
-            // 旧消息无 token 账：按内容估算（不回写）
-            const text = (m.content || '') + (m.toolCalls || []).map((tc) => tc.name + tc.arguments).join('');
-            const est = Math.ceil(text.length / 4);
-            breakdown.model_output += est;
-            total += est;
-          }
-        }
-      }
-      if (total <= 0 && breakdown.user_input <= 0 && breakdown.model_output <= 0) return null;
-      total = total || (breakdown.user_input + breakdown.model_output);
-      return { total_tokens: total, breakdown };
-    }
-
-    function showError(msg) {
-      errorEl.textContent = msg;
-      setTimeout(() => { if (errorEl.textContent === msg) errorEl.textContent = ''; }, 5000);
-    }
-
-    function updateInteractionState() {
-      sendBtn.disabled = isStreaming || !currentSessionId;
-      inputEl.disabled = isStreaming || !currentSessionId;
-      openFileBtn.disabled = isStreaming;
-    }
-
-    function setStreaming(state) {
-      isStreaming = state;
-      sendBtn.style.display = state ? 'none' : 'inline-flex';
-      stopBtn.style.display = state ? 'inline-flex' : 'none';
-      stopBtn.disabled = !state;
-      updateInteractionState();
-    }
-
-
-    // ── Host message handler ──
-    window.addEventListener('message', (e) => {
-      const msg = e.data;
-      switch (msg.command) {
-        case 'openSession':
-        case 'sessionCreated': {
-          currentSessionId = msg.sessionId;
-          // 打开历史会话时同步展示标题（新建会话的 sessionCreated 不带 title，不覆盖）
-          if (msg.title) {
-            sessionNameInput.value = msg.title;
-          }
-          resetConversation();
-          setStreaming(false);
-          vscode.postMessage({ command: 'loadHistory', sessionId: currentSessionId });
-          break;
-        }
-        case 'replyChunk':
-          updateAssistantMsg(msg.text);
-          break;
-        case 'replyEnd':
-          setStreaming(false);
-          finalizeStepText();
-          // currentAssistantRow 由 token_usage 事件更新后清理
-          finishTurn();
-          break;
-        case 'stepEnd':
-          finalizeStepText();
-          break;
-        case 'toolState':
-          showToolState(msg.tool, msg.state, msg.error, msg.call_id, msg.args, msg.output);
-          break;
-        case 'toolCall':
-          showToolState(msg.tool, 'pending', undefined, msg.call_id, msg.args);
-          break;
-        case 'toolResult':
-          // tool_result 仅作补充数据，不单独渲染（tool_state_change 已覆盖）
-          break;
-        case 'thought':
-          showThought(msg.text);
-          break;
-        case 'progress':
-          showCompaction(msg.phase === 'compacting');
-          break;
-        case 'plan':
-          showPlan(msg.steps);
-          break;
-        case 'tokenUsage':
-          showTokenUsage(msg.payload);
-          break;
-        case 'sessionTokenUsage':
-          showSessionTokenUsage(msg.payload);
-          break;
-        case 'historyLoaded':
-          resetConversation();
-          if (msg.messages.length === 0) {
-            messagesEl.innerHTML = \`
-              <div class="placeholder">
-                <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor" style="display:block;margin:0 auto 10px;">
-                  <path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
-                </svg>
-                <div class="placeholder-title">会话已创建</div>
-                发送第一条消息开始对话
-              </div>\`;
-          }
-          for (const m of msg.messages) {
-            if (m.role === 'tool' && m.toolCallId) {
-              // 工具结果消息：更新已有 pending 工具步骤，或创建已完成步骤
-              let entry = toolEntries.get(m.toolCallId);
-              if (entry) {
-                entry.state = 'success';
-                entry.output = m.content;
-                entry.stepEl.className = 'step tool clickable success' + (entry.stepEl.classList.contains('expanded') ? ' expanded' : '');
-                entry.stepEl.querySelector('.step-status').innerHTML = getStatusIcon('success');
-                if (m.content) {
-                  entry.detailEl.innerHTML += '<div class="detail-label">结果</div><div class="detail-block">' + escapeHtml(truncate(m.content, 2000)) + '</div>';
-                }
-              } else {
-                showToolState('tool', 'success', undefined, m.toolCallId, undefined, m.content);
-              }
-            } else if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
-              // 含工具调用的 assistant 消息：先渲染回复文本，再渲染工具步骤（与实时交错顺序一致）
-              if (m.content) {
-                appendMsgFromHistory('assistant', m.content, m.tokenUsage);
-              }
-              for (const tc of m.toolCalls) {
-                let parsedArgs;
-                try { parsedArgs = JSON.parse(tc.arguments); } catch { parsedArgs = {}; }
-                showToolState(tc.name, 'success', undefined, tc.id, parsedArgs);
-              }
-            } else {
-              appendMsgFromHistory(m.role, m.content, m.tokenUsage);
-            }
-          }
-          scrollToBottom();
-          // 历史重载后按消息聚合恢复会话累计（旧消息无 token 账时估算补齐展示）
-          const sessionAgg = aggregateSessionTokens(msg.messages);
-          if (sessionAgg) {
-            showSessionTokenUsage(sessionAgg);
-          }
-          break;
-        case 'error':
-          showError(msg.message);
-          if (isStreaming) {
-            setStreaming(false);
-            finalizeStepText();
-            finishTurn();
-          }
-          break;
-        case 'triggerNewSession':
-          startNewSession();
-          break;
-        case 'approvalRequest':
-          showApprovalCard(msg.call_id, msg.tool_name, msg.summary, msg.file_path);
-          break;
-        case 'diffResult':
-          showDiffCard(msg.call_id, msg.file_path, msg.diff_html, msg.additions, msg.deletions);
-          break;
-        case 'workspaceFiles': {
-          workspaceFiles = msg.files || [];
-          if (filePickerAtStart >= 0) {
-            const cursorPos = inputEl.selectionStart;
-            const text = inputEl.value.substring(0, cursorPos);
-            showFilePicker(text.slice(filePickerAtStart + 1));
-          }
-          break;
-        }
-        case 'modelInfo':
-          document.getElementById('modelName').textContent = msg.model || '--';
-          break;
-        case 'slashCommands':
-          slashCommandGroups = msg.groups || [];
-          // 若菜单正打开，立即按当前输入重算过滤
-          if (slashCommandPicker.classList.contains('show')) {
-            handleSlashTrigger();
-          }
-          break;
-        case 'sessionList':
-          renderHistoryDropdown(msg.sessions || []);
-          break;
-      }
-    });
-
-    // init - auto-create first session
-    vscode.postMessage({ command: 'requestSlashCommands' });
-    vscode.postMessage({ command: 'createSession' });
-`;
   }
 }

@@ -1,0 +1,34 @@
+# model-switching Specification
+
+## Purpose
+定义 `/model` 斜杠命令切换当前默认模型的交互契约：仅列出已启用模型并标注默认项、持久化默认模型并重建 LLM Provider、切换不影响进行中的流式回复、API Key 不下发 Webview。
+
+## Requirements
+### Requirement: /model 命令切换当前默认模型
+系统 SHALL 提供 `/model` 斜杠命令用于切换当前默认模型：选中后弹出模型选择列表，仅列出已启用（`enabled`）的模型并标注当前默认项；用户选择后 SHALL 将所选模型持久化为默认模型（写回模型配置文件），并重建 LLM Provider 使后续新发送的消息使用新模型。
+
+#### Scenario: 选中 /model 弹出模型选择列表
+- **WHEN** 用户通过命令菜单选中「切换模型」（`/model`）
+- **THEN** 扩展侧弹出模型选择列表，仅包含已启用模型，且当前默认模型被标注
+
+#### Scenario: 选择模型后切换并持久化
+- **WHEN** 用户在模型选择列表中选择一个已启用模型
+- **THEN** 该模型被持久化为默认模型，对话面板头部模型名更新，之后新发送的消息使用该模型
+
+#### Scenario: 无可用模型时提示且不切换
+- **WHEN** 用户触发 `/model` 但不存在任何已启用模型
+- **THEN** 扩展侧提示用户先配置模型（引导打开设置页），且不执行任何切换
+
+### Requirement: 切换不影响进行中的流式回复
+模型切换 SHALL 只影响切换之后启动的对话运行；用户触发切换时若存在进行中的流式回复，该回复 SHALL 继续使用原模型直至结束，不被中断或中途切换。
+
+#### Scenario: 流式回复进行中切换模型
+- **WHEN** 模型 A 的流式回复进行中，用户通过 `/model` 切换到模型 B
+- **THEN** 当前流式回复继续由模型 A 完成，切换完成后新发送的消息由模型 B 回复
+
+### Requirement: API Key 不下发 Webview
+模型选择列表及切换过程 SHALL 只暴露模型的非敏感信息（模型名、Provider、是否默认、是否已配置密钥），SHALL NOT 将 API Key 明文发送到 Webview。
+
+#### Scenario: 模型列表不含密钥明文
+- **WHEN** 扩展侧组装模型选择列表
+- **THEN** 列表项仅含模型名、Provider 等非敏感字段，不含 API Key 明文

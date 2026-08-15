@@ -81,6 +81,11 @@ export interface LLMRequest {
 	readonly reasoningEffort?: ReasoningEffort;
 	/** 强制流式 */
 	readonly stream: true;
+	/**
+	 * 可选的取消信号（AI SDK runtime 会传入 streamText 以真正取消 provider 请求；
+	 * legacy runtime 忽略该字段，仅靠消费端停止读取实现取消）。
+	 */
+	readonly abortSignal?: AbortSignal;
 }
 
 // ── 流式事件 ──
@@ -114,6 +119,12 @@ export interface UsageEvent {
 	readonly reasoningTokens?: number;
 	/** 总 token 数(provider 提供时),缺失时为 input+output */
 	readonly totalTokens?: number;
+	/** 缓存命中读取 token 数（provider 提供 cache 明细时存在） */
+	readonly cacheReadTokens?: number;
+	/** 缓存写入 token 数（provider 提供 cache 明细时存在） */
+	readonly cacheWriteTokens?: number;
+	/** 非缓存输入 token 数（provider 提供 cache 明细时存在） */
+	readonly noCacheTokens?: number;
 }
 
 /** 流结束 */

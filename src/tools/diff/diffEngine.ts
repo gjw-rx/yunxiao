@@ -1,7 +1,7 @@
 /**
  * Diff 引擎 - unified diff 解析、patch 应用、diff 生成。
  * 基于 `diff` npm 包封装，提供类型安全接口与冲突检测。
- * code.edit 的底层依赖；纯函数，无需 vscode/文件系统即可单测。
+ * code_edit 的底层依赖；纯函数，无需 vscode/文件系统即可单测。
  */
 import { parsePatch, applyPatch, createPatch } from 'diff';
 import * as logger from '../../logger';

@@ -24,7 +24,7 @@ export class SecurityAudit {
 			}
 		}
 
-		if (call.tool === 'terminal.exec' && typeof call.args.command === 'string' && DANGEROUS_COMMAND.test(call.args.command)) {
+		if (call.tool === 'terminal_exec' && typeof call.args.command === 'string' && DANGEROUS_COMMAND.test(call.args.command)) {
 			logger.log('[SecurityAudit] 检测到危险命令 tool=' + call.tool + ' 已交由用户确认');
 			this.metrics.record('audit_allowed');
 			return {

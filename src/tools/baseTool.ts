@@ -4,6 +4,8 @@
  */
 import type { ToolSchema, ToolResult } from '../core/types';
 import { ToolValidationError } from '../core/errors';
+import type { RollbackRecorder } from '../core/rollbackJournal';
+import type { ChangeRecorder } from '../core/changeJournal';
 import * as logger from '../logger';
 
 /** 结果治理：默认最大行数（超出截断并标注）。 */
@@ -54,6 +56,12 @@ export interface ToolContext {
 	readonly sessionId?: string;
 	/** 当前云端 Run ID；旧 v1 流可能缺失。 */
 	readonly runId?: string;
+	/** 当前用户输入消息的 seq（turn 边界），供回滚快照定位所属 turn。 */
+	readonly turnUserSeq?: number;
+	/** 回滚快照记录器（写文件工具在执行前注入改动前状态）。 */
+	readonly rollbackRecorder?: RollbackRecorder;
+	/** 会话代码变更记录器（写文件工具在成功前后记录可回放快照）。 */
+	readonly changeRecorder?: ChangeRecorder;
 	/** 用户警告回调（如敏感文件访问），由会话层桥接到 UI。 */
 	readonly warn?: (message: string) => void;
 	/** 终端输出截断上限（字符），保留尾部。 */
@@ -66,6 +74,21 @@ export interface ToolContext {
 	readonly governMaxLines?: number;
 	/** 结果治理：最大字节数（默认 50KB，UTF-8，超出截断并标注）。 */
 	readonly governMaxBytes?: number;
+	/**
+	 * 工具调用参数转换信息：受信任 Hook 改写参数后由路由层注入，
+	 * 工具（如 terminal_exec）据此展示原始/最终参数与转换来源。
+	 */
+	readonly callTransform?: {
+		/** 不可变原始参数（初始校验后快照）。 */
+		readonly originalArgs: Record<string, unknown>;
+		/** 转换后的最终参数。 */
+		readonly finalArgs: Record<string, unknown>;
+		/** 转换轨迹（Hook ID 与转换后参数，按应用顺序）。 */
+		readonly transforms: readonly {
+			readonly hookId: string;
+			readonly args: Record<string, unknown>;
+		}[];
+	};
 	/** 未来扩展：审批网关回调等（Phase 2+）。 */
 }
 
@@ -91,7 +114,7 @@ export abstract class BaseTool {
 	}
 
 	/**
-	 * 是否自行处理审批（如 code.edit 需先展示 diff 预览再确认）。
+	 * 是否自行处理审批（如 code_edit 需先展示 diff 预览再确认）。
 	 * 默认 false：由路由层统一审批。true 时路由层跳过审批，工具在 execute 内自行弹窗。
 	 */
 	readonly handlesOwnApproval: boolean = false;

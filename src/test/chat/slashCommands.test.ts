@@ -51,10 +51,30 @@ describe('buildSlashCommandGroups', () => {
 		assert.strictEqual(cmd.id, 'skill.plan');
 	});
 
-	it('基础功能包含新建会话与停止回复动作', () => {
+	it('基础功能包含新建会话、停止回复与切换模型动作', () => {
 		const groups = buildSlashCommandGroups(undefined);
 		const basic = groups.find((g) => g.id === 'basic');
 		assert.ok(basic?.commands.some((c) => c.action === 'newSession'));
 		assert.ok(basic?.commands.some((c) => c.action === 'stopStream'));
+		assert.ok(basic?.commands.some((c) => c.action === 'switchModel'));
+	});
+
+	it('切换模型命令：命令词 model、动作 switchModel、不直接发送', () => {
+		const groups = buildSlashCommandGroups(undefined);
+		const basic = groups.find((g) => g.id === 'basic');
+		const cmd = basic?.commands.find((c) => c.command === 'model');
+		assert.ok(cmd, '基础功能分组应包含 /model 命令');
+		assert.strictEqual(cmd.id, 'basic.switch-model');
+		assert.strictEqual(cmd.action, 'switchModel');
+		assert.strictEqual(cmd.label, '切换模型');
+	});
+
+	it('压缩命令：命令词 compact、动作 compactContext、不进入会话文本', () => {
+		const groups = buildSlashCommandGroups(undefined);
+		const basic = groups.find((group) => group.id === 'basic');
+		const command = basic?.commands.find((item) => item.command === 'compact');
+		assert.ok(command, '基础功能分组应包含 /compact 命令');
+		assert.strictEqual(command.id, 'basic.compact');
+		assert.strictEqual(command.action, 'compactContext');
 	});
 });

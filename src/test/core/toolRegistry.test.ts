@@ -8,7 +8,7 @@ import type { ToolCall, ToolSchema } from '../../core/types';
 /** 测试用本地只读工具：回显读取的 path。 */
 class FakeReadTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'fs.read_file',
+		name: 'fs_read_file',
 		description: 'fake read',
 		parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
 		permissions: 'read',
@@ -40,9 +40,9 @@ describe('ToolRegistry', () => {
 	it('registers and looks up a tool', () => {
 		const reg = new ToolRegistry();
 		reg.register(new FakeReadTool());
-		const tool = reg.lookup('fs.read_file');
-		assert.strictEqual(tool.schema.name, 'fs.read_file');
-		assert.strictEqual(reg.has('fs.read_file'), true);
+		const tool = reg.lookup('fs_read_file');
+		assert.strictEqual(tool.schema.name, 'fs_read_file');
+		assert.strictEqual(reg.has('fs_read_file'), true);
 	});
 
 	it('rejects duplicate registration', () => {
@@ -53,7 +53,7 @@ describe('ToolRegistry', () => {
 
 	it('throws ToolNotFoundError for unknown tool', () => {
 		const reg = new ToolRegistry();
-		assert.throws(() => reg.lookup('fs.nonexistent'), ToolNotFoundError);
+		assert.throws(() => reg.lookup('fs_nonexistent'), ToolNotFoundError);
 	});
 
 	it('lists all schemas', () => {
@@ -71,7 +71,7 @@ describe('ToolRouter', () => {
 		const router = new ToolRouter(reg);
 		const call: ToolCall = {
 			call_id: 'c1',
-			tool: 'fs.read_file',
+			tool: 'fs_read_file',
 			args: { path: 'a.ts' },
 		};
 		const result = await router.route(call, CTX);
@@ -84,7 +84,7 @@ describe('ToolRouter', () => {
 		const router = new ToolRouter(new ToolRegistry());
 		const call: ToolCall = {
 			call_id: 'c3',
-			tool: 'fs.missing',
+			tool: 'fs_missing',
 			args: {},
 		};
 		const result = await router.route(call, CTX);
@@ -99,7 +99,7 @@ describe('ToolRouter', () => {
 		const router = new ToolRouter(reg);
 		const call: ToolCall = {
 			call_id: 'c4',
-			tool: 'fs.read_file',
+			tool: 'fs_read_file',
 			args: {},
 		};
 		const result = await router.route(call, CTX);

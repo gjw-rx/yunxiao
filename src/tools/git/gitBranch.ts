@@ -1,5 +1,5 @@
 /**
- * git.branch - 分支管理（write 权限，路由层统一审批）。
+ * git_branch - 分支管理（write 权限，路由层统一审批）。
  *
  * 三种操作：
  * - list（默认）：列出本地分支，标记当前分支
@@ -29,7 +29,7 @@ const UNCOMMITTED_PATTERN = /please commit your changes|would be overwritten|loc
 
 export class GitBranchTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'git.branch',
+		name: 'git_branch',
 		description: '分支管理：列出 / 创建 / 切换本地分支。',
 		parameters: {
 			type: 'object',
@@ -81,7 +81,7 @@ export class GitBranchTool extends BaseTool {
 		}
 
 		const action = (args.action as BranchAction | undefined) ?? 'list';
-		logger.log(`[git.branch] 开始执行 - cwd=${root}, action=${action}, name=${args.name ?? '未指定'}`);
+		logger.log(`[git_branch] 开始执行 - cwd=${root}, action=${action}, name=${args.name ?? '未指定'}`);
 
 		if (action === 'list') {
 			const summary = await git.branch();
@@ -91,7 +91,7 @@ export class GitBranchTool extends BaseTool {
 				commit: b.commit,
 				label: b.label,
 			}));
-			logger.log(`[git.branch] 执行完成 - action=list, branches=${branches.length}, current=${summary.current}, duration_ms=${Date.now() - startedAt}`);
+			logger.log(`[git_branch] 执行完成 - action=list, branches=${branches.length}, current=${summary.current}, duration_ms=${Date.now() - startedAt}`);
 			return {
 				status: 'success',
 				result: JSON.stringify(
@@ -119,7 +119,7 @@ export class GitBranchTool extends BaseTool {
 				};
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
-				logger.error(`[git.branch] 执行失败 - action=create, name=${name}, 错误=${msg}`);
+				logger.error(`[git_branch] 执行失败 - action=create, name=${name}, 错误=${msg}`);
 				return { status: 'error', error: `创建分支失败: ${msg}` };
 			}
 		}
@@ -127,7 +127,7 @@ export class GitBranchTool extends BaseTool {
 		// action === 'checkout'
 		try {
 			await git.checkout(name);
-			logger.log(`[git.branch] 执行完成 - action=checkout, name=${name}, duration_ms=${Date.now() - startedAt}`);
+			logger.log(`[git_branch] 执行完成 - action=checkout, name=${name}, duration_ms=${Date.now() - startedAt}`);
 			return {
 				status: 'success',
 				result: `已切换到分支: ${name}`,
@@ -135,7 +135,7 @@ export class GitBranchTool extends BaseTool {
 			};
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			logger.error(`[git.branch] 执行失败 - action=checkout, name=${name}, 错误=${msg}`);
+			logger.error(`[git_branch] 执行失败 - action=checkout, name=${name}, 错误=${msg}`);
 			if (UNCOMMITTED_PATTERN.test(msg)) {
 				return {
 					status: 'error',

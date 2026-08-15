@@ -36,6 +36,12 @@ export interface TokenUsageSnapshot {
 	readonly total_tokens: number;
 	/** 思考 token（usage 提供时） */
 	readonly reasoning_tokens?: number;
+	/** 缓存命中读取 token（provider 提供 cache 明细时存在，来源为 usage） */
+	readonly cache_read_tokens?: number;
+	/** 缓存写入 token（provider 提供 cache 明细时存在，来源为 usage） */
+	readonly cache_write_tokens?: number;
+	/** 非缓存输入 token（provider 提供 cache 明细时存在，来源为 usage） */
+	readonly no_cache_tokens?: number;
 	/** 思考（优先 usage，缺失时估算） */
 	readonly reasoning: number;
 	/** 工具调用（对 toolCall.name+arguments 估算） */
@@ -48,6 +54,18 @@ export interface TokenUsageSnapshot {
 	readonly context: number;
 	/** 拆分数字是否包含估算（估算比例来源标记） */
 	readonly source: TokenSource;
+}
+
+/** 助手最终回复关联的会话代码变更概览。 */
+export interface ChangeSetReference {
+	/** 变更集 ID。 */
+	readonly id: string;
+	/** 受影响文件数量。 */
+	readonly fileCount: number;
+	/** 累计新增行数。 */
+	readonly additions: number;
+	/** 累计删除行数。 */
+	readonly deletions: number;
 }
 
 // ── 消息类型 ──
@@ -67,6 +85,8 @@ export interface UserMessage {
 	readonly attachments?: Attachment[];
 	/** 用户输入 token 分摊值（估算，供会话累计） */
 	readonly inputTokens?: number;
+	/** 是否为系统注入消息（step 预警、空回复提示、doom 引导等）；真实用户输入缺省为 false，用于识别 turn 边界 */
+	readonly injected?: boolean;
 }
 
 /** 助手消息 */
@@ -77,6 +97,8 @@ export interface AssistantMessage {
 	readonly seq: number;
 	/** 本步 token 账快照（真实 usage + 四类拆分 + 来源） */
 	readonly tokenUsage?: TokenUsageSnapshot;
+	/** 最终回复对应的会话代码变更概览。 */
+	readonly changeSet?: ChangeSetReference;
 }
 
 /** 工具结果消息 */
@@ -94,6 +116,8 @@ export interface CompactionMessage {
 	readonly summary: string;
 	/** 压缩时保留的近期消息原文（含 seq） */
 	readonly recentContext: Message[];
+	/** 压缩检查点时捕获的活跃任务上下文（可选；旧检查点或当时无活跃任务时缺失）。 */
+	readonly todoContext?: string;
 	readonly seq: number;
 }
 

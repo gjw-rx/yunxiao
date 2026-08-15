@@ -1,5 +1,5 @@
 /**
- * fs.delete_file - 删除文件/空目录（destructive 权限，经审批网关）。
+ * fs_delete_file - 删除文件/空目录（destructive 权限，经审批网关）。
  * 优先移入系统回收站（vscode.workspace.fs useTrash）；不可用时回退永久删除并标注。
  * 删除函数可注入，便于无 vscode 单测。
  */
@@ -47,7 +47,7 @@ const defaultDeleteFn: DeleteFn = async (fsPath, recursive): Promise<DeleteResul
 
 export class DeleteFileTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'fs.delete_file',
+		name: 'fs_delete_file',
 		description: '删除工作区内文件或目录，优先移入回收站（destructive，需审批）。',
 		parameters: {
 			type: 'object',
@@ -79,7 +79,7 @@ export class DeleteFileTool extends BaseTool {
 		const inputPath = args.path as string;
 		const recursive = args.recursive === true;
 		const startedAt = Date.now();
-		logger.log(`[fs.delete_file] 开始 - path=${inputPath}, recursive=${recursive}`);
+		logger.log(`[fs_delete_file] 开始 - path=${inputPath}, recursive=${recursive}`);
 
 		// 1. 路径安全解析
 		let resolved;
@@ -89,7 +89,7 @@ export class DeleteFileTool extends BaseTool {
 			});
 		} catch (err) {
 			if (err instanceof PathGuardError) {
-				logger.error(`[fs.delete_file] 路径解析失败 - path=${inputPath}, error=${err.message}`);
+				logger.error(`[fs_delete_file] 路径解析失败 - path=${inputPath}, error=${err.message}`);
 				return { status: 'error', error: err.message };
 			}
 			throw err;
@@ -102,14 +102,41 @@ export class DeleteFileTool extends BaseTool {
 			return { status: 'error', error: `文件不存在: ${inputPath}` };
 		}
 		if (await hasVersionConflict(resolved.fsPath, args.expectedVersion)) {
-			logger.error(`[fs.delete_file] 版本冲突未删除 - path=${inputPath}`);
+			logger.error(`[fs_delete_file] 版本冲突未删除 - path=${inputPath}`);
 			return { status: 'error', error: `文件已被并发修改，未删除: ${inputPath}`, metadata: { retryable: false } };
+		}
+
+		// 2.5 记录回滚快照（删除前保存内容，供 turn 回滚恢复）
+		if (context.sessionId && context.turnUserSeq !== undefined && context.rollbackRecorder) {
+			await context.rollbackRecorder.record({
+				sessionId: context.sessionId,
+				userSeq: context.turnUserSeq,
+				fsPath: resolved.fsPath,
+				relativePath: resolved.relativePath,
+				existedBefore: true,
+			});
+		}
+		if (context.sessionId && context.turnUserSeq !== undefined && context.changeRecorder) {
+			await context.changeRecorder.recordBefore({
+				sessionId: context.sessionId,
+				userSeq: context.turnUserSeq,
+				fsPath: resolved.fsPath,
+				relativePath: resolved.relativePath,
+			});
 		}
 
 		// 3. 删除
 		try {
 			const result = await this.deleteFn(resolved.fsPath, recursive);
-			logger.log(`[fs.delete_file] 完成 - path=${inputPath}, permanent=${result.permanent}, duration_ms=${Date.now() - startedAt}`);
+			if (context.sessionId && context.turnUserSeq !== undefined && context.changeRecorder) {
+				await context.changeRecorder.recordAfter({
+					sessionId: context.sessionId,
+					userSeq: context.turnUserSeq,
+					fsPath: resolved.fsPath,
+					relativePath: resolved.relativePath,
+				});
+			}
+			logger.log(`[fs_delete_file] 完成 - path=${inputPath}, permanent=${result.permanent}, duration_ms=${Date.now() - startedAt}`);
 			return {
 				status: 'success',
 				result: result.permanent
@@ -121,7 +148,7 @@ export class DeleteFileTool extends BaseTool {
 				},
 			};
 		} catch (err) {
-			logger.error(`[fs.delete_file] 删除失败 - path=${inputPath}, error=${err instanceof Error ? err.message : String(err)}`);
+			logger.error(`[fs_delete_file] 删除失败 - path=${inputPath}, error=${err instanceof Error ? err.message : String(err)}`);
 			return {
 				status: 'error',
 				error: `删除失败: ${inputPath}（${err instanceof Error ? err.message : String(err)}）`,

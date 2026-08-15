@@ -1,5 +1,5 @@
 /**
- * code.workspace_symbols - 按名称搜索工作区符号（read 权限，本地执行）。
+ * code_workspace_symbols - 按名称搜索工作区符号（read 权限，本地执行）。
  *
  * 通过 VSCode Language API（vscode.executeWorkspaceSymbolProvider）查询工作区内符号。
  * vscode 访问可注入，便于无 vscode 单测。
@@ -76,14 +76,14 @@ interface WorkspaceSymbolItem {
 	column: number;
 }
 
-/** code.workspace_symbols 构造依赖。 */
+/** code_workspace_symbols 构造依赖。 */
 export interface WorkspaceSymbolsToolOptions {
 	readonly vscode?: VsCodeCommandsShim;
 }
 
 export class WorkspaceSymbolsTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'code.workspace_symbols',
+		name: 'code_workspace_symbols',
 		description: '按名称搜索工作区符号（函数、类、接口等），返回匹配符号的位置信息。',
 		parameters: {
 			type: 'object',
@@ -111,7 +111,7 @@ export class WorkspaceSymbolsTool extends BaseTool {
 		_context: ToolContext
 	): Promise<ToolExecutionResult> {
 		const query = args.query as string;
-		logger.log(`[code.workspace_symbols] 开始执行 - query=${query}`);
+		logger.log(`[code_workspace_symbols] 开始执行 - query=${query}`);
 
 		let raw: unknown;
 		try {
@@ -120,7 +120,7 @@ export class WorkspaceSymbolsTool extends BaseTool {
 				query
 			);
 		} catch (err) {
-			logger.error(`[code.workspace_symbols] 搜索失败 - query=${query}, error=${err instanceof Error ? err.message : String(err)}`);
+			logger.error(`[code_workspace_symbols] 搜索失败 - query=${query}, error=${err instanceof Error ? err.message : String(err)}`);
 			return {
 				status: 'error',
 				error: `工作区符号搜索失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -148,7 +148,7 @@ export class WorkspaceSymbolsTool extends BaseTool {
 			payload.total = total;
 		}
 
-		logger.log(`[code.workspace_symbols] 执行完成 - query=${query}, 命中数=${total}, truncated=${truncated}`);
+		logger.log(`[code_workspace_symbols] 执行完成 - query=${query}, 命中数=${total}, truncated=${truncated}`);
 		return {
 			status: 'success',
 			result: JSON.stringify(payload),

@@ -16,7 +16,7 @@ import type { WorkspaceState } from '../../core/toolExecutionJournal';
 class FakeWriteTool extends BaseTool {
 	readonly executed: string[] = [];
 	readonly schema: ToolSchema = {
-		name: 'fs.write_file',
+		name: 'fs_write_file',
 		description: 'fake write',
 		parameters: {
 			type: 'object',
@@ -56,7 +56,7 @@ describe('ToolRouter approval gating', () => {
 		const router = new ToolRouter(reg, gw);
 		const call: ToolCall = {
 			call_id: 'c1',
-			tool: 'fs.write_file',
+			tool: 'fs_write_file',
 			args: { path: 'a.ts', content: 'x' },
 		};
 		// Act
@@ -78,7 +78,7 @@ describe('ToolRouter approval gating', () => {
 		const router = new ToolRouter(reg, gw);
 		const call: ToolCall = {
 			call_id: 'c2',
-			tool: 'fs.write_file',
+			tool: 'fs_write_file',
 			args: { path: 'a.ts', content: 'x' },
 		};
 		// Act
@@ -95,7 +95,7 @@ describe('ToolRouter approval gating', () => {
 		reg.register(
 			new (class extends BaseTool {
 				readonly schema: ToolSchema = {
-					name: 'fs.read_file',
+					name: 'fs_read_file',
 					description: 'fake read',
 					parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
 					permissions: 'read',
@@ -116,7 +116,7 @@ describe('ToolRouter approval gating', () => {
 		const router = new ToolRouter(reg, gw);
 		// Act
 		const result = await router.route(
-			{ call_id: 'c3', tool: 'fs.read_file', args: { path: 'a.ts' } },
+			{ call_id: 'c3', tool: 'fs_read_file', args: { path: 'a.ts' } },
 			CTX
 		);
 		// Assert
@@ -136,7 +136,7 @@ describe('ToolRouter approval gating', () => {
 		const router = new ToolRouter(reg, gw);
 		const call: ToolCall = {
 			call_id: 'c4',
-			tool: 'fs.write_file',
+			tool: 'fs_write_file',
 			args: { path: 'a.ts', content: 'x' },
 		};
 		// Act
@@ -154,7 +154,7 @@ describe('ToolRouter approval gating', () => {
 		const router = new ToolRouter(reg); // 无 gateway
 		// Act
 		const result = await router.route(
-			{ call_id: 'c5', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' } },
+			{ call_id: 'c5', tool: 'fs_write_file', args: { path: 'a.ts', content: 'x' } },
 			CTX
 		);
 		// Assert
@@ -167,7 +167,7 @@ describe('ToolRouter approval gating', () => {
 		const tool = new FakeWriteTool();
 		reg.register(tool);
 		const router = new ToolRouter(reg, undefined, undefined, new ToolExecutionJournal(new MemoryState()));
-		const call: ToolCall = { call_id: 'c6', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' } };
+		const call: ToolCall = { call_id: 'c6', tool: 'fs_write_file', args: { path: 'a.ts', content: 'x' } };
 		const first = await router.route(call, { ...CTX, runId: 'run-1' });
 		const second = await router.route(call, { ...CTX, runId: 'run-1' });
 		assert.deepStrictEqual(second, first);
@@ -179,10 +179,10 @@ describe('ToolRouter approval gating', () => {
 		const tool = new FakeWriteTool();
 		reg.register(tool);
 		const journal = new ToolExecutionJournal(new MemoryState());
-		await journal.begin({ scopeId: 'run-1', callId: 'c7' }, 'fs.write_file');
+		await journal.begin({ scopeId: 'run-1', callId: 'c7' }, 'fs_write_file');
 		const router = new ToolRouter(reg, undefined, undefined, journal);
 		const result = await router.route(
-			{ call_id: 'c7', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' } },
+			{ call_id: 'c7', tool: 'fs_write_file', args: { path: 'a.ts', content: 'x' } },
 			{ ...CTX, runId: 'run-1' },
 		);
 		assert.strictEqual(result.status, 'error');
@@ -203,11 +203,11 @@ describe('ToolRouter approval gating', () => {
 		const journal = new ToolExecutionJournal(new MemoryState());
 		const router = new ToolRouter(reg, undefined, undefined, journal);
 		const controller = new AbortController();
-		const call: ToolCall = { call_id: 'c8', tool: 'fs.write_file', args: { path: 'a.ts', content: 'x' } };
+		const call: ToolCall = { call_id: 'c8', tool: 'fs_write_file', args: { path: 'a.ts', content: 'x' } };
 		const pending = router.route(call, { ...CTX, runId: 'run-1', abortSignal: controller.signal });
 		controller.abort();
 		await pending;
-		assert.deepStrictEqual(await journal.begin({ scopeId: 'run-1', callId: 'c8' }, 'fs.write_file'), { kind: 'unknown' });
+		assert.deepStrictEqual(await journal.begin({ scopeId: 'run-1', callId: 'c8' }, 'fs_write_file'), { kind: 'unknown' });
 	});
 
 	it('execute 抛异常转结构化 error（无堆栈、不 rejects）', async () => {

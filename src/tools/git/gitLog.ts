@@ -1,5 +1,5 @@
 /**
- * git.log - 查询提交历史（只读）。
+ * git_log - 查询提交历史（只读）。
  *
  * 返回最近 maxCount 条提交（默认 20，上限 200），可按路径过滤。
  * 每条提交包含 hash、作者、日期与提交信息首行。
@@ -30,7 +30,7 @@ interface LogEntry {
 
 export class GitLogTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'git.log',
+		name: 'git_log',
 		description: '查询 git 提交历史：最近 maxCount 条提交（默认 20），可按路径过滤。',
 		parameters: {
 			type: 'object',
@@ -80,19 +80,19 @@ export class GitLogTool extends BaseTool {
 		const startedAt = Date.now();
 		const root = context.workspaceRoots[0];
 		if (!root) {
-			logger.error('[git.log] 执行失败 - 错误=未打开工作区');
+			logger.error('[git_log] 执行失败 - 错误=未打开工作区');
 			return { status: 'error', error: '未打开工作区' };
 		}
 		const git = this.createClient(root);
 
 		if (!(await git.checkIsRepo())) {
-			logger.error(`[git.log] 执行失败 - 错误=当前工作区不是 git 仓库, cwd=${root}`);
+			logger.error(`[git_log] 执行失败 - 错误=当前工作区不是 git 仓库, cwd=${root}`);
 			return { status: 'error', error: '当前工作区不是 git 仓库' };
 		}
 
 		const maxCount = (args.maxCount as number | undefined) ?? DEFAULT_MAX_COUNT;
 		const file = args.path as string | undefined;
-		logger.log(`[git.log] 开始执行 - cwd=${root}, maxCount=${maxCount}, path=${file ?? '未指定'}`);
+		logger.log(`[git_log] 开始执行 - cwd=${root}, maxCount=${maxCount}, path=${file ?? '未指定'}`);
 		const summary = await git.log({
 			maxCount,
 			...(file ? { file } : {}),
@@ -104,7 +104,7 @@ export class GitLogTool extends BaseTool {
 			date: c.date,
 			message: c.message,
 		}));
-		logger.log(`[git.log] 执行完成 - count=${commits.length}, duration_ms=${Date.now() - startedAt}`);
+		logger.log(`[git_log] 执行完成 - count=${commits.length}, duration_ms=${Date.now() - startedAt}`);
 
 		return {
 			status: 'success',

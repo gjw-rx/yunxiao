@@ -1,12 +1,12 @@
 /**
- * terminal.exec - 受控终端执行（execute 权限，自行处理审批）。
+ * terminal_exec - 受控终端执行（execute 权限，自行处理审批）。
  *
  * 流程：ShellWhitelist.classify ->
  *   dangerous -> ApprovalGateway 审批 -> 允许则执行，拒绝则 cancelled
  *   whitelisted -> 直接执行
  *   unknown -> ApprovalGateway 审批 -> 允许则执行，拒绝则 cancelled
  *
- * 执行：child_process.spawn(shell, [flag, command], { cwd })，捕获 stdout/stderr/exitCode。
+ * 执行：child_process.spawn(shell, [flag, command], { cwd })，Windows 下先切换 UTF-8 代码页，捕获 stdout/stderr/exitCode。
  * 超时：setTimeout -> SIGTERM -> 2s 宽限 -> SIGKILL。
  * 取消：监听 context.abortSignal -> proc.kill()。
  * 输出截断：stdout/stderr 各截断至 terminalOutputLimit（保留尾部）。
@@ -27,7 +27,7 @@ import { ShellWhitelist } from './shellWhitelist';
 import type { ApprovalGateway } from '../../core/approvalGateway';
 import * as logger from '../../logger';
 
-/** terminal.exec 构造依赖。 */
+/** terminal_exec 构造依赖。 */
 export interface TerminalExecToolOptions {
 	readonly approval: ApprovalGateway;
 	readonly shellWhitelist: ShellWhitelist;
@@ -53,7 +53,7 @@ export type SpawnFn = (
 
 export class TerminalExecTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'terminal.exec',
+		name: 'terminal_exec',
 		description:
 			'在工作区执行 shell 命令，捕获 stdout/stderr/exitCode。危险命令（rm -rf、管道、重定向等）和未知命令需用户审批；白名单命令（npm test 等）自动放行。用于运行测试/构建/lint。',
 		parameters: {
@@ -123,7 +123,14 @@ export class TerminalExecTool extends BaseTool {
 		args: Record<string, unknown>,
 		context: ToolContext
 	): Promise<ToolExecutionResult> {
+		// 最终命令（可能已由受信任 Hook 改写）；原始命令与转换来源由路由层经 callTransform 注入
 		const command = args.command as string;
+		const transform = context.callTransform;
+		const originalCommand =
+			typeof transform?.originalArgs.command === 'string'
+				? transform.originalArgs.command
+				: command;
+		const transformSources = (transform?.transforms ?? []).map((entry) => entry.hookId);
 		const startedAt = Date.now();
 
 		// 1. 解析 cwd
@@ -145,26 +152,53 @@ export class TerminalExecTool extends BaseTool {
 			cwd = context.workspaceRoots[0] ?? process.cwd();
 		}
 
-		// 2. 命令分类
-		const classifyResult = this.shellWhitelist.classify(command);
-
-		if (classifyResult.category === 'dangerous') {
-			logger.log(`# [Terminal] 危险命令待审批 - command=${command.slice(0, 100)}, reason=${classifyResult.reason}`);
+		// 2. 命令分类：危险检查对原始与最终命令均执行（任一命中即拦截，不弹审批）；
+		//    白名单与删除意图基于原始命令判断，保留用户原有的自动允许与 destructive 语义。
+		const originalClassify = this.shellWhitelist.classify(originalCommand);
+		const transformed = command !== originalCommand;
+		const finalClassify = transformed ? this.shellWhitelist.classify(command) : originalClassify;
+		if (originalClassify.category === 'dangerous' || finalClassify.category === 'dangerous') {
+			const reason =
+				originalClassify.category === 'dangerous'
+					? originalClassify.reason
+					: finalClassify.reason;
+			logger.log(`# [Terminal] 危险命令已拦截 - command=${command.slice(0, 100)}, reason=${reason}`);
+			return {
+				status: 'cancelled',
+				error: `危险命令已被拦截: ${reason}`,
+				metadata: { duration_ms: Date.now() - startedAt },
+			};
 		}
 
-		// 3. 危险或未知命令交由用户审批
-		if (classifyResult.category !== 'whitelisted') {
-			const risk = classifyResult.category === 'dangerous'
-				? `检测到危险模式：${classifyResult.reason}\n`
-				: '';
-			const summary = `${risk}terminal.exec 将执行：\n${command}`;
-			const decision = await this.approval.requestApproval(
-				'terminal.exec',
-				summary,
-				context.sessionId,
-				undefined,
-				{ workspaceId: context.workspaceRoots.join('|'), resourcePattern: 'command', commandPattern: command }
-			);
+		// 3. 审批判断：白名单基于原始命令；但发生转换时最终命令必须重新走完整分类——
+		//    若最终命令去掉 `rtk ` 前缀后仍是白名单命令（等价改写），保持自动允许；
+		//    否则按最终命令实际分类处理（unknown 需审批、删除意图走 destructive），
+		//    防止转换把白名单命令替换为未审批的任意命令（如 `rm x`）。
+		let effectiveClassify = originalClassify;
+		if (transformed) {
+			const withoutRtk = command.trim().startsWith('rtk ')
+				? command.trim().slice(4).trim()
+				: command.trim();
+			effectiveClassify = withoutRtk !== originalCommand.trim()
+				? finalClassify
+				: this.shellWhitelist.classify(withoutRtk);
+		}
+		if (effectiveClassify.category !== 'whitelisted') {
+			const summary = this.buildApprovalSummary(originalCommand, command, transformSources);
+			const scope = {
+				workspaceId: context.workspaceRoots.join('|'),
+				resourcePattern: 'command',
+				commandPattern: originalCommand,
+			};
+			const isDeletion = this.shellWhitelist.isDeletionCommand(originalCommand)
+				|| (transformed && this.shellWhitelist.isDeletionCommand(command));
+			const decision = isDeletion
+				? await this.approval.requestDestructiveApproval(
+					'terminal_exec', summary, context.sessionId, undefined, scope
+				)
+				: await this.approval.requestApproval(
+					'terminal_exec', summary, context.sessionId, undefined, scope
+				);
 			if (decision === 'deny') {
 				return {
 					status: 'cancelled',
@@ -174,11 +208,11 @@ export class TerminalExecTool extends BaseTool {
 			}
 		}
 
-		// 4. 执行命令
+		// 4. 执行最终命令（改写后命令由实际 Shell 执行）
 		const timeoutMs = (args.timeoutMs as number) ?? this.terminalTimeoutMs;
 		const outputLimit = context.terminalOutputLimit ?? this.terminalOutputLimit;
 
-		logger.log(`# [Terminal] 开始执行 - command=${command.slice(0, 100)}, cwd=${cwd}`);
+		logger.log(`# [Terminal] 开始执行 - command=${command.slice(0, 100)}, cwd=${cwd}${originalCommand !== command ? `, 原始命令=${originalCommand.slice(0, 100)}` : ''}`);
 
 		const runResult = await this.runCommand(command, cwd, timeoutMs, outputLimit, context.abortSignal);
 
@@ -224,6 +258,24 @@ export class TerminalExecTool extends BaseTool {
 		};
 	}
 
+	/**
+	 * 构造审批提示摘要：发生转换时同时展示原始命令、改写后命令与全部转换来源。
+	 *
+	 * @param originalCommand 原始命令
+	 * @param finalCommand 最终（可能已改写）命令
+	 * @param transformSources 转换来源 Hook ID 列表（无转换时为空）
+	 * @returns 审批摘要文本
+	 */
+	private buildApprovalSummary(originalCommand: string, finalCommand: string, transformSources: readonly string[]): string {
+		if (originalCommand === finalCommand) {
+			return `terminal_exec 将执行：\n${originalCommand}`;
+		}
+		const source = transformSources.length > 0
+			? `\n转换来源：${transformSources.join(', ')}`
+			: '';
+		return `terminal_exec 将执行：\n原始命令：${originalCommand}\n改写后命令：${finalCommand}${source}`;
+	}
+
 	/** 执行命令并捕获输出，处理超时与取消。 */
 	private runCommand(
 		command: string,
@@ -240,17 +292,19 @@ export class TerminalExecTool extends BaseTool {
 	}> {
 		return new Promise((resolve) => {
 			const { shell, flag } = getShell();
-			const proc = this.spawnFn(shell, [flag, command], { cwd });
+			const shellCommand = withUtf8ShellEncoding(command);
+			logger.log(`[Terminal] 使用 UTF-8 编码启动进程 - cwd=${cwd}`);
+			const proc = this.spawnFn(shell, [flag, shellCommand], { cwd });
 
 			let stdout = '';
 			let stderr = '';
 			let terminated: 'normal' | 'timeout' | 'cancelled' = 'normal';
 
 			proc.stdout?.on('data', (d: Buffer) => {
-				stdout += d.toString();
+				stdout += d.toString('utf8');
 			});
 			proc.stderr?.on('data', (d: Buffer) => {
-				stderr += d.toString();
+				stderr += d.toString('utf8');
 			});
 
 			const cleanup = () => {
@@ -308,6 +362,19 @@ function getShell(): { shell: string; flag: string } {
 		return { shell: process.env.ComSpec ?? 'cmd.exe', flag: '/c' };
 	}
 	return { shell: process.env.SHELL ?? '/bin/sh', flag: '-c' };
+}
+
+/**
+ * 为当前平台的 shell 命令启用 UTF-8 输出。
+ *
+ * @param command 原始 shell 命令。
+ * @returns 已附加 UTF-8 配置的 shell 命令。
+ */
+function withUtf8ShellEncoding(command: string): string {
+	if (process.platform === 'win32') {
+		return `chcp 65001 > nul & ${command}`;
+	}
+	return command;
 }
 
 /** 优雅杀进程：先 SIGTERM，宽限期后 SIGKILL。 */

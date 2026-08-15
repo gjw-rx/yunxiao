@@ -1,17 +1,17 @@
 {
-  "name": "yunxiao-agent",
-  "displayName": "云效 Agent",
+  "name": "yunxiao-agent-vscode",
+  "displayName": "码力云效 Agent",
   "publisher": "yunxiao",
   "repository": {
     "type": "git",
     "url": "https://github.com/gjw-rx/yunxiao.git"
   },
   "description": "码力云效-对接自有ai服务",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "MIT",
   "icon": "media/icon.png",
   "engines": {
-    "vscode": "^1.99.0"
+    "vscode": "^1.106.0"
   },
   "categories": [
     "Other"
@@ -20,7 +20,7 @@
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "yunxiaoAgentContainer",
           "title": "云效 Agent",
@@ -33,7 +33,7 @@
         {
           "type": "webview",
           "id": "yunxiaoAgent.chatView",
-          "name": "对话",
+          "name": "对话面板",
           "icon": "media/icon-view.svg",
           "retainContextWhenHidden": true
         }
@@ -42,7 +42,8 @@
     "commands": [
       {
         "command": "yunxiaoAgent.openPanel",
-        "title": "云效 Agent: 打开对话面板"
+        "title": "云效 Agent: 打开对话面板",
+        "icon": "media/icon-view.svg"
       },
       {
         "command": "yunxiaoAgent.newSession",
@@ -50,67 +51,40 @@
         "icon": "$(add)"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "yunxiaoAgent.openPanel",
+          "when": "editorIsOpen",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "云效 Agent",
       "properties": {
-        "yunxiaoAgent.model.provider": {
-          "type": "string",
-          "default": "openai",
-          "description": "LLM Provider ID（如 openai，兼容 DeepSeek/通义千问等 OpenAI 兼容服务）",
-          "scope": "window"
-        },
-        "yunxiaoAgent.model.model": {
-          "type": "string",
-          "default": "",
-          "description": "模型名称（如 gpt-4o-mini、deepseek-chat）",
-          "scope": "window"
-        },
-        "yunxiaoAgent.model.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "LLM API Key（Bearer Token）",
-          "scope": "window"
-        },
-        "yunxiaoAgent.model.baseURL": {
-          "type": "string",
-          "default": "https://api.openai.com/v1",
-          "description": "LLM API 地址（OpenAI 兼容的 /v1/chat/completions 端点）",
-          "scope": "window"
-        },
-        "yunxiaoAgent.model.temperature": {
-          "type": "number",
-          "default": 0.7,
-          "description": "LLM 生成温度参数",
-          "scope": "window"
-        },
-        "yunxiaoAgent.model.maxTokens": {
-          "type": "number",
-          "default": 4096,
-          "description": "LLM 最大输出 token 数",
-          "scope": "window"
-        },
         "yunxiaoAgent.maxFileSize": {
           "type": "number",
           "default": 1048576,
-          "description": "fs.read_file 读取文件大小上限（字节），作为分页读取的护栏，默认 1MB",
+          "description": "fs_read_file 读取文件大小上限（字节），作为分页读取的护栏，默认 1MB",
           "scope": "window"
         },
         "yunxiaoAgent.readFile.maxLines": {
           "type": "number",
           "default": 2000,
-          "description": "fs.read_file 单页最大行数（默认 2000），配合 offset 分页续读",
+          "description": "fs_read_file 单页最大行数（默认 2000），配合 offset 分页续读",
           "scope": "window"
         },
         "yunxiaoAgent.readFile.maxBytes": {
           "type": "number",
           "default": 51200,
-          "description": "fs.read_file 单页累计字节预算（默认 50KB），超过即停止并提示 offset 续读",
+          "description": "fs_read_file 单页累计字节预算（默认 50KB），超过即停止并提示 offset 续读",
           "scope": "window"
         },
         "yunxiaoAgent.readFile.maxLineLength": {
           "type": "number",
           "default": 2000,
-          "description": "fs.read_file 单行最大字符数（默认 2000），超出截断并标注",
+          "description": "fs_read_file 单行最大字符数（默认 2000），超出截断并标注",
           "scope": "window"
         },
         "yunxiaoAgent.toolTimeoutMs": {
@@ -125,7 +99,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "无需审批直接放行的本地工具名列表（如 fs.write_file）；只读工具本就免审批",
+          "description": "无需审批直接放行的本地工具名列表（如 fs_write_file）；只读工具本就免审批",
           "scope": "window"
         },
         "yunxiaoAgent.scopedApprovals": {
@@ -136,6 +110,16 @@
           "default": [],
           "description": "本地工具的范围授权记录（工作区、工具、资源、有效期）；由扩展维护",
           "scope": "window"
+        },
+        "yunxiaoAgent.approvalMode": {
+          "type": "string",
+          "enum": [
+            "request",
+            "full-access"
+          ],
+          "default": "request",
+          "description": "本工作区的工具审批模式：请求批准会逐次确认；完全访问会自动批准非删除操作，删除操作仍需确认",
+          "scope": "resource"
         },
         "yunxiaoAgent.shellWhitelist": {
           "type": "array",
@@ -191,31 +175,59 @@
           "description": "工具结果治理的最大字节数（默认 50KB，UTF-8），超出截断并标注",
           "scope": "window"
         },
-        "yunxiaoAgent.skills.directories": {
+        "yunxiaoAgent.webSearch.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否启用外部网络检索（web_search 工具）；启用后还需配置 Tavily API Key 才会发起请求",
+          "scope": "window"
+        },
+        "yunxiaoAgent.webSearch.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Tavily API Key（插件不内置或自动提供凭据，需用户自行配置）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.webSearch.maxResults": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "web_search 默认结果数（1-10，调用参数缺省时使用，越界将被约束到该范围）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.webSearch.searchDepth": {
+          "type": "string",
+          "enum": [
+            "basic",
+            "advanced"
+          ],
+          "default": "basic",
+          "description": "Tavily 搜索深度（basic/advanced，默认 basic）",
+          "scope": "window"
+        },
+        "yunxiaoAgent.webSearch.timeoutMs": {
+          "type": "number",
+          "default": 15000,
+          "minimum": 1000,
+          "description": "Tavily 请求超时（毫秒），默认 15 秒",
+          "scope": "window"
+        },
+        "yunxiaoAgent.webSearch.includeDomains": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": [
-            ".vscode/skills"
-          ],
-          "description": "Skill 搜索目录列表（相对工作区根的路径），插件将从这些目录加载 Markdown 格式的 Skill",
+          "default": [],
+          "description": "仅在这些域名内搜索（空数组表示不限）",
           "scope": "window"
         },
-        "yunxiaoAgent.sync.source": {
-          "type": "string",
-          "enum": [
-            "none",
-            "claude",
-            "trae"
-          ],
-          "enumDescriptions": [
-            "不加载任何生态配置（默认）",
-            "加载 Claude 目录 SKILL（~/.claude/skills、项目 .claude/skills）并注入项目 CLAUDE.md/AGENTS.md 规范",
-            "加载 Trae 目录 SKILL（~/.trae/skills、~/.trae-cn/skills 与项目对应目录）并注入项目 .trae/rules 规则"
-          ],
-          "default": "none",
-          "description": "配置来源（二选一）：Claude 与 Trae 的 SKILL 同步与项目规则注入共用此单选，避免重复加载两套约束",
+        "yunxiaoAgent.webSearch.excludeDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "排除这些域名（空数组表示不排除）",
           "scope": "window"
         },
         "yunxiaoAgent.agent.maxSteps": {
@@ -230,22 +242,26 @@
           "description": "自定义 Agent 系统提示词（留空使用默认）",
           "scope": "window"
         },
-        "yunxiaoAgent.compaction.enabled": {
+        "yunxiaoAgent.compaction.autoEnabled": {
           "type": "boolean",
           "default": true,
           "description": "是否启用上下文自动压缩",
           "scope": "window"
         },
-        "yunxiaoAgent.compaction.keepTokens": {
+        "yunxiaoAgent.compaction.triggerPercent": {
           "type": "number",
-          "default": 8000,
-          "description": "压缩时保留的近期 token 数",
+          "default": 75,
+          "minimum": 1,
+          "maximum": 99,
+          "description": "完整请求达到模型可用上下文的该比例时自动压缩",
           "scope": "window"
         },
-        "yunxiaoAgent.compaction.buffer": {
+        "yunxiaoAgent.compaction.tailPercent": {
           "type": "number",
-          "default": 20000,
-          "description": "触发压缩的 buffer token 数",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 99,
+          "description": "压缩后以原文保留的近期上下文比例",
           "scope": "window"
         }
       }
@@ -253,38 +269,60 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "compile": "npm run check-types && npm run check-types:webview && npm run lint && npm run build:host && npm run build:webview",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "package": "npm run check-types && npm run check-types:webview && npm run lint && node esbuild.js --production && vite build --config src/webview-ui/vite.config.ts",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "check-types:webview": "tsc --noEmit -p src/webview-ui/tsconfig.json",
+    "build:host": "node esbuild.js",
+    "build:webview": "vite build --config src/webview-ui/vite.config.ts",
+    "watch:webview": "vite build --watch --config src/webview-ui/vite.config.ts",
+    "watch:webview-tsc": "tsc --noEmit --watch -p src/webview-ui/tsconfig.json",
+    "test:webview": "vitest run --config src/webview-ui/vite.config.ts"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.0.0",
+    "@testing-library/react": "^16.0.0",
+    "@types/adm-zip": "^0.5.7",
     "@types/marked": "^5.0.2",
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
     "@types/vscode": "^1.99.0",
+    "@vitejs/plugin-react": "^5.0.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
     "esbuild": "^0.28.1",
     "eslint": "^10.5.0",
+    "jsdom": "^26.0.0",
     "npm-run-all": "^4.1.5",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.61.1"
+    "typescript-eslint": "^8.61.1",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.0"
   },
   "overrides": {
     "diff": "^8.0.4",
     "serialize-javascript": "^7.0.6"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "2.0.66",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "adm-zip": "^0.5.16",
+    "ai": "6.0.248",
     "diff": "^8.0.4",
     "marked": "^18.0.7",
-    "simple-git": "^3.27.0"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "simple-git": "^3.27.0",
+    "zod": "4.4.3"
   }
 }

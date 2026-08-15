@@ -35,8 +35,8 @@ describe('formatErrorForUser', () => {
 	});
 
 	it('maps ToolNotFoundError / ToolTimeoutError', () => {
-		assert.ok(formatErrorForUser(new ToolNotFoundError('fs.x')).includes('fs.x'));
-		assert.ok(formatErrorForUser(new ToolTimeoutError('fs.x', 1000)).includes('超时'));
+		assert.ok(formatErrorForUser(new ToolNotFoundError('fs_x')).includes('fs_x'));
+		assert.ok(formatErrorForUser(new ToolTimeoutError('fs_x', 1000)).includes('超时'));
 	});
 
 	it('maps ToolValidationError and ProtocolError', () => {

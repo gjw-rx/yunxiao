@@ -7,8 +7,7 @@ import type { ChildProcess } from 'child_process';
 import { TerminalExecTool } from '../../../tools/terminal/terminalExec';
 import { ShellWhitelist } from '../../../tools/terminal/shellWhitelist';
 import type { ToolContext } from '../../../tools/baseTool';
-import type { ApprovalGateway } from '../../../core/approvalGateway';
-import type { ApprovalDecision } from '../../../core/approvalGateway';
+import { ApprovalGateway, type ApprovalDecision } from '../../../core/approvalGateway';
 
 /** Mock ChildProcess：模拟 stdout/stderr/exit 事件。 */
 class MockChildProcess extends EventEmitter {
@@ -57,7 +56,10 @@ class MockChildProcess extends EventEmitter {
 /** 构造 mock ApprovalGateway。 */
 function makeMockApproval(decision: ApprovalDecision): ApprovalGateway {
 	return {
-		async requestApproval(): Promise<ApprovalDecision> {
+	async requestApproval(): Promise<ApprovalDecision> {
+			return decision;
+		},
+		async requestDestructiveApproval(): Promise<ApprovalDecision> {
 			return decision;
 		},
 		shouldGate(): boolean {
@@ -124,6 +126,28 @@ describe('TerminalExecTool', () => {
 		assert.strictEqual(result.metadata?.exitCode, 0);
 	});
 
+	it('Windows 下通过 UTF-8 代码页执行命令', async function () {
+		if (process.platform !== 'win32') {
+			this.skip();
+		}
+
+		let capturedCommand = '';
+		const tool = new TerminalExecTool({
+			approval: makeMockApproval('allow'),
+			shellWhitelist: new ShellWhitelist(['npm test']),
+		});
+		tool._setSpawnFn((_shell, args) => {
+			capturedCommand = args[1] ?? '';
+			const proc = new MockChildProcess({ exitCode: 0 });
+			proc.start();
+			return proc as unknown as ChildProcess;
+		});
+
+		await tool.execute({ command: 'npm test' }, await makeContext());
+
+		assert.strictEqual(capturedCommand, 'chcp 65001 > nul & npm test');
+	});
+
 	it('exitCode 非 0 仍为 success', async () => {
 		// Arrange
 		const tool = new TerminalExecTool({
@@ -146,7 +170,7 @@ describe('TerminalExecTool', () => {
 		assert.ok(payload.stderr.includes('AssertionError'));
 	});
 
-	it('危险命令经用户允许后执行', async () => {
+	it('含重定向的危险命令直接拦截', async () => {
 		// 准备
 		let approvalCalled = false;
 		let spawnCalled = false;
@@ -173,16 +197,23 @@ describe('TerminalExecTool', () => {
 		);
 
 		// 断言
-		assert.strictEqual(result.status, 'success');
-		assert.strictEqual(approvalCalled, true);
-		assert.strictEqual(spawnCalled, true);
+		assert.strictEqual(result.status, 'cancelled');
+		assert.ok(result.error?.includes('危险命令已被拦截'));
+		assert.strictEqual(approvalCalled, false);
+		assert.strictEqual(spawnCalled, false);
 	});
 
-	it('危险命令经用户拒绝后不执行', async () => {
+	it('危险命令直接拦截且不执行', async () => {
 		// 准备
 		let spawnCalled = false;
+		const approval = makeMockApproval('allow');
+		let approvalCalled = false;
+		approval.requestApproval = async () => {
+			approvalCalled = true;
+			return 'allow';
+		};
 		const tool = new TerminalExecTool({
-			approval: makeMockApproval('deny'),
+			approval,
 			shellWhitelist: new ShellWhitelist(),
 		});
 		tool._setSpawnFn(() => {
@@ -195,8 +226,31 @@ describe('TerminalExecTool', () => {
 
 		// 断言
 		assert.strictEqual(result.status, 'cancelled');
-		assert.strictEqual(result.error, '用户拒绝执行');
+		assert.ok(result.error?.includes('危险命令已被拦截'));
+		assert.strictEqual(approvalCalled, false);
 		assert.strictEqual(spawnCalled, false);
+	});
+
+	it('删除命令使用 destructive 审批而非普通审批', async () => {
+		let destructiveCalled = false;
+		const approval = makeMockApproval('allow');
+		approval.requestDestructiveApproval = async () => {
+			destructiveCalled = true;
+			return 'allow';
+		};
+		const tool = new TerminalExecTool({ approval, shellWhitelist: new ShellWhitelist() });
+		tool._setSpawnFn(makeMockSpawn({ exitCode: 0 }));
+		const result = await tool.execute({ command: 'rm obsolete.txt' }, await makeContext());
+		assert.strictEqual(result.status, 'success');
+		assert.strictEqual(destructiveCalled, true);
+	});
+
+	it('ShellWhitelist 识别各平台删除命令', () => {
+		const whitelist = new ShellWhitelist();
+		for (const command of ['rm file.txt', 'rmdir cache', 'del cache.txt', 'erase cache.txt', 'Remove-Item cache.txt', 'git clean -fd']) {
+			assert.strictEqual(whitelist.isDeletionCommand(command), true, command);
+		}
+		assert.strictEqual(whitelist.isDeletionCommand('npm test'), false);
 	});
 
 	it('白名单命令免审批直接执行', async () => {
@@ -235,6 +289,28 @@ describe('TerminalExecTool', () => {
 		// Assert
 		assert.strictEqual(result.status, 'success');
 		assert.strictEqual(JSON.parse(result.result!).exitCode, 0);
+	});
+
+	it('完全访问自动批准未知的非删除命令', async () => {
+		let promptCalled = false;
+		const approval = new ApprovalGateway({
+			prompter: {
+				async prompt(): Promise<ApprovalDecision> {
+					promptCalled = true;
+					return 'deny';
+				},
+			},
+			store: {
+				getAlwaysAllow: () => [],
+				addAlwaysAllow: async () => {},
+				getApprovalMode: () => 'full-access',
+			},
+		});
+		const tool = new TerminalExecTool({ approval, shellWhitelist: new ShellWhitelist() });
+		tool._setSpawnFn(makeMockSpawn({ exitCode: 0 }));
+		const result = await tool.execute({ command: 'python script.py' }, await makeContext());
+		assert.strictEqual(result.status, 'success');
+		assert.strictEqual(promptCalled, false);
 	});
 
 	it('unknown 命令审批拒绝返回 cancelled', async () => {

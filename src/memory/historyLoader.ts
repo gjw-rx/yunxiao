@@ -3,7 +3,7 @@
  * 处理 compaction 检查点：从最新 compaction 开始加载，compaction 摘要转为 system 消息。
  */
 import type { LLMMessage } from '../llm/types';
-import type { Message, CompactionMessage, UserMessage, Attachment } from './types';
+import type { Message, Attachment } from './types';
 import type { MessageStore } from './messageStore';
 import * as logger from '../logger';
 
@@ -12,34 +12,27 @@ import * as logger from '../logger';
  * 有 compaction 检查点时从检查点开始，无则加载全部。
  */
 export function loadHistoryForLLM(sessionId: string, store: MessageStore): LLMMessage[] {
-	const all = store.loadHistory(sessionId);
-	if (all.length === 0) {
+	const effective = store.getEffectiveHistory(sessionId);
+	if (effective.messages.length === 0 && !effective.summary) {
 		logger.log(`[HistoryLoader] 加载历史完成 sessionId=${sessionId} 消息数=0`);
 		return [];
 	}
 
-	const compaction = store.getCompactionPoint(sessionId);
-	if (!compaction) {
-		logger.log(`[HistoryLoader] 加载历史完成 sessionId=${sessionId} 消息数=${all.length} 压缩点=无`);
-		return convertToLLMMessages(all);
+	if (!effective.summary) {
+		logger.log(`[HistoryLoader] 加载历史完成 sessionId=${sessionId} 消息数=${effective.messages.length} 压缩点=无`);
+		return convertToLLMMessages(effective.messages);
 	}
 
-	// 从 compaction 之后开始加载
-	const afterCompaction = all.filter((m) => m.seq > compaction.seq);
 	const result = [
-		...convertCompaction(compaction),
-		...convertToLLMMessages(afterCompaction),
+		{ role: 'system' as const, content: effective.summary },
+		...(effective.todoContext ? [{ role: 'system' as const, content: effective.todoContext }] : []),
+		...convertToLLMMessages(effective.messages),
 	];
-	logger.log(`[HistoryLoader] 加载历史完成 sessionId=${sessionId} 消息数=${result.length} 压缩点=有`);
+	logger.log(`[HistoryLoader] 加载历史完成 sessionId=${sessionId} 消息数=${result.length} 压缩点=有 todoContext=${effective.todoContext ? '有' : '无'}`);
 	return result;
 }
 
 /** 将 CompactionMessage 转换为 LLMMessage[]：summary -> system，recentContext 展开。 */
-function convertCompaction(msg: CompactionMessage): LLMMessage[] {
-	const system: LLMMessage = { role: 'system', content: msg.summary };
-	return [system, ...convertToLLMMessages(msg.recentContext)];
-}
-
 /** 将 Message[] 转换为 LLMMessage[]（剥离 seq，attachments 内联）。 */
 function convertToLLMMessages(messages: Message[]): LLMMessage[] {
 	return messages.map(convertMessage);

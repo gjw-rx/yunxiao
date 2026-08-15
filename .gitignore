@@ -1,16 +1,23 @@
+# 打包编译产物
 out
 dist
 node_modules
 .vscode-test/
 *.vsix
 
+# 代码索引
+.codegraph
+
+# 系统变量
 /.vscode
 /$PWD
 
+# Agent框架
 /.trae
 /.claude
 /.reasonix
+/.yunForce
 
-
+# 临时文档
 /docs/opencode源码
 /docs/temp_file

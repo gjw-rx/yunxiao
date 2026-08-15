@@ -1,5 +1,5 @@
 /**
- * git.commit - 提交已暂存的更改（write 权限，路由层统一审批）。
+ * git_commit - 提交已暂存的更改（write 权限，路由层统一审批）。
  *
  * 安全：提交信息中禁止 --no-verify / --amend（防止绕过钩子或篡改历史）。
  * 无已暂存更改时返回友好错误。
@@ -21,7 +21,7 @@ const UNSAFE_MESSAGE_PATTERN = /--no-verify|--amend/;
 
 export class GitCommitTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'git.commit',
+		name: 'git_commit',
 		description: '提交已暂存的更改（提交信息禁止 --no-verify / --amend）。',
 		parameters: {
 			type: 'object',
@@ -56,21 +56,21 @@ export class GitCommitTool extends BaseTool {
 		const startedAt = Date.now();
 		const root = context.workspaceRoots[0];
 		if (!root) {
-			logger.error('[git.commit] 执行失败 - 错误=未打开工作区');
+			logger.error('[git_commit] 执行失败 - 错误=未打开工作区');
 			return { status: 'error', error: '未打开工作区' };
 		}
 		const git = this.createClient(root);
 
 		if (!(await git.checkIsRepo())) {
-			logger.error(`[git.commit] 执行失败 - 错误=当前工作区不是 git 仓库, cwd=${root}`);
+			logger.error(`[git_commit] 执行失败 - 错误=当前工作区不是 git 仓库, cwd=${root}`);
 			return { status: 'error', error: '当前工作区不是 git 仓库' };
 		}
 
 		const message = args.message as string;
-		logger.log(`[git.commit] 开始执行 - cwd=${root}, messageLen=${message.length}`);
+		logger.log(`[git_commit] 开始执行 - cwd=${root}, messageLen=${message.length}`);
 		try {
 			const result = await git.commit(message);
-			logger.log(`[git.commit] 执行完成 - commit=${result.commit}, duration_ms=${Date.now() - startedAt}`);
+			logger.log(`[git_commit] 执行完成 - commit=${result.commit}, duration_ms=${Date.now() - startedAt}`);
 			return {
 				status: 'success',
 				result: `已提交: ${result.commit}`,
@@ -78,7 +78,7 @@ export class GitCommitTool extends BaseTool {
 			};
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			logger.error(`[git.commit] 执行失败 - 错误=${msg}, messageLen=${message.length}`);
+			logger.error(`[git_commit] 执行失败 - 错误=${msg}, messageLen=${message.length}`);
 			if (/nothing to commit|no changes added/i.test(msg)) {
 				return {
 					status: 'error',

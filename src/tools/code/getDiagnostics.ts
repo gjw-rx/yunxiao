@@ -1,5 +1,5 @@
 /**
- * code.get_diagnostics - 查询 VSCode 语言服务诊断（lint/类型错误等，只读）。
+ * code_get_diagnostics - 查询 VSCode 语言服务诊断（lint/类型错误等，只读）。
  *
  * 两种模式：
  * - { file }: 查询指定文件的诊断。经 pathGuard 解析 -> 校验存在 -> vscode.getDiagnostics(uri)。
@@ -156,7 +156,7 @@ function truncateDiagnostics(
 
 export class GetDiagnosticsTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'code.get_diagnostics',
+		name: 'code_get_diagnostics',
 		description: '查询 VSCode 语言服务诊断（lint/类型错误等），可指定文件或全工作区。',
 		parameters: {
 			type: 'object',
@@ -188,7 +188,7 @@ export class GetDiagnosticsTool extends BaseTool {
 		context: ToolContext
 	): Promise<ToolExecutionResult> {
 		const startedAt = Date.now();
-		logger.log(`[code.get_diagnostics] 开始执行 - file=${(args.file as string | undefined) ?? '<全工作区>'}`);
+		logger.log(`[code_get_diagnostics] 开始执行 - file=${(args.file as string | undefined) ?? '<全工作区>'}`);
 
 		// 1. 指定文件模式
 		if (args.file !== undefined) {
@@ -202,7 +202,7 @@ export class GetDiagnosticsTool extends BaseTool {
 				});
 			} catch (err) {
 				if (err instanceof PathGuardError) {
-					logger.error(`[code.get_diagnostics] 路径解析失败 - file=${inputPath}, error=${err.message}`);
+					logger.error(`[code_get_diagnostics] 路径解析失败 - file=${inputPath}, error=${err.message}`);
 					return { status: 'error', error: err.message };
 				}
 				throw err;
@@ -212,7 +212,7 @@ export class GetDiagnosticsTool extends BaseTool {
 			try {
 				await fs.stat(resolved.fsPath);
 			} catch {
-				logger.error(`[code.get_diagnostics] 文件不存在 - file=${inputPath}`);
+				logger.error(`[code_get_diagnostics] 文件不存在 - file=${inputPath}`);
 				return { status: 'error', error: `文件不存在: ${inputPath}` };
 			}
 
@@ -230,7 +230,7 @@ export class GetDiagnosticsTool extends BaseTool {
 				output.total = total;
 			}
 
-			logger.log(`[code.get_diagnostics] 执行完成 - file=${inputPath}, 命中数=${diagnostics.length}, truncated=${truncated}, total=${total}, 耗时=${Date.now() - startedAt}ms`);
+			logger.log(`[code_get_diagnostics] 执行完成 - file=${inputPath}, 命中数=${diagnostics.length}, truncated=${truncated}, total=${total}, 耗时=${Date.now() - startedAt}ms`);
 			return {
 				status: 'success',
 				result: JSON.stringify(output),
@@ -250,7 +250,7 @@ export class GetDiagnosticsTool extends BaseTool {
 			output.truncated = true;
 			output.total = total;
 		}
-		logger.log(`[code.get_diagnostics] 执行完成 - file=<全工作区>, 命中数=${diagnostics.length}, truncated=${truncated}, total=${total}, 耗时=${Date.now() - startedAt}ms`);
+		logger.log(`[code_get_diagnostics] 执行完成 - file=<全工作区>, 命中数=${diagnostics.length}, truncated=${truncated}, total=${total}, 耗时=${Date.now() - startedAt}ms`);
 
 		return {
 			status: 'success',

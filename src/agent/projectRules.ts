@@ -1,5 +1,5 @@
 /**
- * 项目规范读取 - 从项目根加载 CLAUDE.md（回退 AGENTS.md）作为项目级规范。
+ * 项目规范读取 - 从项目根加载 CLAUDE.md（回退 AGENTS.md）或 Agent 生态 AGENTS.md。
  *
  * 由 AgentLoop 每轮构建系统提示词时调用，读取失败静默降级不影响主流程。
  */
@@ -56,4 +56,38 @@ export async function loadProjectRules(workspaceRoot: string): Promise<ProjectRu
 	}
 	logger.log('[ProjectRules] 未找到项目规范文件（CLAUDE.md / AGENTS.md）');
 	return null;
+}
+
+/**
+ * 加载 Agent 生态项目规则：仅读取工作区根目录的 AGENTS.md。
+ *
+ * 与 loadProjectRules（CLAUDE.md → AGENTS.md 回退）隔离：agent 来源不将
+ * CLAUDE.md 作为候选，也不向子目录或父目录搜索。文件过大或读取失败时
+ * 静默降级返回 null 并记录日志，不中断会话。
+ *
+ * @param workspaceRoot 工作区根目录
+ * @returns Agent 项目规则，未找到或读取失败时为 null
+ */
+export async function loadAgentProjectRules(workspaceRoot: string): Promise<ProjectRules | null> {
+	if (!workspaceRoot) {
+		return null;
+	}
+	const filePath = path.join(workspaceRoot, 'AGENTS.md');
+	try {
+		const stat = await fs.stat(filePath);
+		if (!stat.isFile()) {
+			logger.log('[ProjectRules] AGENTS.md 不是文件，跳过 Agent 规则注入');
+			return null;
+		}
+		if (stat.size > PROJECT_RULES_MAX_BYTES) {
+			logger.log(`[ProjectRules] AGENTS.md 超过大小上限 ${PROJECT_RULES_MAX_BYTES}B，跳过 Agent 规则注入`);
+			return null;
+		}
+		const content = await fs.readFile(filePath, 'utf8');
+		logger.log(`[ProjectRules] 加载 Agent 项目规则 source=AGENTS.md bytes=${content.length}`);
+		return { source: 'AGENTS.md', content };
+	} catch {
+		logger.log('[ProjectRules] 读取 AGENTS.md 失败，跳过 Agent 规则注入');
+		return null;
+	}
 }
