@@ -40,22 +40,22 @@ TBD - created by archiving change conversation-delete-rollback. Update Purpose a
 - **THEN** 返回的消息列表不含 seq=5，后续 `AgentLoop` 请求 LLM 的历史亦不含该消息
 
 ### Requirement: 回滚用户输入 turn
-系统 SHALL 支持对用户消息执行回滚（seq=X）。回滚 SHALL 截断消息到 X 之前（删除 X 及之后全部消息），并将 X 及之后各 turn 产生的文件改动恢复到 X 开始前的状态。仅「非注入」的用户消息可回滚。
+系统 SHALL 支持对用户消息执行回滚（seq=X）。回滚 SHALL 将工作区文件恢复到 X 开始前的状态，并将会话活动位置持久化到目标用户消息之前；X 及之后的原始归档 Entry SHALL 保留且不再出现在活动历史或后续 LLM 请求中。仅「非注入」的用户消息可回滚。回滚不等同于永久删除；永久删除仍 SHALL 通过现有删除流程物理移除目标数据及其关联持久化资产。
 
-#### Scenario: 回滚恢复文件并截断消息
+#### Scenario: 回滚恢复文件并保留归档
 - **WHEN** 用户对 seq=5 的用户消息执行回滚，该 turn 及其后修改了文件 `a.ts` 与新建了 `b.ts`
-- **THEN** `a.ts` 恢复到 seq=5 之前的内容，`b.ts` 被删除，seq 5 及之后的全部消息被删除
+- **THEN** `a.ts` SHALL 恢复到 seq=5 之前的内容，`b.ts` 被删除，活动历史不再包含 seq 5 及之后内容，且完整归档仍保留这些 Entry
 
 #### Scenario: 仅用户消息可回滚
 - **WHEN** 对助手消息或工具结果消息发起回滚
-- **THEN** 系统拒绝该操作，不删除消息、不恢复文件
+- **THEN** 系统 SHALL 拒绝该操作，不改变活动位置、不恢复文件且不删除归档
 
 ### Requirement: 回滚后用户输入回填输入框
-回滚成功 SHALL 将被回滚用户消息的 `content` 回传给前端，前端 SHALL 将该内容写入消息输入框，供用户修改后重新发送。
+回滚成功 SHALL 将被回滚用户消息的 `content` 回传给前端，前端 SHALL 将该内容写入消息输入框，供用户修改后重新发送。重发后的消息 SHALL 追加为当前活动位置的新 Entry，而不得覆盖被回滚的原始归档记录。
 
-#### Scenario: 输入回填
-- **WHEN** 回滚 seq=5、内容为「重构登录模块」的用户消息
-- **THEN** 前端输入框内容变为「重构登录模块」，消息列表已不含 seq 5 及之后内容
+#### Scenario: 输入回填后重发
+- **WHEN** 回滚 seq=5、内容为「重构登录模块」，用户修改后再次发送
+- **THEN** 前端输入框先变为该内容，活动历史不含旧 seq 5 及之后内容，新用户消息作为当前活动位置的后继记录被追加
 
 ### Requirement: 写文件工具记录回滚快照
 写文件类工具（`code_edit`、`fs_write_file`、`fs_delete_file`、`fs_move_file`）在执行成功前 SHALL 将目标路径的改动前状态复制到本地持久化回滚快照目录，按「会话 + 用户消息 seq」组织；目标原本不存在时 SHALL 记录为新建。回滚时按该快照恢复文件或删除新建文件。

@@ -200,7 +200,7 @@ export class LocalSessionManager {
 				await this.changeJournal.refreshSession(sessionId, this.workspaceRoot, seq);
 			}
 		}
-		this.messageStore.deleteMessagesAfter(sessionId, seq - 1);
+		this.messageStore.rollbackMessagesAfter(sessionId, seq - 1);
 		return target.content;
 	}
 

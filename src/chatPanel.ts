@@ -17,6 +17,7 @@ import type { PlanModeChangePayload } from './memory/planTypes';
 import type { McpConfigStore } from './mcp/configStore';
 import type { McpServerView } from './mcp/types';
 import type { McpSaveMode, McpOperation, HooksConfigView, RtkStatusView } from './webview-ui/protocol';
+import type { UsageGranularity, TokenUsageStatsResult } from './webview-ui/protocol';
 import type { HooksConfigStore } from './hook/hooksConfigStore';
 import type { RtkTransformHook } from './hook/rtkAdapter';
 import { detectRtk, type RtkDetectionResult } from './hook/rtkDetector';
@@ -84,6 +85,8 @@ interface SettingsPanelDeps {
   readonly detectRtk?: (executablePath: string) => Promise<RtkDetectionResult>;
   /** RTK Transform Hook（提供固定样例改写测试）。 */
   readonly rtkTransformHook?: RtkTransformHook;
+  /** 请求当前工作区 token 用量统计（粒度 + 参考日期；结果含标准化区间与 partial 标记）。 */
+  readonly requestUsageStats?: (granularity: UsageGranularity, reference: string) => Promise<TokenUsageStatsResult>;
 }
 
 /** 待处理的审批请求：call_id -> resolve 回调 */
@@ -705,6 +708,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this._handleTestRtkRewrite(panel, deps);
         break;
       }
+      case 'requestUsageStats': {
+        await this._handleRequestUsageStats(panel, msg);
+        break;
+      }
+    }
+  }
+
+  /**
+   * 处理设置页使用情况请求：注入统计服务，按粒度与参考日期聚合并回传标准化区间。
+   * 入口、成功与失败分支均记录含粒度、区间、模型数与耗时等可定位日志；整体失败回传有界错误。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息（granularity/reference）
+   */
+  private async _handleRequestUsageStats(
+    panel: vscode.WebviewPanel,
+    msg: { command: string;[key: string]: unknown },
+  ): Promise<void> {
+    const deps = this._settingsDeps;
+    if (!deps?.requestUsageStats) {
+      panel.webview.postMessage({ command: 'usageStatsError', message: '用量统计服务未就绪' });
+      return;
+    }
+    const granularity: UsageGranularity = msg.granularity === 'week' || msg.granularity === 'month' ? msg.granularity : 'day';
+    const reference = typeof msg.reference === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(msg.reference)
+      ? msg.reference
+      : new Date().toISOString().slice(0, 10);
+    const startedAt = Date.now();
+    logger.log(`[ChatPanel] 使用情况请求 granularity=${granularity} reference=${reference}`);
+    try {
+      const payload = await deps.requestUsageStats(granularity, reference);
+      logger.log(
+        `[ChatPanel] 使用情况响应 granularity=${granularity} start=${payload.start} end=${payload.end} 模型数=${payload.models.length} partial=${payload.partial} 耗时=${Date.now() - startedAt}ms`,
+      );
+      panel.webview.postMessage({ command: 'usageStats', payload });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.error(`[ChatPanel] 使用情况统计失败 granularity=${granularity} reference=${reference}: ${reason}`);
+      panel.webview.postMessage({ command: 'usageStatsError', message: '用量统计失败，请重试' });
     }
   }
 

@@ -54,6 +54,12 @@ export interface TokenUsageSnapshot {
 	readonly context: number;
 	/** 拆分数字是否包含估算（估算比例来源标记） */
 	readonly source: TokenSource;
+	/** 实际调用 Provider 标识（如 "openai"）；旧归档缺失时用于归入"未知模型" */
+	readonly provider_id?: string;
+	/** 实际调用模型标识（如 "gpt-4o-mini"）；旧归档缺失时用于归入"未知模型" */
+	readonly model_id?: string;
+	/** 调用当时的非敏感模型展示名（仅用于历史显示，不含鉴权信息） */
+	readonly model_label?: string;
 }
 
 /** 助手最终回复关联的会话代码变更概览。 */
@@ -114,11 +120,15 @@ export interface CompactionMessage {
 	readonly role: 'compaction';
 	/** 压缩摘要文本 */
 	readonly summary: string;
-	/** 压缩时保留的近期消息原文（含 seq） */
-	readonly recentContext: Message[];
+	/** 保留原文边界的消息 seq：该 seq 及之后的活动路径消息作为尾部原文，不再复制近期消息副本 */
+	readonly firstKeptSeq: number;
+	/** 保留边界对应的归档 Entry ID（文件模式存在；内存模式缺失，由 firstKeptSeq 兜底） */
+	readonly firstKeptEntryId?: string;
 	/** 压缩检查点时捕获的活跃任务上下文（可选；旧检查点或当时无活跃任务时缺失）。 */
 	readonly todoContext?: string;
 	readonly seq: number;
+	/** 兼容旧检查点（v1）：复制近期消息的旧字段，仅旧检查点存在。 */
+	readonly recentContext?: Message[];
 }
 
 /** 存储层消息（discriminated union） */
@@ -136,3 +146,83 @@ export type InputMessage =
 	| Omit<AssistantMessage, 'seq'>
 	| Omit<ToolMessage, 'seq'>
 	| Omit<CompactionMessage, 'seq'>;
+
+// ── 版本化会话归档记录（v2） ──
+// 会话以追加式 JSONL 持久化：首条有效记录为 SessionHeader，后续为 ArchiveEntry。
+// 正常消息、压缩检查点与活动位置更新只追加；破坏性删除走显式重写路径。
+
+/** 会话归档版本号（v2 = 版本化追加式归档）。 */
+export const SESSION_ARCHIVE_VERSION = 2;
+
+/** 归档 Entry 的业务类型。 */
+export type EntryKind = 'message' | 'compaction' | 'head_update';
+
+/**
+ * 会话归档首条记录的 session header。
+ * 包含会话 ID、版本、创建时间与 workspace 信息；header 之前的记录均视为非法。
+ */
+export interface SessionHeader {
+	readonly type: 'session';
+	/** 归档版本号，必须为 SESSION_ARCHIVE_VERSION。 */
+	readonly version: number;
+	/** 会话 ID（UUID）。 */
+	readonly sessionId: string;
+	/** 创建时间（ISO 字符串）。 */
+	readonly createdAt: string;
+	/** 所属 workspace 根路径（可选；迁移或降级读取时缺失）。 */
+	readonly workspacePath?: string;
+}
+
+/**
+ * 归档 Entry（可恢复节点）：统一携带 id、parentId、物理 recordSeq 与时间戳。
+ * parentId 为 null 表示该 Entry 是会话首条记录（根）。
+ */
+export interface ArchiveEntry {
+	readonly type: 'entry';
+	/** 业务类型：消息 / 压缩检查点 / 活动位置更新。 */
+	readonly kind: EntryKind;
+	/** 稳定记录 ID（UUID），归档内唯一。 */
+	readonly id: string;
+	/** 父记录 ID（逻辑父链）；首条记录为 null。 */
+	readonly parentId: string | null;
+	/** 物理记录序号（从 1 开始单调递增，header 不占序号）。 */
+	readonly recordSeq: number;
+	/** 记录时间戳（ISO 字符串）。 */
+	readonly timestamp: string;
+	/** Entry payload（按 kind 区分）。 */
+	readonly payload: EntryPayload;
+}
+
+/** 归档 Entry payload 联合。 */
+export type EntryPayload =
+	| MessageEntryPayload
+	| CompactionEntryPayload
+	| HeadUpdateEntryPayload;
+
+/** message Entry payload：携带现有 Message 兼容投影（含 seq）。 */
+export interface MessageEntryPayload {
+	readonly kind: 'message';
+	/** 存储层消息（保留 seq 兼容投影，映射到稳定物理记录顺序）。 */
+	readonly message: Message;
+}
+
+/** compaction Entry payload：摘要 + 保留原文边界，不再复制近期消息副本。 */
+export interface CompactionEntryPayload {
+	readonly kind: 'compaction';
+	/** 增量压缩摘要文本。 */
+	readonly summary: string;
+	/** 保留原文的边界：该 ID 及之后的活动路径消息作为尾部原文。 */
+	readonly firstKeptEntryId: string;
+	/** 压缩检查点时捕获的活跃任务上下文（可选）。 */
+	readonly todoContext?: string;
+}
+
+/** head_update Entry payload：持久化活动位置。 */
+export interface HeadUpdateEntryPayload {
+	readonly kind: 'head_update';
+	/** 当前活动 Entry ID（活动路径叶节点）；null 表示空活动路径（回滚到会话开头）。 */
+	readonly headEntryId: string | null;
+}
+
+/** 版本化会话记录（v2 JSONL 每行）：header 或普通 Entry。 */
+export type SessionRecord = SessionHeader | ArchiveEntry;

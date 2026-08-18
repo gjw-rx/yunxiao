@@ -49,10 +49,11 @@ import {
 	type SyncSource,
 } from './config/syncConfig';
 import { createProvider } from './llm/provider';
-import { MessageStore } from './memory/messageStore';
+import { MessageStore, migrateLegacyWorkspaceState, type WorkspaceState } from './memory/messageStore';
 import { SessionFileStore } from './memory/sessionFileStore';
 import { SessionTodoStore } from './memory/sessionTodoStore';
-import type { Message } from './memory/types';
+import { aggregateTokenUsage, type UsageGranularity } from './memory/tokenUsageStats';
+
 import { AgentLoop } from './agent/agentLoop';
 import type { CompactionConfig } from './agent/compaction';
 import { TodoWriteTool } from './tools/todo/todoWrite';
@@ -105,6 +106,9 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 }
 
+/** 激活期持有的文件存储（deactivate 时等待待提交写入结算用）。 */
+let activeFileStore: SessionFileStore | undefined;
+
 async function _activate(context: vscode.ExtensionContext) {
 	const config = vscode.workspace.getConfiguration('yunxiaoAgent');
 	const eventBus = new EventBus();
@@ -114,7 +118,8 @@ async function _activate(context: vscode.ExtensionContext) {
 	const workspaceRoot = workspaceRoots[0] ?? process.cwd();
 
 	// 消息存储：~/.yunForce JSONL 文件后端（会话历史可长期保留、可查看、可迁移）
-	const fileStore = new SessionFileStore(workspaceRoot);
+	activeFileStore = new SessionFileStore(workspaceRoot);
+	const fileStore = activeFileStore;
 	await migrateLegacyMessages(context, fileStore);
 	const messageStore = new MessageStore(fileStore);
 	const todoStore = new SessionTodoStore(fileStore);
@@ -544,6 +549,13 @@ async function _activate(context: vscode.ExtensionContext) {
 		},
 		hooksConfigStore,
 		rtkTransformHook,
+		// 用量统计：扫描当前工作区会话归档后按粒度聚合（本地时区自然边界），损坏归档标记 partial
+		requestUsageStats: async (granularity: UsageGranularity, reference: string): Promise<ReturnType<typeof aggregateTokenUsage>> => {
+			const ref = /^\d{4}-\d{2}-\d{2}$/.test(reference)
+				? new Date(`${reference}T00:00:00`)
+				: new Date();
+			return aggregateTokenUsage(fileStore.scanTokenRecords(), granularity, ref);
+		},
 	});
 
 	/**
@@ -570,39 +582,30 @@ async function _activate(context: vscode.ExtensionContext) {
 
 /**
  * 迁移旧 workspaceState 中的会话消息到文件存储（一次性、幂等）。
- * 已迁移的会话（索引已有条目）跳过，避免上次中断后重复追加；
- * 全部落盘完成后再清理旧键，防止清理后数据丢失。
+ * 全部会话落盘成功后才清理旧键，防止未落盘时清理导致数据丢失；
+ * 任一迁移失败不阻塞插件启动，仅记录日志告警且保留原始数据。
  * @param context 扩展上下文
  * @param fileStore 文件存储
  */
 async function migrateLegacyMessages(context: vscode.ExtensionContext, fileStore: SessionFileStore): Promise<void> {
-	const legacy = context.workspaceState.get<Record<string, Message[]>>('yunxiaoAgent.messages');
-	if (!legacy || Object.keys(legacy).length === 0) {
-		return;
-	}
-	let migrated = 0;
-	let skipped = 0;
-	for (const [sessionId, messages] of Object.entries(legacy)) {
-		if (fileStore.getSession(sessionId)) {
-			skipped++;
-			continue;
-		}
-		try {
-			fileStore.createSession(sessionId);
-			for (const m of messages) {
-				fileStore.appendMessage(sessionId, m);
-			}
-			migrated++;
-		} catch (err) {
-			logger.error(`[Extension] 迁移会话失败 sessionId=${sessionId}:`, err instanceof Error ? err.message : String(err));
-		}
-	}
-	// 等待全部会话落盘后再清理旧键
-	await fileStore.flush();
-	void context.workspaceState.update('yunxiaoAgent.messages', undefined).then(undefined, () => {
-		logger.error('[Extension] 清理旧 workspaceState 键失败（忽略）');
-	});
-	logger.log(`[Extension] 迁移旧会话数据完成 迁移=${migrated} 跳过=${skipped}`);
+	const result = await migrateLegacyWorkspaceState(context.workspaceState as WorkspaceState, fileStore);
+	logger.log(`[Extension] 迁移旧会话数据 迁移=${result.migrated} 跳过=${result.skipped} 失败=${result.failed}`);
 }
 
-export function deactivate() { }
+/**
+ * 扩展停用：等待全部待提交会话记录结算后再退出。
+ * 提交失败时记录包含 sessionId、recordSeq 与失败原因的中文日志（不阻塞 VSCode 停用）。
+ * @returns 停用完成
+ */
+export async function deactivate() {
+	const fileStore = activeFileStore;
+	if (!fileStore) {
+		return;
+	}
+	try {
+		await fileStore.commit();
+		logger.log('[Extension] 停用前全部待提交会话记录已结算');
+	} catch (error) {
+		logger.error(`[Extension] 停用前会话记录结算失败: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}

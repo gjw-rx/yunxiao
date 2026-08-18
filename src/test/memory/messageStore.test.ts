@@ -76,9 +76,9 @@ describe('MessageStore', () => {
 		it('返回最新 CompactionMessage', () => {
 			const store = new MessageStore();
 			store.append('s1', { role: 'user', content: 'a' });
-			store.append('s1', { role: 'compaction', summary: 'first', recentContext: [] });
+			store.append('s1', { role: 'compaction', summary: 'first', firstKeptSeq: 1 });
 			store.append('s1', { role: 'user', content: 'b' });
-			store.append('s1', { role: 'compaction', summary: 'second', recentContext: [] });
+			store.append('s1', { role: 'compaction', summary: 'second', firstKeptSeq: 3 });
 			const point = store.getCompactionPoint('s1');
 			assert.ok(point);
 			assert.strictEqual(point.summary, 'second');
@@ -231,7 +231,7 @@ describe('MessageStore', () => {
 		it('删除 compaction 消息', () => {
 			const store = new MessageStore();
 			store.append('s1', { role: 'user', content: 'u1' });
-			store.append('s1', { role: 'compaction', summary: 's', recentContext: [] });
+			store.append('s1', { role: 'compaction', summary: 's', firstKeptSeq: 2 });
 			store.append('s1', { role: 'user', content: 'u2' });
 			store.deleteMessage('s1', 1);
 			assert.deepStrictEqual(store.loadHistory('s1').map((m) => m.seq), [0, 2]);
@@ -255,18 +255,17 @@ describe('MessageStore', () => {
 		});
 	});
 
-	describe('1000 条上限', () => {
-		it('超过 1000 条时移除最旧消息', () => {
+	describe('消息数量上限', () => {
+		it('超过旧上限（1000 条）时保留全部消息（归档不截断）', () => {
 			const store = new MessageStore();
 			for (let i = 0; i < 1001; i++) {
 				store.append('s1', { role: 'user', content: String(i) });
 			}
 			const history = store.loadHistory('s1');
-			assert.strictEqual(history.length, 1000);
-			// 最旧的消息（seq=0）应被移除，最旧的应为 seq=1
-			assert.strictEqual(history[0].seq, 1);
-			// 最新的应为 seq=1000
-			assert.strictEqual(history[999].seq, 1000);
+			// 归档层不再按条数上限删除原始记录，全部保留
+			assert.strictEqual(history.length, 1001);
+			assert.strictEqual(history[0].seq, 0);
+			assert.strictEqual(history[1000].seq, 1000);
 		});
 	});
 });

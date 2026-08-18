@@ -24,8 +24,10 @@ import type {
 	McpSettingsSnapshot,
 } from '../mcp/types';
 import type { SessionPlanState, PlanStage } from '../memory/planTypes';
+import type { UsageGranularity, TokenUsageStatsResult } from '../memory/tokenUsageStats';
 
 export type { SessionPlanState, PlanStage };
+export type { UsageGranularity, TokenUsageStatsResult };
 
 export type {
 	McpServerView,
@@ -227,6 +229,12 @@ export interface HistoryEntry {
 		readonly user_input: number;
 		readonly context: number;
 		readonly source: string;
+		/** 实际调用 Provider 标识（如 "openai"）；旧归档缺失时用于归入"未知模型" */
+		readonly provider_id?: string;
+		/** 实际调用模型标识（如 "gpt-4o-mini"）；旧归档缺失时用于归入"未知模型" */
+		readonly model_id?: string;
+		/** 调用当时的非敏感模型展示名（仅用于历史显示，不含鉴权信息） */
+		readonly model_label?: string;
 	};
 	/** user 消息的输入 token 分摊值（估算） */
 	readonly inputTokens?: number;
@@ -285,6 +293,12 @@ export interface TokenUsageDetail {
 	readonly no_cache_tokens?: number;
 	readonly cache_read_tokens?: number;
 	readonly cache_write_tokens?: number;
+	/** 实际调用 Provider 标识（如 "openai"）；旧归档缺失时用于归入"未知模型" */
+	readonly provider_id?: string;
+	/** 实际调用模型标识（如 "gpt-4o-mini"）；旧归档缺失时用于归入"未知模型" */
+	readonly model_id?: string;
+	/** 调用当时的非敏感模型展示名（仅用于历史显示，不含鉴权信息） */
+	readonly model_label?: string;
 }
 
 /** 会话级 token 累计 payload（sessionTokenUsage 事件）。 */
@@ -671,6 +685,20 @@ export interface HooksSnapshotMessage {
 	readonly rtk?: RtkStatusView;
 }
 
+/** 设置页使用情况统计快照（响应 requestUsageStats，携带标准化粒度和区间）。 */
+export interface UsageStatsMessage {
+	readonly command: 'usageStats';
+	/** 统计结果（粒度、起止区间、总量与模型明细；partial 表示部分归档不可读）。 */
+	readonly payload: TokenUsageStatsResult;
+}
+
+/** 设置页使用情况请求的有界错误（仅整体失败时发送，不携带敏感信息）。 */
+export interface UsageStatsErrorMessage {
+	readonly command: 'usageStatsError';
+	/** 可直接展示的中文错误消息。 */
+	readonly message: string;
+}
+
 /** 扩展运行时初始化状态。 */
 export type RuntimeStatus = 'initializing' | 'ready' | 'failed';
 
@@ -723,7 +751,9 @@ export type HostToWebviewMessage =
 	| McpOperationAcceptedMessage
 	| McpSettingsErrorMessage
 	| HooksSnapshotMessage
-	| HooksTestResultMessage;
+	| HooksTestResultMessage
+	| UsageStatsMessage
+	| UsageStatsErrorMessage;
 
 // ── Webview → Host 消息 ──
 
@@ -1024,6 +1054,15 @@ export interface TestRtkRewriteMessage {
 	readonly command: 'testRtkRewrite';
 }
 
+/** 设置页使用情况请求指定粒度与参考日期的统计快照（进入该分类或筛选变化时发送）。 */
+export interface RequestUsageStatsMessage {
+	readonly command: 'requestUsageStats';
+	/** 统计粒度：day（自然日）/ week（周一自然周）/ month（自然月）。 */
+	readonly granularity: UsageGranularity;
+	/** 参考日期（ISO 日期字符串，如 2026-08-15；宿主按本机时区确定所属区间）。 */
+	readonly reference: string;
+}
+
 /** Webview → Host 判别联合。 */
 export type WebviewToHostMessage =
 	| WebviewReadyMessage
@@ -1071,7 +1110,8 @@ export type WebviewToHostMessage =
 	| RequestHooksSnapshotMessage
 	| SaveHooksConfigMessage
 	| DetectRtkMessage
-	| TestRtkRewriteMessage;
+	| TestRtkRewriteMessage
+	| RequestUsageStatsMessage;
 
 /** 任一方向消息的命令名（用于日志与调试）。 */
 export type MessageCommand = HostToWebviewMessage['command'] | WebviewToHostMessage['command'];

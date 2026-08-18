@@ -342,11 +342,15 @@ export async function compactIfNeeded(
 		const startedAt = Date.now();
 		const summary = await generateSummary(split.head, effective.summary, provider, model);
 		const todoContext = todoStore?.formatActiveContext(sessionId) ?? null;
+		// 保留原文边界：firstKeptSeq 以最近一条保留消息的 seq 为准（工具配对在 selectMessages 已按原子单元处理）
+		const firstKeptSeq = cleanup.messages.length > 0 ? cleanup.messages[0].seq : -1;
+		const firstKeptEntryId = firstKeptSeq >= 0 ? messageStore.resolveEntryId(sessionId, firstKeptSeq) : undefined;
 		logger.log(`[上下文压缩] 捕获检查点任务上下文 sessionId=${sessionId} present=${todoContext ? '是' : '否'}`);
 		messageStore.append(sessionId, {
 			role: 'compaction',
 			summary,
-			recentContext: cleanup.messages,
+			firstKeptSeq,
+			...(firstKeptEntryId ? { firstKeptEntryId } : {}),
 			...(todoContext ? { todoContext } : {}),
 		});
 		eventBus.emit({ type: 'progress', sessionId, payload: { phase: 'compacted' } });

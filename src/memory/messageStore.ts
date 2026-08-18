@@ -15,7 +15,60 @@ export interface WorkspaceState {
 }
 
 const STATE_KEY = 'yunxiaoAgent.messages';
-const MAX_MESSAGES = 1000;
+
+/** 旧 workspaceState 迁移结果统计。 */
+export interface LegacyMigrationResult {
+	/** 成功迁移的会话数。 */
+	readonly migrated: number;
+	/** 已存在文件记录而跳过的会话数。 */
+	readonly skipped: number;
+	/** 迁移失败的会话数。 */
+	readonly failed: number;
+}
+
+/**
+ * 迁移旧 workspaceState（yunxiaoAgent.messages）中的会话消息到文件归档（一次性、幂等）。
+ * 已迁移的会话（索引已有条目）跳过，避免上次中断后重复追加；
+ * 逐会话写入 v2 归档，全部落盘成功后再清理旧键；任一落盘失败则保留旧键（不覆盖原始数据）。
+ * @param state workspaceState（伪 Memento 接口，便于测试注入）。
+ * @param fileStore 文件存储。
+ * @returns 迁移结果统计。
+ */
+export async function migrateLegacyWorkspaceState(state: WorkspaceState, fileStore: SessionFileStore): Promise<LegacyMigrationResult> {
+	const legacy = state.get<Record<string, Message[]>>(STATE_KEY);
+	if (!legacy || Object.keys(legacy).length === 0) {
+		return { migrated: 0, skipped: 0, failed: 0 };
+	}
+	let attempted = 0;
+	let skipped = 0;
+	for (const [sessionId, messages] of Object.entries(legacy)) {
+		if (fileStore.getSession(sessionId)) {
+			skipped++;
+			continue;
+		}
+		try {
+			fileStore.createSession(sessionId);
+			for (const m of messages) {
+				fileStore.appendMessage(sessionId, m);
+			}
+			attempted++;
+		} catch (err) {
+			// 同步阶段的异常（理论上极少发生）单独记录
+			logger.error(`[MessageStore] 迁移会话失败 sessionId=${sessionId}:`, err instanceof Error ? err.message : String(err));
+		}
+	}
+	try {
+		// 等待全部会话落盘（可拒绝）后再清理旧键，防止未落盘时清理导致数据丢失
+		await fileStore.commit();
+		await state.update(STATE_KEY, undefined);
+		logger.log(`[MessageStore] 迁移旧会话数据完成 迁移=${attempted} 跳过=${skipped} 失败=0`);
+		return { migrated: attempted, skipped, failed: 0 };
+	} catch (err) {
+		// 任一会话异步落盘失败：保留旧键（本次迁移可安全重试），不阻塞插件启动
+		logger.error(`[MessageStore] 迁移落盘失败，保留旧 workspaceState 键（可重试）:`, err instanceof Error ? err.message : String(err));
+		return { migrated: 0, skipped: 0, failed: attempted };
+	}
+}
 
 /** 最新压缩检查点表示的有效会话上下文。 */
 export interface EffectiveHistory {
@@ -58,11 +111,6 @@ export class MessageStore {
 		const seq = messages.length > 0 ? messages[messages.length - 1].seq + 1 : 0;
 		const stored = { ...message, seq } as Message;
 		messages.push(stored);
-		let truncated = false;
-		if (messages.length > MAX_MESSAGES) {
-			messages.shift();
-			truncated = true;
-		}
 		if (this.fileStore) {
 			// 延迟创建：会话索引无条目（空会话，从未落盘）时先建立记录，再追加首条消息。
 			// 保证「新建会话」不产生记录，只有真正有内容的会话才会写入索引与 JSONL 文件。
@@ -70,13 +118,8 @@ export class MessageStore {
 				this.fileStore.createSession(sessionId);
 				logger.log(`[MessageStore] 首条消息延迟建立会话记录 sessionId=${sessionId}`);
 			}
-			if (truncated) {
-				// 触发上限截断时整体重写文件（否则 JSONL 无限增长、重启后读回超限）
-				this.fileStore.rewriteSession(sessionId, messages);
-			} else {
-				// 常规追加：追加写一行 + 联动更新索引（标题/消息数/时间）
-				this.fileStore.appendMessage(sessionId, stored);
-			}
+			// 归档层不再按 MAX_MESSAGES 截断：原始记录全部保留，仅由投影层限制展示/发送数量
+			this.fileStore.appendMessage(sessionId, stored);
 		} else {
 			this.persist();
 		}
@@ -109,6 +152,8 @@ export class MessageStore {
 
 	/**
 	 * 从最新压缩检查点恢复有效历史，不改写 append-only 的物理消息记录。
+	 * 新检查点以 firstKeptSeq（可选 firstKeptEntryId）为保留边界：
+	 * 返回边界及其后的活动路径消息原文；旧检查点（recentContext）按兼容逻辑展开。
 	 * @param sessionId 会话 ID。
 	 * @returns 当前生效的摘要和原始消息。
 	 */
@@ -118,12 +163,41 @@ export class MessageStore {
 		if (!checkpoint) {
 			return { summary: null, todoContext: null, messages: allMessages };
 		}
-		const messages = [
-			...checkpoint.recentContext,
-			...allMessages.filter((message) => message.seq > checkpoint.seq),
-		];
-		logger.log(`[MessageStore] 加载有效历史 sessionId=${sessionId} checkpointSeq=${checkpoint.seq} 消息数=${messages.length} todoContext=${checkpoint.todoContext ? '有' : '无'}`);
+		let messages: Message[];
+		if (checkpoint.firstKeptSeq !== undefined) {
+			// 新检查点：边界及之后的活动路径消息作为尾部原文（排除检查点自身）
+			messages = allMessages.filter((message) => message.role !== 'compaction' && message.seq >= checkpoint.firstKeptSeq);
+		} else if (checkpoint.recentContext) {
+			// 旧检查点（v1）：复制近期消息原文
+			messages = [
+				...checkpoint.recentContext,
+				...allMessages.filter((message) => message.seq > checkpoint.seq),
+			];
+		} else {
+			messages = allMessages;
+		}
+		logger.log(`[MessageStore] 加载有效历史 sessionId=${sessionId} checkpointSeq=${checkpoint.seq} firstKeptSeq=${checkpoint.firstKeptSeq ?? '旧格式'} 消息数=${messages.length} todoContext=${checkpoint.todoContext ? '有' : '无'}`);
 		return { summary: checkpoint.summary, todoContext: checkpoint.todoContext ?? null, messages };
+	}
+
+	/**
+	 * 解析活动路径消息 seq 对应的归档 Entry ID（文件模式；内存模式返回 undefined）。
+	 * 供压缩检查点写入 firstKeptEntryId 边界。
+	 * @param sessionId 会话 ID
+	 * @param seq 消息 seq
+	 * @returns Entry ID 或 undefined
+	 */
+	resolveEntryId(sessionId: string, seq: number): string | undefined {
+		if (!this.fileStore) {
+			return undefined;
+		}
+		const archive = this.fileStore.readArchive(sessionId);
+		for (const entry of archive.activePath) {
+			if (entry.kind === 'message' && entry.payload.kind === 'message' && entry.payload.message.seq === seq) {
+				return entry.id;
+			}
+		}
+		return undefined;
 	}
 
 	/** 清空 session 消息并持久化。 */
@@ -150,10 +224,37 @@ export class MessageStore {
 		}
 		messages.length = idx;
 		if (this.fileStore) {
-			this.fileStore.rewriteSession(sessionId, messages);
+			// 传入快照：rewriteSession 异步执行时数组可能被后续 append 修改
+			this.fileStore.rewriteSession(sessionId, [...messages]);
 		} else {
 			this.persist();
 		}
+	}
+
+	/**
+	 * 回滚到指定消息之后：截断活动投影（内存），但保留原始归档 Entry——
+	 * 文件模式下追加 head_update 记录持久化活动位置，不物理删除任何记录。
+	 * 与 deleteMessagesAfter（物理删除）语义不同：回滚后可审计、可恢复。
+	 * @param sessionId 会话 ID
+	 * @param seq 保留至该 seq（该 seq 之后的消息从活动投影排除）；-1 表示清空活动路径
+	 */
+	rollbackMessagesAfter(sessionId: string, seq: number): void {
+		this.ensureLoaded(sessionId);
+		const messages = this.store.get(sessionId);
+		if (!messages) {
+			return;
+		}
+		const kept = seq < 0 ? [] : messages.filter((m) => m.seq <= seq);
+		this.store.set(sessionId, kept);
+		// 找回滚后最后一条保留消息的 Entry ID 作为新活动位置
+		const lastKept = kept.length > 0 ? kept[kept.length - 1] : undefined;
+		const headEntryId = lastKept ? this.resolveEntryId(sessionId, lastKept.seq) : null;
+		if (this.fileStore) {
+			this.fileStore.appendHeadUpdate(sessionId, headEntryId ?? null);
+		} else {
+			this.persist();
+		}
+		logger.log(`[MessageStore] 回滚活动位置 sessionId=${sessionId} 保留至 seq=${seq} 保留条数=${kept.length} headEntryId=${headEntryId ?? '空'}`);
 	}
 
 	/**
@@ -232,7 +333,8 @@ export class MessageStore {
 		}
 		Object.assign(target, patch);
 		if (this.fileStore) {
-			this.fileStore.rewriteSession(sessionId, messages);
+			// 传入快照：rewriteSession 异步执行时数组可能被后续 append 修改
+			this.fileStore.rewriteSession(sessionId, [...messages]);
 		} else {
 			this.persist();
 		}
@@ -281,6 +383,33 @@ export class MessageStore {
 			return this.fileStore.onDidChange(listener);
 		}
 		return () => undefined;
+	}
+
+	/**
+	 * 等待全部待提交会话写入结算（文件模式；无文件后端时立即完成）。
+	 * 归档失败的写入会使该 Promise 拒绝，供 AgentLoop 提交边界判断。
+	 * @param sessionId 会话 ID（仅用于日志定位）
+	 * @returns 提交结果（失败时拒绝）
+	 */
+	async commit(sessionId?: string): Promise<void> {
+		if (!this.fileStore) {
+			return;
+		}
+		await this.fileStore.commit();
+		logger.log(`[MessageStore] 归档提交完成 sessionId=${sessionId ?? '全部'}`);
+	} 
+
+	/**
+	 * 校验会话归档是否损坏（文件模式）。损坏时返回诊断列表，供 HistoryLoader 拒绝构建不合法上下文。
+	 * @param sessionId 会话 ID
+	 * @returns 归档诊断（空数组表示无损坏）
+	 */
+	getArchiveDiagnostics(sessionId: string): readonly string[] {
+		if (!this.fileStore) {
+			return [];
+		}
+		const raw = this.fileStore.readArchive(sessionId);
+		return raw.diagnostics.map((diagnostic) => `${diagnostic.code}@${diagnostic.location}: ${diagnostic.detail}`);
 	}
 
 	/**

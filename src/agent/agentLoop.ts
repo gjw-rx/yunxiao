@@ -300,6 +300,10 @@ export class AgentLoop {
 		const { signal } = this.abortController;
 		// 本次运行固定使用启动时的 provider 快照：保存模型配置仅影响后续新运行，不中途切换进行中的流
 		const runProvider = this.provider;
+		// 本次运行固定使用启动时的模型元数据快照：构造 token 账时使用该快照，
+		// 运行中切换默认模型不改变本 run 已形成账的 provider/模型归属（下一次 run 才用新配置）
+		const runModelId = this.config.model;
+		const runProviderId = this.config.providerId;
 
 		const userMessage = this.messageStore.append(sessionId, {
 			role: 'user',
@@ -312,7 +316,7 @@ export class AgentLoop {
 		// run 开始前会话累计（用于 delta 计算）
 		const baseTotal = this.aggregateSessionTokens(sessionId);
 		this.emitRunStateChange(sessionId, 'running');
-		logger.log(`[AgentLoop] run 开始 sessionId=${sessionId} 用户消息长度=${userText.length}`);
+		logger.log(`[AgentLoop] run 开始 sessionId=${sessionId} model=${this.config.model} providerId=${this.config.providerId ?? '未配置'} 用户消息长度=${userText.length}`);
 		logger.log(`[AgentLoop] 后台准备会话代码变更基线 sessionId=${sessionId}`);
 		const changeBaselinePromise = this.config.changeJournal
 			? this.config.changeJournal.ensureSessionBaseline(sessionId, changeWorkspaceRoot).catch((error) => {
@@ -347,6 +351,16 @@ export class AgentLoop {
 				}
 
 				// ── 1. 上下文压缩检查（每轮开始前）──
+				// ── 0. 提交确认：模型调用前确认用户消息及此前写入已归档成功 ──
+				try {
+					await this.messageStore.commit(sessionId);
+				} catch (error) {
+					logger.error(`[AgentLoop] 用户消息归档提交失败，中止本轮运行 sessionId=${sessionId}`, error instanceof Error ? error.message : String(error));
+					this.emitRunStateChange(sessionId, 'failed', '会话归档提交失败');
+					this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
+					return;
+				}
+
 				// ── 2. 加载完整历史（每轮重新加载，确保模型看到完整上下文）──
 				const history = loadHistoryForLLM(sessionId, this.messageStore);
 
@@ -459,6 +473,8 @@ export class AgentLoop {
 					systemPrompt,
 					streamResult,
 					userText,
+					providerId: runProviderId,
+					modelId: runModelId,
 				});
 				if (tokenSnapshot) {
 					this.messageStore.updateMessage(sessionId, userMsgSeq, {
@@ -496,7 +512,13 @@ export class AgentLoop {
 						content: streamResult.textContent,
 						tokenUsage: tokenSnapshot ?? undefined,
 					});
-					this.emitRunStateChange(sessionId, 'cancelled');
+					// 取消前确认已形成的回复已提交；提交失败则发布 failed 而非 cancelled
+					if (await this.commitArchiveWith(sessionId, 'cancelled')) {
+						this.emitRunStateChange(sessionId, 'cancelled');
+					} else {
+						logger.error(`[AgentLoop] 取消时归档提交失败 sessionId=${sessionId}，发布 failed`);
+						this.emitRunStateChange(sessionId, 'failed', '取消时归档提交失败');
+					}
 					this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 					return;
 				}
@@ -596,7 +618,12 @@ export class AgentLoop {
 
 				// 工具执行后检查中断
 				if (signal.aborted) {
-					this.emitRunStateChange(sessionId, 'cancelled');
+					if (await this.commitArchiveWith(sessionId, 'cancelled')) {
+						this.emitRunStateChange(sessionId, 'cancelled');
+					} else {
+						logger.error(`[AgentLoop] 工具执行后取消时归档提交失败 sessionId=${sessionId}，发布 failed`);
+						this.emitRunStateChange(sessionId, 'failed', '取消时归档提交失败');
+					}
 					this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 					return;
 				}
@@ -621,12 +648,18 @@ export class AgentLoop {
 				}
 			}
 			this.emitSessionTokenUsage(sessionId, baseTotal);
-			this.emitRunStateChange(sessionId, 'completed');
+			// 终态前确认最终 assistant/tool 结果已归档提交；提交失败则发布 failed 而非 completed
+			if (await this.commitArchiveWith(sessionId, 'completed')) {
+				this.emitRunStateChange(sessionId, 'completed');
+			} else {
+				logger.error(`[AgentLoop] 完成前归档提交失败 sessionId=${sessionId}，发布 failed`);
+				this.emitRunStateChange(sessionId, 'failed', '归档提交失败');
+			}
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
-			logger.log(`[AgentLoop] 正常完成 sessionId=${sessionId} 共 ${step} 步`);
+			logger.log(`[AgentLoop] 正常完成 sessionId=${sessionId} model=${this.config.model} 共 ${step} 步`);
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);
-			logger.notifyError('[AgentLoop] 未捕获异常', { sessionId, msg });
+			logger.notifyError('[AgentLoop] 未捕获异常', { sessionId, msg, model: this.config.model });
 			this.eventBus.emit({
 				type: 'error',
 				sessionId,
@@ -661,6 +694,24 @@ export class AgentLoop {
 	 */
 	isRunning(sessionId: string): boolean {
 		return this.activeSessionId === sessionId;
+	}
+
+	/**
+	 * 提交确认边界：等待当前会话已排队的归档写入全部结算。
+	 * 提交失败时记录包含 sessionId 的可定位日志并返回 false（调用方据此发布失败状态）。
+	 * @param sessionId 会话 ID。
+	 * @param phase 调用阶段（日志定位）。
+	 * @returns 提交是否成功。
+	 */
+	private async commitArchiveWith(sessionId: string, phase: string): Promise<boolean> {
+		try {
+			await this.messageStore.commit(sessionId);
+			logger.log(`[AgentLoop] 归档提交成功 sessionId=${sessionId} phase=${phase}`);
+			return true;
+		} catch (error) {
+			logger.error(`[AgentLoop] 归档提交失败 sessionId=${sessionId} phase=${phase} reason=${error instanceof Error ? error.message : String(error)}`);
+			return false;
+		}
 	}
 
 	/**
@@ -1071,14 +1122,19 @@ export class AgentLoop {
 	/**
 	 * 组装每步 token 账：真实 usage + 四类拆分（思考/工具调用/模型回复/用户输入）。
 	 * 分摊法：用户输入 = prompt × 估算(用户消息) / 估算(完整请求体)，保证四类与总量自洽。
+	 * @param params 请求、系统提示词、流结果、用户文本与本次运行启动时捕获的模型元数据
 	 */
 	private buildTokenSnapshot(params: {
 		request: LLMRequest;
 		systemPrompt: string;
 		streamResult: Awaited<ReturnType<AgentLoop['consumeStream']>>;
 		userText: string;
+		/** 本次运行启动时捕获的 Provider 标识（运行中切换默认模型不影响本账归属） */
+		providerId?: string;
+		/** 本次运行启动时捕获的模型标识（同时作为当时的非敏感展示名） */
+		modelId?: string;
 	}): TokenUsageSnapshot | null {
-		const { request, systemPrompt, streamResult, userText } = params;
+		const { request, systemPrompt, streamResult, userText, providerId, modelId } = params;
 		const usage = streamResult.usage;
 		const hasUsage = usage !== null && usage.inputTokens + usage.outputTokens > 0;
 
@@ -1134,6 +1190,9 @@ export class AgentLoop {
 			user_input: userInput,
 			context,
 			source: hasUsage ? 'usage' : 'estimated',
+			// 模型归属：使用本次运行启动时捕获的模型元数据，运行中切换默认模型不影响本账归属
+			...(providerId ? { provider_id: providerId } : {}),
+			...(modelId ? { model_id: modelId, model_label: modelId } : {}),
 		};
 	}
 

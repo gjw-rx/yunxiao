@@ -11,7 +11,7 @@ import { EventBus } from '../../core/eventBus';
 import { SessionFileStore } from '../../memory/sessionFileStore';
 import { SessionPlanModeStore } from '../../core/planModeStore';
 
-/** 构造一个不含 planStates 字段的旧版 index.json 并落盘。 */
+/** 构造一个不含 planStates 字段的旧版 index.json 并落盘（含旧裸消息文件，模拟真实旧版会话）。 */
 function writeLegacyIndex(fileStore: SessionFileStore, workspacePath: string): void {
 	fs.mkdirSync(fileStore.sessionDirPath, { recursive: true });
 	fs.writeFileSync(
@@ -31,6 +31,12 @@ function writeLegacyIndex(fileStore: SessionFileStore, workspacePath: string): v
 			},
 			todos: {},
 		}),
+		'utf8'
+	);
+	// 旧裸 Message JSONL（无 header），与索引条目配套
+	fs.writeFileSync(
+		path.join(fileStore.sessionDirPath, 's1.jsonl'),
+		`${JSON.stringify({ role: 'user', content: '旧会话消息', seq: 0 })}\n`,
 		'utf8'
 	);
 }

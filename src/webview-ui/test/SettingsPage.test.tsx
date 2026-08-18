@@ -316,10 +316,11 @@ describe('SettingsPage', () => {
 		expect(uploadSection.compareDocumentPosition(loadedSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 	});
 
-	/** 使用情况分类保持静态占位。 */
-	it('使用情况分类为静态占位', () => {
+	/** 使用情况分类：首次进入请求宿主统计并展示受控视图。 */
+	it('使用情况分类首次进入发起统计请求', () => {
 		render(<SettingsPage />);
 		fireEvent.click(screen.getByRole('button', { name: '使用情况' }));
-		expect(screen.getByText('使用情况数据将在后续版本接入')).toBeTruthy();
+		expect(bridge.post).toHaveBeenCalledWith(expect.objectContaining({ command: 'requestUsageStats' }));
+		expect(screen.getByLabelText('使用情况统计')).toBeTruthy();
 	});
 });
