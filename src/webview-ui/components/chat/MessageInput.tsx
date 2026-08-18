@@ -7,7 +7,7 @@
  */
 import { useEffect, useRef, useState, type JSX, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { post } from '../../bridge/vscode';
-import type { ApprovalMode, ModelPickerItem, SlashCommand, SlashCommandGroup, WorkspaceFile } from '../../protocol';
+import type { ApprovalMode, ModelPickerItem, PlanStage, SlashCommand, SlashCommandGroup, WorkspaceFile } from '../../protocol';
 import { findSlashCommandToken, type SlashCommandToken } from '../../utils/chatBehavior';
 import { SlashCommandPicker, type FilteredSlashCommand } from '../commands/SlashCommandPicker';
 import { FilePicker } from '../files/FilePicker';
@@ -46,6 +46,10 @@ export interface MessageInputProps {
 	onAddSkill: (skill: SlashCommand) => void;
 	/** 发送消息（由 App 组装引用/Skill 显示文本并 post sendMessage） */
 	onSend: (text: string, files: WorkspaceFile[], skills: SlashCommand[]) => void;
+	/** 当前会话的 Plan 阶段（normal 视为未进入 Plan 模式；executing 时禁用切换）。 */
+	planStage?: PlanStage;
+	/** 切换 Plan 模式入口按钮（进入/退出由 App 依据当前阶段决定）。 */
+	onTogglePlan?: () => void;
 }
 
 /** 输入区：发送/停止、文件/Skill 引用与命令/文件选择器。 */
@@ -66,6 +70,8 @@ export function MessageInput({
 	onAddFile,
 	onAddSkill,
 	onSend,
+	planStage = 'normal',
+	onTogglePlan,
 }: MessageInputProps): JSX.Element {
 	const [text, setText] = useState('');
 	const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -248,6 +254,22 @@ export function MessageInput({
 			if (currentSessionId) post({ command: 'compactContext', sessionId: currentSessionId });
 			return;
 		}
+		if (command.action === 'planMode') {
+			// /plan 作为基础功能宿主动作：进入/退出 Plan 模式，不发送聊天消息、不残留 /plan 文本
+			if (!currentSessionId || planStage === 'executing') {
+				return;
+			}
+			if (token) {
+				const nextText = text.slice(0, token.start) + text.slice(token.end);
+				setText(nextText);
+				requestAnimationFrame(() => inputRef.current?.setSelectionRange(token.start, token.start));
+			}
+			post({
+				command: planStage === 'normal' ? 'enterPlanMode' : 'exitPlanMode',
+				sessionId: currentSessionId,
+			});
+			return;
+		}
 		// skill 命令：加入对话框引用块（chip），由用户确认后发送
 		if (command.id && command.id.indexOf('skill.') === 0) {
 			if (token) {
@@ -419,6 +441,23 @@ export function MessageInput({
 							<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
 								<path d="M8 2v12M2 8h12" />
 							</svg>
+						</button>
+						<button
+							type="button"
+							id="planModeBtn"
+							className={`btn plan-mode-btn${planStage !== 'normal' ? ' is-active' : ''}`}
+							title={planStage === 'planning' ? '规划中：仅只读调研并提交计划（点击退出 Plan 模式）' : planStage === 'review' ? '审阅中：等待你确认执行计划（点击退出 Plan 模式）' : planStage === 'executing' ? '执行中：暂不能切换' : '进入 Plan 模式（只读规划，不执行修改）'}
+							aria-label={planStage === 'normal' ? '进入 Plan 模式' : `Plan 模式：${planStage === 'planning' ? '规划中' : planStage === 'review' ? '审阅中' : '执行中'}`}
+							aria-pressed={planStage !== 'normal'}
+							disabled={isStreaming || planStage === 'executing'}
+							onClick={onTogglePlan}
+						>
+							<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+								<path d="M2.5 4.5 5 7l3.5-4.5M2.5 13h11M5.5 9.5h8" />
+							</svg>
+							<span className="plan-mode-label">
+								{planStage === 'planning' ? '规划中' : planStage === 'review' ? '审阅中' : planStage === 'executing' ? '执行中' : 'Plan'}
+							</span>
 						</button>
 						<div className={`approval-mode${approvalMode === 'full-access' ? ' is-full-access' : ''}`} ref={approvalModeRef}>
 							<button

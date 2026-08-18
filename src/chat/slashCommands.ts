@@ -19,7 +19,7 @@ export interface SlashCommand {
 	/** true=选中即发送；false=回填输入框由用户编辑后发送 */
 	readonly send: boolean;
 	/** 可选特殊动作：直接触发扩展侧命令而非发消息 */
-	readonly action?: 'newSession' | 'stopStream' | 'switchModel' | 'compactContext';
+	readonly action?: 'newSession' | 'stopStream' | 'switchModel' | 'compactContext' | 'planMode';
 }
 
 /** 斜杠命令分组。 */
@@ -65,6 +65,14 @@ const BASIC_COMMANDS: readonly SlashCommand[] = [
 		description: '立即压缩当前会话的上下文',
 		send: true,
 		action: 'compactContext',
+	},
+	{
+		id: 'basic.plan-mode',
+		command: 'plan',
+		label: 'Plan 模式',
+		description: '进入或退出只读规划模式（不发送消息）',
+		send: true,
+		action: 'planMode',
 	},
 	{
 		id: 'basic.help',

@@ -17,7 +17,11 @@ import { ThoughtIcon, PlanIcon } from '../shared/icons';
 import { ToolStep } from '../tools/ToolStep';
 
 /** 用户消息行。 */
-function UserMessage({ text, seq, injected, onDelete, onRollback }: { text: string; seq?: number; injected?: boolean; onDelete: () => void; onRollback: () => void }): JSX.Element {
+function UserMessage({ text, seq, injected, onDelete, onRollback }: { text: string; seq?: number; injected?: boolean; onDelete: () => void; onRollback: () => void }): JSX.Element | null {
+	// 系统注入消息（如 Plan 隐藏执行指令）不渲染为普通用户气泡
+	if (injected) {
+		return null;
+	}
 	return (
 		<div className="msg-row user-row">
 			<div className="message user">{text}</div>

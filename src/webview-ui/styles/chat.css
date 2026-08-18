@@ -3070,6 +3070,72 @@
 	text-decoration: line-through;
 }
 
+/* Plan 审阅操作：与任务面板保持紧凑，主操作突出执行入口。 */
+.todo-panel__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 8px 10px 10px;
+	border-top: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.22));
+}
+
+.todo-panel__action {
+	padding: 4px 8px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: 4px;
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.todo-panel__action:hover:not(:disabled) {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.todo-panel__action--primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.todo-panel__action--primary:hover:not(:disabled) {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.todo-panel__action--ghost {
+	background: transparent;
+}
+
+.todo-panel__action:disabled {
+	opacity: 0.55;
+	cursor: default;
+}
+
+/* 输入栏 Plan 开关：状态文本优先于颜色传达当前阶段。 */
+.plan-mode-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	min-width: auto;
+	padding: 0 7px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.plan-mode-btn svg {
+	width: 15px;
+	height: 15px;
+}
+
+.plan-mode-btn.is-active {
+	color: var(--vscode-button-foreground);
+	background: var(--vscode-button-background);
+}
+
+.plan-mode-label {
+	font-size: 11px;
+	line-height: 1;
+}
+
 /* ── 会话代码变更 ── */
 .change-review-btn {
 	width: auto;

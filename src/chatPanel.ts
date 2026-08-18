@@ -12,6 +12,8 @@ import type { SkillInstallResult } from './skill/skillInstaller';
 import type { RuntimeStatus } from './webview-ui/protocol';
 import type { SessionTodoStore } from './memory/sessionTodoStore';
 import type { ChangeJournal } from './core/changeJournal';
+import type { SessionPlanModeStore } from './core/planModeStore';
+import type { PlanModeChangePayload } from './memory/planTypes';
 import type { McpConfigStore } from './mcp/configStore';
 import type { McpServerView } from './mcp/types';
 import type { McpSaveMode, McpOperation, HooksConfigView, RtkStatusView } from './webview-ui/protocol';
@@ -46,6 +48,8 @@ interface ChatViewDeps {
   readonly todoStore?: SessionTodoStore;
   /** 会话代码变更日志。 */
   readonly changeJournal?: ChangeJournal;
+  /** Plan 模式状态服务（可选；装配后向 Webview 回推 Plan 阶段与接收模式操作）。 */
+  readonly planModeStore?: SessionPlanModeStore;
 }
 
 /** 设置面板依赖：模型存储、配置来源、Skill 安装与模型保存回调。 */
@@ -96,6 +100,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly _eventBus: EventBus;
   private readonly _todoStore?: SessionTodoStore;
   private readonly _changeJournal?: ChangeJournal;
+  private readonly _planModeStore?: SessionPlanModeStore;
   /** 独立代码变更查看面板。 */
   private _changeReviewPanel?: vscode.WebviewPanel;
   /** 当前独立变更页所查看的会话与变更集。 */
@@ -121,6 +126,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._eventBus = deps.eventBus;
     this._todoStore = deps.todoStore;
     this._changeJournal = deps.changeJournal;
+    this._planModeStore = deps.planModeStore;
   }
 
   /**
@@ -403,6 +409,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'todo_state_change':
         webview.postMessage({ command: 'todoState', ...(e.payload as TodoStateUpdate) });
+        break;
+      case 'plan_mode_change':
+        {
+          const payload = e.payload as PlanModeChangePayload;
+          webview.postMessage({
+            command: 'planModeState',
+            sessionId: e.sessionId,
+            state: { stage: payload.to, draftCreated: payload.draftCreated },
+          });
+        }
         break;
       case 'stream_end':
         webview.postMessage({ command: 'replyEnd' });
@@ -1003,6 +1019,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'deleteSession',
       'deleteMessage',
       'rollbackTurn',
+      'enterPlanMode',
+      'continuePlanning',
+      'exitPlanMode',
+      'confirmExecution',
     ]);
     if (this._runtimeStatus !== 'ready' && guardedCommands.has(msg.command)) {
       logger.log(`[ChatPanel] 运行时未就绪，忽略业务消息 command=${msg.command} status=${this._runtimeStatus}`);
@@ -1098,6 +1118,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'stopStream': {
         const sessionId = msg.sessionId as string;
         this._sessionManager.cancel(sessionId);
+        break;
+      }
+      case 'enterPlanMode':
+      case 'continuePlanning':
+      case 'exitPlanMode':
+      case 'confirmExecution': {
+        // Plan 模式宿主动作：校验当前会话/阶段后执行，失败提示用户并回推最新状态保持一致
+        const sessionId = msg.sessionId as string;
+        if (!sessionId || sessionId !== this._currentSessionId) {
+          logger.log(`[ChatPanel] 忽略过期 Plan 动作 command=${msg.command} sessionId=${sessionId}`);
+          if (this._currentSessionId) {
+            this._pushPlanMode(webview, this._currentSessionId);
+          }
+          break;
+        }
+        try {
+          if (msg.command === 'enterPlanMode') {
+            this._sessionManager.enterPlanMode(sessionId);
+          } else if (msg.command === 'continuePlanning') {
+            this._sessionManager.continuePlanning(sessionId);
+          } else if (msg.command === 'exitPlanMode') {
+            this._sessionManager.exitPlanMode(sessionId);
+          } else {
+            this._sessionManager.confirmExecution(sessionId);
+          }
+          logger.log(`[ChatPanel] Plan 动作 ${msg.command} 完成 sessionId=${sessionId}`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error(`[ChatPanel] Plan 动作 ${msg.command} 失败 sessionId=${sessionId} error=${message}`);
+          void vscode.window.showWarningMessage(message);
+        }
+        this._pushPlanMode(webview, sessionId);
         break;
       }
       case 'compactContext': {
@@ -1363,6 +1415,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const snapshot = this._todoStore.read(sessionId);
       webview.postMessage({ command: 'todoState', snapshot, summary: summarizeTodos(snapshot) });
     }
+    // 历史刷新时回推对应会话的 Plan 状态（初始化/切换会话/删除消息后的刷新共用）
+    this._pushPlanMode(webview, sessionId);
+  }
+
+  /**
+   * 向 Webview 回推指定会话的 Plan 模式状态。
+   * @param webview 聊天面板 webview。
+   * @param sessionId 会话 ID。
+   * @returns 无返回值
+   */
+  private _pushPlanMode(webview: vscode.Webview, sessionId: string): void {
+    if (!this._planModeStore) {
+      return;
+    }
+    webview.postMessage({
+      command: 'planModeState',
+      sessionId,
+      state: this._planModeStore.getState(sessionId),
+    });
   }
 
   /**

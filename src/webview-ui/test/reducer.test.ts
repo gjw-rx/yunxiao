@@ -32,6 +32,35 @@ describe('todoState', () => {
 	});
 });
 
+describe('planModeState', () => {
+	it('映射会话 Plan 状态，并忽略非当前会话的实时事件', () => {
+		const action = hostToAction({
+			command: 'planModeState',
+			sessionId: 'session-1',
+			state: { stage: 'review', draftCreated: true },
+		});
+		expect(action).toEqual({
+			type: 'planModeState',
+			sessionId: 'session-1',
+			state: { stage: 'review', draftCreated: true },
+		});
+		const reviewed = chatReducer(activeState(), action!);
+		expect(reviewed.planMode).toEqual({ stage: 'review', draftCreated: true });
+		const unchanged = chatReducer(reviewed, {
+			type: 'planModeState',
+			sessionId: 'session-2',
+			state: { stage: 'planning', draftCreated: false },
+		});
+		expect(unchanged.planMode).toEqual({ stage: 'review', draftCreated: true });
+	});
+
+	it('切换会话时清空上一个会话的 Plan 状态', () => {
+		const before = activeState({ planMode: { stage: 'review', draftCreated: true } });
+		const next = chatReducer(before, { type: 'openSession', sessionId: 'session-2' });
+		expect(next.planMode).toBeNull();
+	});
+});
+
 /** 构造一个已进入会话且完成握手的初始状态。 */
 function activeState(overrides: Partial<ChatState> = {}): ChatState {
 	return {

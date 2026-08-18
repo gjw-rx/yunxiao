@@ -14,6 +14,7 @@ import { loadHistoryForLLM } from '../memory/historyLoader';
 import type { ToolRouter } from '../core/toolRouter';
 import type { ToolRegistry } from '../core/toolRegistry';
 import type { EventBus } from '../core/eventBus';
+import type { SessionPlanModeStore } from '../core/planModeStore';
 import type { ToolContext } from '../tools/baseTool';
 import type { ToolResult, ToolCall } from '../core/types';
 import type { SkillRegistry } from '../skill/skillRegistry';
@@ -81,6 +82,8 @@ export interface AgentLoopConfig {
 	readonly syncSource?: () => SyncSource;
 	/** 当前会话任务快照存储，用于将未结束任务临时注入模型上下文。 */
 	readonly todoStore?: SessionTodoStore;
+	/** Plan 模式状态服务（可选；装配后按会话阶段过滤模型可见工具定义）。 */
+	readonly planModeStore?: SessionPlanModeStore;
 	/** 回滚快照记录器（写文件工具在执行前记录改动前状态）。 */
 	readonly rollbackRecorder?: RollbackRecorder;
 	/** 会话代码变更日志（写文件工具在成功前后记录快照）。 */
@@ -109,6 +112,15 @@ const EMPTY_REPLY_PROMPT =
 
 /** 空回复兜底的最大重试次数（达到后即使仍为空也正常结束）。 */
 const MAX_EMPTY_REPLY_RETRIES = 2;
+
+/** Plan 规划阶段临时注入的只读规划指令（不写入会话历史，退出模式后彻底移除）。 */
+const PLAN_MODE_PROMPT =
+	'# Plan Mode\n' +
+	'You are now in Plan Mode: research and plan only. ' +
+	'You MUST NOT modify any files, run state-changing commands, or perform any write/execute/destructive actions — all such tools are unavailable to you. ' +
+	'Use the available read-only tools to investigate the codebase, search for information, and clarify requirements when necessary. ' +
+	'When you have a complete, ordered execution plan, submit it as a single todo_write call with the full task list, then stop and wait for the user to review. ' +
+	'Do NOT start implementing until the user explicitly approves the plan.';
 
 /** 同一轮中只读可并行工具的最大并发数（参照 langchain maxConcurrency / Anthropic 并行 tool use 建议）。 */
 const MAX_PARALLEL_TOOLS = 3;
@@ -205,6 +217,8 @@ function todosMatch(left: readonly TodoItem[], right: readonly TodoItem[]): bool
 export class AgentLoop {
 	private abortController: AbortController | null = null;
 	private activeSessionId: string | null = null;
+	/** 当前 run 是否成功执行了非空 todo_write（planning 阶段用于进入 review 的信号，run 级）。 */
+	private runTodoWriteSucceeded = false;
 
 	private provider: LLMProvider;
 	private config: AgentLoopConfig;
@@ -279,14 +293,20 @@ export class AgentLoop {
 	}
 
 	/** 主循环入口：追加用户消息，进入 Agent Loop。 */
-	async run(sessionId: string, userText: string): Promise<void> {
+	async run(sessionId: string, userText: string, options?: { readonly hidden?: boolean }): Promise<void> {
 		this.abortController = new AbortController();
 		this.activeSessionId = sessionId;
+		this.runTodoWriteSucceeded = false;
 		const { signal } = this.abortController;
 		// 本次运行固定使用启动时的 provider 快照：保存模型配置仅影响后续新运行，不中途切换进行中的流
 		const runProvider = this.provider;
 
-		const userMessage = this.messageStore.append(sessionId, { role: 'user', content: userText });
+		const userMessage = this.messageStore.append(sessionId, {
+			role: 'user',
+			content: userText,
+			// 隐藏执行指令（如 Plan 确认执行）不渲染为普通用户消息，仅作为 turn 边界参与历史
+			...(options?.hidden ? { injected: true } : {}),
+		});
 		const userMsgSeq = userMessage.seq;
 		const changeWorkspaceRoot = this.config.workspaceRoots[0] ?? process.cwd();
 		// run 开始前会话累计（用于 delta 计算）
@@ -351,13 +371,18 @@ export class AgentLoop {
 				// ── 4. 组装消息 ──
 				// 活跃任务以缓存友好的方式进入上下文：正常请求依赖历史中的 todo_write 工具结果或检查点任务上下文，
 				// 仅当两者均无模型可见证据且存在活跃任务时才临时注入恢复上下文（不写入消息历史）。
+				// Plan 模式（planning/review）临时注入只读规划指令（不写入历史），并抑制"继续执行活跃任务"恢复提示。
+				const planStage = this.config.planModeStore?.getState(sessionId).stage;
+				const planInstruction = planStage === 'planning' ? PLAN_MODE_PROMPT : null;
+				const suppressTodoRecovery = planStage === 'planning' || planStage === 'review';
 				const todoEvidence = this.detectTodoEvidence(sessionId);
 				const todoContext =
-					todoEvidence.decision === 'recovery'
+					!suppressTodoRecovery && todoEvidence.decision === 'recovery'
 						? this.config.todoStore?.formatActiveContext(sessionId) ?? null
 						: null;
 				const messages: LLMMessage[] = [
 					{ role: 'system', content: systemPrompt },
+					...(planInstruction ? [{ role: 'system' as const, content: planInstruction }] : []),
 					...(todoContext ? [{ role: 'system' as const, content: todoContext }] : []),
 					...history,
 				];
@@ -378,8 +403,12 @@ export class AgentLoop {
 					logger.log(`[AgentLoop] step=${step} 接近 maxSteps=${this.config.maxSteps}，注入预警`);
 				}
 
-				// ── 6. 物化工具定义 ──
-				const tools = toolSchemasToDefinitions(this.toolRegistry.list());
+				// ── 6. 物化工具定义（Plan 模式先按会话阶段过滤，token 估算/压缩/请求共用同一工具集）──
+				const schemas = this.config.planModeStore
+					? this.toolRegistry.list().filter((schema) =>
+						this.config.planModeStore!.isToolAllowed(sessionId, schema))
+					: this.toolRegistry.list();
+				const tools = toolSchemasToDefinitions(schemas);
 				if (this.config.compaction) {
 					const requestTokens = estimateRequest(
 						systemPrompt,
@@ -583,6 +612,14 @@ export class AgentLoop {
 			}
 
 			// 正常完成
+			// Plan 模式：规划 run 正常结束且本轮成功写入非空 todo_write → 原子进入 review（等待用户审阅）
+			if (this.config.planModeStore) {
+				const stage = this.config.planModeStore.getState(sessionId).stage;
+				if (stage === 'planning' && this.runTodoWriteSucceeded) {
+					this.config.planModeStore.transition(sessionId, 'review');
+					logger.log(`[AgentLoop] 规划 run 已提交非空计划，进入 review sessionId=${sessionId}`);
+				}
+			}
 			this.emitSessionTokenUsage(sessionId, baseTotal);
 			this.emitRunStateChange(sessionId, 'completed');
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
@@ -743,7 +780,13 @@ export class AgentLoop {
 			results[item.index] = await this.executeSingleTool(item.coreCall, toolContext, sessionId);
 		}
 
-		// 4. 按模型返回顺序写入 tool 消息（被 doom 跳过的调用不写）
+		// 4. 跟踪 todo_write 成功信号（Plan 模式状态转换依据），按模型返回顺序写入 tool 消息（被 doom 跳过的调用不写）
+		schedulable.forEach((tc, index) => {
+			const result = results[index];
+			if (result) {
+				this.trackTodoWriteResult(sessionId, tc.name, result);
+			}
+		});
 		for (const result of results) {
 			if (result) {
 				this.messageStore.append(sessionId, {
@@ -755,6 +798,52 @@ export class AgentLoop {
 		}
 
 		return { blocked };
+	}
+
+	/**
+	 * 跟踪当前 run 中 todo_write 工具结果：
+	 * 成功且写入非空任务列表时置位 run 级信号并标记本轮草案（仅 planning 生效）；
+	 * executing 阶段写入后快照无活跃任务时自动回到 normal（保留最终快照，不自动重放）。
+	 * @param sessionId 会话 ID。
+	 * @param toolName 工具名。
+	 * @param result 工具执行结果。
+	 * @returns 无返回值。
+	 */
+	private trackTodoWriteResult(sessionId: string, toolName: string, result: ToolResult): void {
+		if (toolName !== 'todo_write' || result.status !== 'success' || !result.result) {
+			return;
+		}
+		let todos: readonly TodoItem[] | null = null;
+		try {
+			const parsed = JSON.parse(result.result) as { todos?: unknown };
+			if (Array.isArray(parsed.todos)) {
+				todos = parsed.todos as readonly TodoItem[];
+			}
+		} catch {
+			return;
+		}
+		if (!todos) {
+			return;
+		}
+
+		if (todos.length > 0 && this.config.planModeStore) {
+			this.runTodoWriteSucceeded = true;
+			this.config.planModeStore.markDraftCreated(sessionId);
+			logger.log(`[AgentLoop] 本轮成功写入非空 Todo 草案 sessionId=${sessionId} count=${todos.length}`);
+		}
+
+		if (this.config.planModeStore) {
+			const stage = this.config.planModeStore.getState(sessionId).stage;
+			if (stage === 'executing') {
+				const active = todos.filter(
+					(todo) => todo.status === 'pending' || todo.status === 'in_progress'
+				).length;
+				if (active === 0) {
+					this.config.planModeStore.transition(sessionId, 'normal');
+					logger.log(`[AgentLoop] executing 阶段任务已全部完成，回到 normal sessionId=${sessionId}`);
+				}
+			}
+		}
 	}
 
 	/**

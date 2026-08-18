@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as os from 'os';
 import type { Message } from './types';
 import type { TodoSnapshot } from './todoTypes';
+import type { SessionPlanState, SessionPlanStateRecord } from './planTypes';
 import * as logger from '../logger';
 
 /** 会话元数据（索引条目） */
@@ -37,6 +38,8 @@ export interface SessionIndex {
 	readonly sessions: Record<string, SessionMeta>;
 	/** sessionId -> 最新任务快照。 */
 	readonly todos?: Record<string, TodoSnapshot>;
+	/** sessionId -> Plan 模式状态（可选；旧索引缺失时按 normal 处理）。 */
+	readonly planStates?: SessionPlanStateRecord;
 }
 
 /** 内部可变索引（SessionIndex 的写版本，供 mutateIndex 修改） */
@@ -46,6 +49,7 @@ type MutableSessionIndex = {
 	currentSessionId?: string;
 	sessions: Record<string, SessionMeta>;
 	todos: Record<string, TodoSnapshot>;
+	planStates: SessionPlanStateRecord;
 };
 
 /** 默认标题长度上限（字符） */
@@ -56,6 +60,38 @@ const INDEX_FILE = 'index.json';
 
 /** 任务状态的合法取值集合。 */
 const TODO_STATUSES = new Set(['pending', 'in_progress', 'completed', 'cancelled']);
+
+/** Plan 阶段合法取值集合。 */
+const PLAN_STAGES = new Set(['normal', 'planning', 'review', 'executing']);
+
+/**
+ * 将索引中的 Plan 状态转换为可用结构；缺失或非法值按 normal 回退，不阻塞历史加载。
+ * @param value 原始索引字段。
+ * @returns 会话 Plan 状态映射。
+ */
+function parsePlanStates(value: unknown): SessionPlanStateRecord {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		return {};
+	}
+
+	const states: SessionPlanStateRecord = {};
+	for (const [sessionId, rawState] of Object.entries(value)) {
+		if (!rawState || typeof rawState !== 'object' || Array.isArray(rawState)) {
+			continue;
+		}
+		const raw = rawState as { stage?: unknown; draftCreated?: unknown };
+		// stage 非法视为整条状态损坏，整体回退 normal（含草案标记），不阻塞历史加载。
+		if (typeof raw.stage !== 'string' || !PLAN_STAGES.has(raw.stage)) {
+			states[sessionId] = { stage: 'normal', draftCreated: false };
+			continue;
+		}
+		states[sessionId] = {
+			stage: raw.stage as SessionPlanState['stage'],
+			draftCreated: raw.draftCreated === true,
+		};
+	}
+	return states;
+}
 
 /**
  * 将索引中的任务快照转换为可用结构；损坏项按空快照处理。
@@ -181,6 +217,19 @@ export class SessionFileStore {
 			idx.todos[sessionId] = snapshot;
 		});
 		logger.log(`[SessionFileStore] 写入任务快照 sessionId=${sessionId} count=${snapshot.todos.length}`);
+	}
+
+	/** 读取会话 Plan 状态；缺失或非法时回退 normal。 @param sessionId 会话 ID。 @returns Plan 状态。 */
+	getPlanState(sessionId: string): SessionPlanState {
+		return this.index.planStates[sessionId] ?? { stage: 'normal', draftCreated: false };
+	}
+
+	/** 写入会话 Plan 状态（原子持久化）。 @param sessionId 会话 ID。 @param state Plan 状态。 @returns 无返回值。 */
+	setPlanState(sessionId: string, state: SessionPlanState): void {
+		this.mutateIndex((idx) => {
+			idx.planStates[sessionId] = state;
+		});
+		logger.log(`[SessionFileStore] 写入 Plan 状态 sessionId=${sessionId} stage=${state.stage} draftCreated=${state.draftCreated}`);
 	}
 
 	/**
@@ -315,6 +364,7 @@ export class SessionFileStore {
 		this.mutateIndex((idx) => {
 			delete idx.sessions[sessionId];
 			delete idx.todos[sessionId];
+			delete idx.planStates[sessionId];
 			if (idx.currentSessionId === sessionId) {
 				idx.currentSessionId = undefined;
 			}
@@ -395,7 +445,7 @@ export class SessionFileStore {
 	 * @returns 索引
 	 */
 	private loadIndex(workspacePath: string): MutableSessionIndex {
-		const empty: MutableSessionIndex = { version: 1, workspacePath, sessions: {}, todos: {} };
+		const empty: MutableSessionIndex = { version: 1, workspacePath, sessions: {}, todos: {}, planStates: {} };
 		try {
 			const raw = fs.readFileSync(path.join(this.sessionDir, INDEX_FILE), 'utf8');
 			const parsed = JSON.parse(raw) as Partial<SessionIndex>;
@@ -407,6 +457,7 @@ export class SessionFileStore {
 					? (parsed.sessions as Record<string, SessionMeta>)
 					: {},
 				todos: parseTodoSnapshots(parsed.todos),
+				planStates: parsePlanStates(parsed.planStates),
 			};
 		} catch {
 			return empty;

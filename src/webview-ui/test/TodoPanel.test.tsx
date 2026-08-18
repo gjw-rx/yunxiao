@@ -1,9 +1,14 @@
 /**
  * TodoPanel 只读展示与进度语义测试。
  */
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TodoPanel } from '../components/chat/TodoPanel';
+
+/** 清理每个用例挂载的面板，避免审阅按钮残留到后续断言。 */
+afterEach(() => {
+	cleanup();
+});
 
 describe('TodoPanel', () => {
 	it('展示任务流与完成进度，并可收缩为紧凑摘要', () => {
@@ -16,6 +21,9 @@ describe('TodoPanel', () => {
 					],
 				}}
 				summary={{ total: 2, pending: 0, in_progress: 1, completed: 1, cancelled: 0 }}
+				onExecute={() => {}}
+				onContinue={() => {}}
+				onExit={() => {}}
 			/>
 		);
 
@@ -39,8 +47,53 @@ describe('TodoPanel', () => {
 			<TodoPanel
 				snapshot={{ todos: [] }}
 				summary={{ total: 0, pending: 0, in_progress: 0, completed: 0, cancelled: 0 }}
+				onExecute={() => {}}
+				onContinue={() => {}}
+				onExit={() => {}}
 			/>
 		);
 		expect(container.innerHTML).toBe('');
+	});
+
+	it('review 阶段展示执行计划/继续规划/退出规划三个操作', () => {
+		const onExecute = vi.fn();
+		const onContinue = vi.fn();
+		const onExit = vi.fn();
+		render(
+			<TodoPanel
+				snapshot={{ todos: [{ id: 'p1', content: '计划', status: 'pending' }] }}
+				summary={{ total: 1, pending: 1, in_progress: 0, completed: 0, cancelled: 0 }}
+				planStage="review"
+				sessionId="s1"
+				onExecute={onExecute}
+				onContinue={onContinue}
+				onExit={onExit}
+			/>
+		);
+
+		const execute = screen.getByRole('button', { name: '执行计划' });
+		const continuePlan = screen.getByRole('button', { name: '继续规划' });
+		const exit = screen.getByRole('button', { name: '退出规划' });
+		fireEvent.click(execute);
+		expect(onExecute).toHaveBeenCalledTimes(1);
+		expect(continuePlan.getAttribute('disabled')).not.toBeNull();
+		fireEvent.click(continuePlan);
+		fireEvent.click(exit);
+		expect(onContinue).not.toHaveBeenCalled();
+		expect(onExit).not.toHaveBeenCalled();
+	});
+
+	it('非 review 阶段不展示审阅操作', () => {
+		render(
+			<TodoPanel
+				snapshot={{ todos: [{ id: 'p1', content: '计划', status: 'pending' }] }}
+				summary={{ total: 1, pending: 1, in_progress: 0, completed: 0, cancelled: 0 }}
+				planStage="planning"
+				onExecute={() => {}}
+				onContinue={() => {}}
+				onExit={() => {}}
+			/>
+		);
+		expect(screen.queryByRole('button', { name: '执行计划' })).toBeNull();
 	});
 });

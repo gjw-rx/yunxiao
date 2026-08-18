@@ -12,7 +12,16 @@ import type { RollbackJournal } from './rollbackJournal';
 import type { ChangeJournal } from './changeJournal';
 import type { Message } from '../memory/types';
 import type { CompactionResult } from '../agent/compaction';
+import type { SessionPlanModeStore } from './planModeStore';
+import type { SessionTodoStore } from '../memory/sessionTodoStore';
+import type { EventBus } from './eventBus';
+import { summarizeTodos } from '../memory/todoTypes';
 import * as logger from '../logger';
+
+/** Plan 确认执行时注入的同会话隐藏执行指令（不渲染为普通用户消息，不创建新会话）。 */
+const EXECUTION_PROMPT =
+	'Continue executing the approved plan. Start from the first pending or in_progress task in the todo list. ' +
+	'Update task statuses with todo_write as you progress. Do not re-plan; execute the existing plan.';
 
 /** 前端期望的历史消息格式。 */
 export interface HistoryEntry {
@@ -41,6 +50,9 @@ export class LocalSessionManager {
 		private readonly rollbackJournal?: RollbackJournal,
 		private readonly workspaceRoot?: string,
 		private readonly changeJournal?: ChangeJournal,
+		private readonly planModeStore?: SessionPlanModeStore,
+		private readonly todoStore?: SessionTodoStore,
+		private readonly eventBus?: EventBus,
 	) {}
 
 	/**
@@ -232,5 +244,115 @@ export class LocalSessionManager {
 	setCurrentSessionId(sessionId: string): void {
 		this.currentSessionId = sessionId;
 		this.messageStore.setCurrentSessionId(sessionId);
+	}
+
+	/**
+	 * 进入 Plan 模式：校验 Agent 空闲、当前阶段 normal 且无活跃 Todo 后切换为 planning。
+	 * 切换不向模型发送任何消息。
+	 * @param sessionId 会话 ID。
+	 * @throws 会话运行中、阶段不符或存在活跃任务时抛出。
+	 */
+	enterPlanMode(sessionId: string): void {
+		this.assertPlanDeps();
+		if (this.agentLoop.isRunning(sessionId)) {
+			throw new Error('当前会话正在生成，请先停止后再进入 Plan 模式');
+		}
+		const state = this.planModeStore!.getState(sessionId);
+		if (state.stage !== 'normal') {
+			throw new Error(`当前会话处于 ${state.stage} 阶段，不能开始新的规划`);
+		}
+		if (this.hasActiveTodos(sessionId)) {
+			throw new Error('当前会话仍有未完成任务，请先完成或清空后再进入 Plan 模式');
+		}
+		this.planModeStore!.transition(sessionId, 'planning');
+		logger.log(`[SessionManager] 进入 Plan 模式 sessionId=${sessionId}`);
+	}
+
+	/**
+	 * 继续规划：从 review 恢复为 planning，保留当前 Todo 草案。
+	 * @param sessionId 会话 ID。
+	 * @throws 会话运行中或当前不在 review 阶段时抛出。
+	 */
+	continuePlanning(sessionId: string): void {
+		this.assertPlanDeps();
+		if (this.agentLoop.isRunning(sessionId)) {
+			throw new Error('当前会话正在生成，请先停止后再继续规划');
+		}
+		const state = this.planModeStore!.getState(sessionId);
+		if (state.stage !== 'review') {
+			throw new Error(`当前会话处于 ${state.stage} 阶段，不能继续规划`);
+		}
+		this.planModeStore!.transition(sessionId, 'planning');
+		logger.log(`[SessionManager] 继续规划 sessionId=${sessionId}`);
+	}
+
+	/**
+	 * 退出 Plan 模式：回到 normal；若本轮已创建 Todo 草案则清空草案并同步 todo_state_change 事件。
+	 * 未创建本轮草案时不误删旧 Todo 快照。
+	 * @param sessionId 会话 ID。
+	 * @throws 会话运行中或当前不在 planning/review 阶段时抛出。
+	 */
+	exitPlanMode(sessionId: string): void {
+		this.assertPlanDeps();
+		if (this.agentLoop.isRunning(sessionId)) {
+			throw new Error('当前会话正在生成，请先停止后再退出 Plan 模式');
+		}
+		const state = this.planModeStore!.getState(sessionId);
+		if (state.stage !== 'planning' && state.stage !== 'review') {
+			throw new Error(`当前会话处于 ${state.stage} 阶段，不在 Plan 模式中`);
+		}
+		const draftCreated = state.draftCreated;
+		this.planModeStore!.transition(sessionId, 'normal');
+		if (draftCreated && this.todoStore) {
+			const snapshot = this.todoStore.write(sessionId, []);
+			this.eventBus?.emit({
+				type: 'todo_state_change',
+				sessionId,
+				payload: { snapshot, summary: summarizeTodos(snapshot) },
+			});
+			logger.log(`[SessionManager] 退出 Plan 模式并清空本轮草案 sessionId=${sessionId}`);
+		}
+	}
+
+	/**
+	 * 确认执行计划：校验 review 阶段且有活跃 Todo，先持久化 executing，
+	 * 再在同一会话启动一条不渲染为普通用户消息的隐藏执行指令（不创建新会话）。
+	 * @param sessionId 会话 ID。
+	 * @throws 会话运行中、阶段不符或计划无待执行任务时抛出。
+	 */
+	confirmExecution(sessionId: string): void {
+		this.assertPlanDeps();
+		if (this.agentLoop.isRunning(sessionId)) {
+			throw new Error('当前会话正在生成，请先停止后再执行计划');
+		}
+		const state = this.planModeStore!.getState(sessionId);
+		if (state.stage !== 'review') {
+			throw new Error(`当前会话处于 ${state.stage} 阶段，不能执行计划`);
+		}
+		if (!this.hasActiveTodos(sessionId)) {
+			throw new Error('当前计划没有待执行任务');
+		}
+		this.planModeStore!.transition(sessionId, 'executing');
+		logger.log(`[SessionManager] 确认执行计划，启动隐藏执行指令 sessionId=${sessionId}`);
+		void this.agentLoop.run(sessionId, EXECUTION_PROMPT, { hidden: true }).catch((err) => {
+			logger.notifyError('[SessionManager] 执行指令运行异常', err instanceof Error ? err.message : String(err));
+		});
+	}
+
+	/** 校验 Plan 模式依赖已装配。 @throws 未装配时抛出。 */
+	private assertPlanDeps(): void {
+		if (!this.planModeStore) {
+			throw new Error('Plan 模式服务未装配');
+		}
+	}
+
+	/** 会话是否含活跃 Todo（pending 或 in_progress）。 @param sessionId 会话 ID。 @returns 是否存在活跃任务。 */
+	private hasActiveTodos(sessionId: string): boolean {
+		if (!this.todoStore) {
+			return false;
+		}
+		return this.todoStore.read(sessionId).todos.some(
+			(todo) => todo.status === 'pending' || todo.status === 'in_progress'
+		);
 	}
 }

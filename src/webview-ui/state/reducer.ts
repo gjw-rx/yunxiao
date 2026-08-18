@@ -23,6 +23,7 @@ import type {
 	TokenUsageDetail,
 	WorkspaceFile,
 } from '../protocol';
+import type { SessionPlanState } from '../../memory/planTypes';
 
 /** 消息流条目（扁平渲染顺序数组，按 turn 分组渲染）。 */
 export type MessageItem =
@@ -70,6 +71,8 @@ export interface ChatState {
 	todoSnapshot: TodoSnapshot | null;
 	/** 当前会话的任务状态汇总。 */
 	todoSummary: TodoSummary | null;
+	/** 当前会话的 Plan 模式状态；未进入 Plan 模式（normal）时为 null。 */
+	planMode: SessionPlanState | null;
 	/** 消息流（含过程步骤与回复气泡，按渲染顺序） */
 	messages: MessageItem[];
 	/** 工具时间线条目：call_id → 条目 */
@@ -106,6 +109,7 @@ export const initialState: ChatState = {
 	sessionTokenUsage: null,
 	todoSnapshot: null,
 	todoSummary: null,
+	planMode: null,
 	messages: [],
 	toolEntries: {},
 	approvals: {},
@@ -175,6 +179,7 @@ export type ChatAction =
 	| { type: 'tokenUsage'; payload: { token_usage?: TokenUsageDetail } }
 	| { type: 'sessionTokenUsage'; payload: SessionTokenPayload }
 	| { type: 'todoState'; snapshot: TodoSnapshot; summary: TodoSummary }
+	| { type: 'planModeState'; sessionId: string; state: SessionPlanState }
 	| { type: 'historyLoaded'; messages: HistoryEntry[] }
 	| { type: 'workspaceFiles'; files: WorkspaceFile[] }
 	| { type: 'modelInfo'; model: string }
@@ -208,6 +213,7 @@ function resetConversation(state: ChatState): ChatState {
 		sessionTokenUsage: null,
 		todoSnapshot: null,
 		todoSummary: null,
+		planMode: null,
 	};
 }
 
@@ -460,6 +466,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 				...state,
 				todoSnapshot: action.snapshot.todos.length > 0 ? action.snapshot : null,
 				todoSummary: action.snapshot.todos.length > 0 ? action.summary : null,
+			};
+		}
+		case 'planModeState': {
+			// 忽略非当前会话的 Plan 状态事件，防止后台会话状态污染当前界面
+			if (state.currentSessionId && action.sessionId !== state.currentSessionId) {
+				return state;
+			}
+			return {
+				...state,
+				// 仅展示非 normal 阶段的 Plan 状态；normal 视为未进入 Plan 模式
+				planMode: action.state.stage === 'normal' ? null : action.state,
 			};
 		}
 		case 'historyLoaded': {

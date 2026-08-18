@@ -12,6 +12,7 @@ import { RollbackJournal } from './core/rollbackJournal';
 import { ChangeJournal } from './core/changeJournal';
 import { ApprovalGateway } from './core/approvalGateway';
 import { LocalSessionManager } from './core/localSessionManager';
+import { SessionPlanModeStore } from './core/planModeStore';
 import { ReadFileTool, DEFAULT_MAX_FILE_SIZE } from './tools/fs/readFile';
 import { WriteFileTool } from './tools/fs/writeFile';
 import { ListDirTool } from './tools/fs/listDir';
@@ -117,6 +118,8 @@ async function _activate(context: vscode.ExtensionContext) {
 	await migrateLegacyMessages(context, fileStore);
 	const messageStore = new MessageStore(fileStore);
 	const todoStore = new SessionTodoStore(fileStore);
+	// Plan 模式状态服务：四阶段状态转换、工具策略与类型化事件（装配到路由/AgentLoop/会话/UI）
+	const planModeStore = new SessionPlanModeStore(fileStore, eventBus);
 	// 回滚快照：与会话存储同 workspace 隔离目录，记录写文件工具改动前的状态
 	const rollbackJournal = new RollbackJournal(path.join(fileStore.sessionDirPath, 'rollback'));
 	const changeJournal = new ChangeJournal(path.join(fileStore.sessionDirPath, 'changes'));
@@ -131,6 +134,7 @@ async function _activate(context: vscode.ExtensionContext) {
 		eventBus,
 		todoStore,
 		changeJournal,
+		planModeStore,
 	});
 
 	// 审批网关：使用 webview 内嵌审批卡片
@@ -381,7 +385,7 @@ async function _activate(context: vscode.ExtensionContext) {
 	const rtkTransformHook = new RtkTransformHook(hooksConfigStore);
 	hookManager.register(rtkTransformHook);
 
-	const router = new ToolRouter(registry, approval, new SecurityAudit(metrics), journal, hookManager);
+	const router = new ToolRouter(registry, approval, new SecurityAudit(metrics), journal, hookManager, planModeStore);
 
 	// 模型配置与 LLM Provider（非敏感字段保存在用户全局 .yunForce/modelConfig，密钥仅存 SecretStorage）
 	const modelStore = new ModelConfigStore(context, undefined, workspaceRoot);
@@ -433,6 +437,7 @@ async function _activate(context: vscode.ExtensionContext) {
 			syncSource: () => getSyncSource(context.globalState),
 			compaction: compactionConfig,
 			todoStore,
+			planModeStore,
 			rollbackRecorder: rollbackJournal,
 			changeJournal,
 			mcpInstructionsProvider: () => mcpManager.getInstructions(),
@@ -441,7 +446,16 @@ async function _activate(context: vscode.ExtensionContext) {
 	);
 
 	// 本地会话管理器
-	const sessionManager = new LocalSessionManager(agentLoop, messageStore, rollbackJournal, workspaceRoot, changeJournal);
+	const sessionManager = new LocalSessionManager(
+		agentLoop,
+		messageStore,
+		rollbackJournal,
+		workspaceRoot,
+		changeJournal,
+		planModeStore,
+		todoStore,
+		eventBus,
+	);
 
 	// 回填 provider 的依赖（解决循环依赖：provider -> approval -> provider）
 	(provider as unknown as { _sessionManager: LocalSessionManager })._sessionManager = sessionManager;

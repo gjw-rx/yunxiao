@@ -23,6 +23,9 @@ import type {
 	McpServerConfigView,
 	McpSettingsSnapshot,
 } from '../mcp/types';
+import type { SessionPlanState, PlanStage } from '../memory/planTypes';
+
+export type { SessionPlanState, PlanStage };
 
 export type {
 	McpServerView,
@@ -160,7 +163,7 @@ export interface SlashCommand {
 	/** true=选中即发送；false=回填输入框由用户编辑后发送 */
 	readonly send: boolean;
 	/** 可选特殊动作：直接触发扩展侧命令而非发消息 */
-	readonly action?: 'newSession' | 'stopStream' | 'switchModel' | 'compactContext';
+	readonly action?: 'newSession' | 'stopStream' | 'switchModel' | 'compactContext' | 'planMode';
 }
 
 /** 斜杠命令分组。 */
@@ -521,6 +524,16 @@ export interface TodoStateMessage {
 	readonly summary: TodoSummary;
 }
 
+/** 宿主推送的会话 Plan 模式状态（初始化/切换会话/加载历史/状态实时变化时回推）。 */
+export interface PlanModeStateMessage {
+	/** 消息命令名。 */
+	readonly command: 'planModeState';
+	/** 所属会话 ID（前端据此忽略非当前会话的实时事件）。 */
+	readonly sessionId: string;
+	/** 会话 Plan 状态（阶段 + 草案标记）。 */
+	readonly state: SessionPlanState;
+}
+
 /** 扩展侧触发新建会话（工具栏按钮）。 */
 export interface TriggerNewSessionMessage {
 	readonly command: 'triggerNewSession';
@@ -694,6 +707,7 @@ export type HostToWebviewMessage =
 	| PlanMessage
 	| HistoryLoadedMessage
 	| TodoStateMessage
+	| PlanModeStateMessage
 	| TriggerNewSessionMessage
 	| ApprovalRequestMessage
 	| WorkspaceFilesMessage
@@ -741,6 +755,30 @@ export interface SendMessageMessage {
 /** 停止当前流式回复。 */
 export interface StopStreamMessage {
 	readonly command: 'stopStream';
+	readonly sessionId: string;
+}
+
+/** 进入 Plan 模式（宿主动作，不发送聊天消息）。 */
+export interface EnterPlanModeMessage {
+	readonly command: 'enterPlanMode';
+	readonly sessionId: string;
+}
+
+/** 继续规划（review → planning，保留当前草案）。 */
+export interface ContinuePlanningMessage {
+	readonly command: 'continuePlanning';
+	readonly sessionId: string;
+}
+
+/** 退出 Plan 模式（回到 normal；按草案标记决定是否清空草案）。 */
+export interface ExitPlanModeMessage {
+	readonly command: 'exitPlanMode';
+	readonly sessionId: string;
+}
+
+/** 确认执行计划（review → executing 并启动同会话隐藏执行指令）。 */
+export interface ConfirmExecutionMessage {
+	readonly command: 'confirmExecution';
 	readonly sessionId: string;
 }
 
@@ -993,6 +1031,10 @@ export type WebviewToHostMessage =
 	| CreateSessionMessage
 	| SendMessageMessage
 	| StopStreamMessage
+	| EnterPlanModeMessage
+	| ContinuePlanningMessage
+	| ExitPlanModeMessage
+	| ConfirmExecutionMessage
 	| LoadHistoryMessage
 	| ApprovalDecisionMessage
 	| OpenChangeReviewMessage
