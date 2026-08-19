@@ -112,6 +112,8 @@ export interface ToolMessage {
 	readonly role: 'tool';
 	readonly toolCallId: string;
 	readonly content: string;
+	/** 工具结果是否复用了当前运行中此前已加载的数据。 */
+	readonly reused?: boolean;
 	readonly seq: number;
 }
 

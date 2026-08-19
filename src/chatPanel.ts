@@ -437,6 +437,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           error?: string;
           args?: unknown;
           output?: unknown;
+		  reused?: boolean;
         };
         webview.postMessage({ command: 'toolState', ...p });
         break;
@@ -447,8 +448,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'tool_result': {
-        const p = e.payload as { call_id: string; status: string; result?: unknown; error?: string };
-        webview.postMessage({ command: 'toolResult', ...p });
+        const p = e.payload as {
+          call_id: string;
+          status: string;
+          result?: unknown;
+          error?: string;
+          metadata?: { reused?: boolean };
+        };
+        webview.postMessage({ command: 'toolResult', ...p, reused: p.metadata?.reused });
         break;
       }
       case 'thought':

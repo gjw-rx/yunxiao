@@ -214,6 +214,8 @@ export interface HistoryEntry {
 	readonly toolCalls?: readonly { id: string; name: string; arguments: string }[];
 	/** tool 消息关联的工具调用 ID */
 	readonly toolCallId?: string;
+	/** tool 消息是否复用了当前运行中此前已加载的数据。 */
+	readonly reused?: boolean;
 	/** assistant 消息的 token 账快照（真实 usage + 四类拆分） */
 	readonly tokenUsage?: {
 		readonly prompt_tokens: number;
@@ -363,6 +365,8 @@ export interface ToolEntry {
 	readonly args?: unknown;
 	readonly output?: unknown;
 	readonly error?: string;
+	/** 当前工具结果是否复用了本轮此前已加载的数据。 */
+	readonly reused?: boolean;
 	/** 详情是否展开 */
 	readonly expanded: boolean;
 }
@@ -460,6 +464,8 @@ export interface ToolStateMessage {
 	readonly error?: string;
 	readonly args?: unknown;
 	readonly output?: unknown;
+	/** 当前工具结果是否复用了本轮此前已加载的数据。 */
+	readonly reused?: boolean;
 }
 
 /** Diff 结果（code_edit 成功且含 diff 数据时额外发送）。 */
@@ -502,6 +508,8 @@ export interface ToolResultMessage {
 	readonly status: string;
 	readonly result?: unknown;
 	readonly error?: string;
+	/** 当前工具结果是否复用了本轮此前已加载的数据。 */
+	readonly reused?: boolean;
 }
 
 /** 思考文本增量。 */

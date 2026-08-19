@@ -72,6 +72,99 @@ describe('ReadFileTool', () => {
 		assert.ok(result.result?.includes('Use offset=5 to continue'));
 	});
 
+	it('同一轮重复读取未变化文件时复用已有结果', async () => {
+		// Arrange
+		await writeFile('reuse.txt', 'line1\nline2\n');
+		const context = await makeContext({ sessionId: 'session-1', runId: 'run-1' });
+		// Act
+		const first = await tool.execute({ path: 'reuse.txt' }, context);
+		const second = await tool.execute({ path: 'reuse.txt', offset: 1, limit: 2000 }, context);
+		// Assert
+		assert.strictEqual(first.status, 'success');
+		assert.strictEqual(second.status, 'success');
+		assert.strictEqual(second.metadata?.reused, true);
+		assert.ok(second.result?.includes('已复用当前轮已读取内容'));
+	});
+
+	it('同一轮并发重复读取时仅有一个调用实际加载内容', async () => {
+		// Arrange
+		await writeFile('parallel-reuse.txt', 'line1\nline2\n');
+		const context = await makeContext({ sessionId: 'session-1', runId: 'run-1' });
+		// Act
+		const results = await Promise.all([
+			tool.execute({ path: 'parallel-reuse.txt' }, context),
+			tool.execute({ path: 'parallel-reuse.txt' }, context),
+		]);
+		// Assert
+		assert.strictEqual(results.filter((result) => result.metadata?.reused === true).length, 1);
+		assert.strictEqual(results.filter((result) => result.result?.includes('1: line1')).length, 1);
+	});
+
+	it('不同分页区间必须读取新的文件内容', async () => {
+		// Arrange
+		await writeFile('ranges.txt', 'line1\nline2\nline3\nline4\n');
+		const context = await makeContext({ sessionId: 'session-1', runId: 'run-1' });
+		// Act
+		await tool.execute({ path: 'ranges.txt', offset: 1, limit: 2 }, context);
+		const result = await tool.execute({ path: 'ranges.txt', offset: 3, limit: 2 }, context);
+		// Assert
+		assert.strictEqual(result.metadata?.reused, undefined);
+		assert.ok(result.result?.includes('3: line3'));
+	});
+
+	it('文件版本变化后必须重新读取', async () => {
+		// Arrange
+		await writeFile('changed.txt', 'before\n');
+		const context = await makeContext({ sessionId: 'session-1', runId: 'run-1' });
+		await tool.execute({ path: 'changed.txt' }, context);
+		await writeFile('changed.txt', 'after changed\n');
+		// Act
+		const result = await tool.execute({ path: 'changed.txt' }, context);
+		// Assert
+		assert.strictEqual(result.metadata?.reused, undefined);
+		assert.ok(result.result?.includes('after changed'));
+	});
+
+	it('readMaxLines 限制未显式指定 limit 的单页行数', async () => {
+		// Arrange
+		await writeFile('configured-limit.txt', 'line1\nline2\nline3\n');
+		// Act
+		const result = await tool.execute({ path: 'configured-limit.txt' }, await makeContext({ readMaxLines: 2 }));
+		// Assert
+		assert.strictEqual(result.status, 'success');
+		assert.ok(result.result?.includes('1: line1'));
+		assert.ok(result.result?.includes('2: line2'));
+		assert.ok(!result.result?.includes('3: line3'));
+	});
+
+	it('分页读取按全局字符预算返回连续区间，不触发头尾裁剪', async () => {
+		// Arrange
+		await writeFile('continuous.txt', Array.from({ length: 20 }, (_, index) => `line-${index + 1}-${'x'.repeat(100)}`).join('\n'));
+		const context = await makeContext({ toolResultLimit: 1000, readMaxBytes: 2000 });
+		// Act
+		const raw = await tool.execute({ path: 'continuous.txt' }, context);
+		const result = tool.governResult(raw, context);
+		// Assert
+		assert.strictEqual(result.status, 'success');
+		assert.ok(result.result?.includes('Output capped'));
+		assert.ok(!result.result?.includes('结果已裁剪'));
+	});
+
+	it('默认 2000 行分页为包装信息预留行数，统一治理后仍保留连续结尾', async () => {
+		// Arrange
+		await writeFile('boundary.txt', Array.from({ length: 2000 }, (_, index) => `line-${index + 1}`).join('\n'));
+		const context = await makeContext();
+		// Act
+		const raw = await tool.execute({ path: 'boundary.txt' }, context);
+		const result = tool.governResult(raw, context);
+		// Assert
+		assert.strictEqual(result.status, 'success');
+		assert.ok(result.result?.includes('1994: line-1994'));
+		assert.ok(result.result?.includes('Use offset=1995 to continue'));
+		assert.ok(result.result?.endsWith('</content>'));
+		assert.ok(!result.result?.includes('结果行数已裁剪'));
+	});
+
 	it('字节预算截断：超过 readMaxBytes 停止并提示', async () => {
 		// Arrange
 		await writeFile('wide.txt', 'aaaa\nbbbb\ncccc\ndddd\n');

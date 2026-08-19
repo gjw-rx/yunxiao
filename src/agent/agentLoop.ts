@@ -440,6 +440,8 @@ export class AgentLoop {
 						this.config.todoStore,
 					);
 					if (compaction.status === 'compacted') {
+						this.toolRouter.invalidateFileLookupCaches({ sessionId, runId });
+						logger.log(`[AgentLoop] 上下文已压缩，已清除文件查询缓存 sessionId=${sessionId} runId=${runId}`);
 						continue;
 					}
 				}
@@ -541,6 +543,8 @@ export class AgentLoop {
 							this.config.todoStore,
 						);
 						if (compacted.status === 'compacted') {
+							this.toolRouter.invalidateFileLookupCaches({ sessionId, runId });
+							logger.log(`[AgentLoop] 溢出恢复压缩完成，已清除文件查询缓存 sessionId=${sessionId} runId=${runId}`);
 							continue;
 						}
 					}
@@ -669,6 +673,8 @@ export class AgentLoop {
 			this.emitRunStateChange(sessionId, 'failed', msg);
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 		} finally {
+			this.toolRouter.invalidateFileLookupCaches({ sessionId, runId });
+			logger.log(`[AgentLoop] run 结束，已清除文件查询缓存 sessionId=${sessionId} runId=${runId}`);
 			// session_end：无论正常完成、失败还是取消都在唯一公共出口派发，保证 start/end 配对
 			try {
 				await this.config.hooks?.dispatch('session_end', {
@@ -844,6 +850,7 @@ export class AgentLoop {
 					role: 'tool',
 					toolCallId: result.call_id,
 					content: toolResultToContent(result),
+					reused: result.metadata?.reused,
 				});
 			}
 		}
@@ -963,6 +970,7 @@ export class AgentLoop {
 				state: result.status,
 				error: result.error,
 				output: result.result,
+				reused: result.metadata?.reused,
 			},
 		});
 

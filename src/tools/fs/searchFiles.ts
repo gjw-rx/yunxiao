@@ -27,6 +27,12 @@ interface SearchMatch {
 	context?: string[];
 }
 
+/** 当前 Agent 运行内单个搜索条件的复用记录。 */
+interface SearchCacheEntry {
+	/** 搜索结果是否达到数量上限。 */
+	readonly truncated: boolean;
+}
+
 /** 默认上下文行数。 */
 const DEFAULT_CONTEXT_LINES = 2;
 /** 结果上限。 */
@@ -35,9 +41,12 @@ const MAX_MATCHES = 100;
 const NODE_FALLBACK_MAX_FILES = 500;
 
 export class SearchFilesTool extends BaseTool {
+	/** 按会话运行隔离的搜索结果，避免相同查询重复启动 ripgrep。 */
+	private readonly searchCache = new Map<string, Map<string, SearchCacheEntry>>();
+
 	readonly schema: ToolSchema = {
 		name: 'fs_search_files',
-		description: '搜索工作区文件内容（ripgrep 优先，缺失回退 Node）。支持 regex 与 glob 两种模式。用于代码探索与模糊定位，替代已移除的 code_search_index。',
+		description: '搜索工作区文件内容（ripgrep 优先，缺失回退 Node）。支持 regex 与 glob 两种模式；同一轮相同查询会复用已有结果。用于代码探索与模糊定位，替代已移除的 code_search_index。',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -89,6 +98,26 @@ export class SearchFilesTool extends BaseTool {
 			throw err;
 		}
 
+		const cache = this.getRunCache(context);
+		const cacheKey = this.buildCacheKey(resolved.fsPath, pattern, mode, contextLines);
+		const cached = cache?.get(cacheKey);
+		if (cached) {
+			logger.log(`[fs_search_files] 复用当前轮搜索结果 - pattern=${pattern.slice(0, 100)}, mode=${mode}, path=${inputPath}`);
+			return {
+				status: 'success',
+				result: [
+					'<search_reuse>',
+					'搜索条件未变化，已复用当前轮搜索结果。请基于前一次工具结果继续定位；如需不同结果请调整 pattern、path、mode 或 contextLines。',
+					'</search_reuse>',
+				].join('\n'),
+				metadata: {
+					duration_ms: Date.now() - startedAt,
+					reused: true,
+					truncated: cached.truncated || undefined,
+				},
+			};
+		}
+
 		// 2. 优先 ripgrep
 		let matches: SearchMatch[] = [];
 		let truncated = false;
@@ -129,16 +158,46 @@ export class SearchFilesTool extends BaseTool {
 			file: path.relative(root, path.resolve(resolved.fsPath, m.file)).split(path.sep).join('/'),
 		}));
 
+		const result = JSON.stringify(
+			{ matches, truncated, fallback: usedFallback },
+			null,
+			2
+		);
+		cache?.set(cacheKey, { truncated });
 		logger.log(`[fs_search_files] 完成 - path=${inputPath}, matches=${matches.length}, truncated=${truncated}, fallback=${usedFallback}, duration_ms=${Date.now() - startedAt}`);
 		return {
 			status: 'success',
-			result: JSON.stringify(
-				{ matches, truncated, fallback: usedFallback },
-				null,
-				2
-			),
+			result,
 			metadata: { duration_ms: Date.now() - startedAt },
 		};
+	}
+
+	/** 构造当前 Agent 运行的搜索缓存；缺少会话或运行标识时不缓存。 */
+	private getRunCache(context: ToolContext): Map<string, SearchCacheEntry> | undefined {
+		if (!context.sessionId || !context.runId) {
+			return undefined;
+		}
+		const runKey = `${context.sessionId}:${context.runId}`;
+		let cache = this.searchCache.get(runKey);
+		if (!cache) {
+			cache = new Map<string, SearchCacheEntry>();
+			this.searchCache.set(runKey, cache);
+		}
+		return cache;
+	}
+
+	/** 构造规范化搜索条件的缓存键。 */
+	private buildCacheKey(root: string, pattern: string, mode: 'regex' | 'glob', contextLines: number): string {
+		return `${root}\u0000${mode}\u0000${contextLines}\u0000${pattern}`;
+	}
+
+	/** 在写操作后清除指定运行的搜索记录，避免复用过期搜索结果。 */
+	invalidateRunCache(sessionId: string | undefined, runId: string | undefined): void {
+		if (!sessionId || !runId) {
+			return;
+		}
+		this.searchCache.delete(`${sessionId}:${runId}`);
+		logger.log(`[fs_search_files] 已清除运行搜索缓存 - sessionId=${sessionId}, runId=${runId}`);
 	}
 
 	/** 调用 ripgrep 并解析输出。rg 缺失抛 ENOENT 供上层回退。 */

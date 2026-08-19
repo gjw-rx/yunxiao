@@ -575,6 +575,16 @@
 	flex-shrink: 0;
 }
 
+/* 已复用的文件读取结果：提示用户未重复加载磁盘内容。 */
+.step-reuse {
+	font-size: 10px;
+	color: var(--muted);
+	background: var(--step-bg);
+	border-radius: 999px;
+	padding: 1px 6px;
+	white-space: nowrap;
+}
+
 /* 主要参数就地预览，省去展开动作 */
 .step-arg {
 	font-family: var(--mono);

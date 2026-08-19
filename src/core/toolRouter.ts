@@ -143,10 +143,29 @@ export class ToolRouter {
 			: context;
 
 		const result = await this.runExecution(tool, finalArgs, execContext, call, context);
+		if (tool.permission !== 'read' && result.status === 'success') {
+			this.invalidateFileLookupCaches(context);
+		}
 
 		// ── post_tool_call：治理后的受治理结果，只读观察 ──
 		await this.dispatchPostToolCall(call, context, result);
 		return result;
+	}
+
+	/** 清除当前运行的文件读取与搜索缓存，避免复用已过期或已脱离上下文的工作区信息。 */
+	invalidateFileLookupCaches(context: Pick<ToolContext, 'sessionId' | 'runId'>): void {
+		const cacheInvalidator = (toolName: string): void => {
+			if (!this.registry.has(toolName)) {
+				return;
+			}
+			const tool = this.registry.lookup(toolName) as BaseTool & {
+				invalidateRunCache?: (sessionId: string | undefined, runId: string | undefined) => void;
+			};
+			tool.invalidateRunCache?.(context.sessionId, context.runId);
+		};
+		cacheInvalidator('fs_read_file');
+		cacheInvalidator('fs_search_files');
+		logger.log(`[ToolRouter] 写操作后已清除文件查询缓存 sessionId=${context.sessionId ?? '未知'}, runId=${context.runId ?? '未知'}`);
 	}
 
 	/**

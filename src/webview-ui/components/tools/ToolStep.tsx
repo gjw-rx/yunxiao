@@ -22,6 +22,13 @@ export interface ToolStepProps {
 /** 单个工具时间线步骤。 */
 export function ToolStep({ entry, onToggle, onDelete }: ToolStepProps): JSX.Element {
 	const argPreview = summarizeArgs(entry.args);
+	const reuseKind = entry.reused
+		? entry.tool === 'fs_read_file'
+			? 'read'
+			: entry.tool === 'fs_search_files'
+				? 'search'
+				: null
+		: null;
 	return (
 		<div className={`step tool clickable ${entry.state}${entry.expanded ? ' expanded' : ''}`}>
 			<span className="step-dot" aria-hidden="true" />
@@ -42,6 +49,7 @@ export function ToolStep({ entry, onToggle, onDelete }: ToolStepProps): JSX.Elem
 					<ToolIcon tool={entry.tool} />
 				</span>
 				<span className="step-name">{entry.tool}</span>
+				{reuseKind && <span className="step-reuse">{reuseKind === 'read' ? '已复用读取结果' : '已复用搜索结果'}</span>}
 				{argPreview && <span className="step-arg">{argPreview}</span>}
 				<span className="step-status">
 					<StatusIcon state={entry.state} />

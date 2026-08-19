@@ -169,8 +169,8 @@ export type ChatAction =
 	| { type: 'thought'; text: string }
 	| { type: 'plan'; steps: string[] }
 	| { type: 'toolCall'; callId: string; tool: string; args?: unknown }
-	| { type: 'toolState'; callId: string; tool: string; state: ToolState; error?: string; args?: unknown; output?: unknown }
-	| { type: 'toolResult'; callId: string; status: string; result?: unknown; error?: string }
+	| { type: 'toolState'; callId: string; tool: string; state: ToolState; error?: string; args?: unknown; output?: unknown; reused?: boolean }
+	| { type: 'toolResult'; callId: string; status: string; result?: unknown; error?: string; reused?: boolean }
 	| { type: 'replyChangeSet'; changeSet: ChangeSetReference }
 	| { type: 'approvalRequest'; callId: string; toolName: string; summary: string; filePath?: string }
 	| { type: 'approvalResolved'; callId: string }
@@ -271,7 +271,7 @@ function upsertToolEntry(
 	state: ChatState,
 	callId: string,
 	tool: string,
-	target: { state?: ToolState; error?: string; args?: unknown; output?: unknown }
+	target: { state?: ToolState; error?: string; args?: unknown; output?: unknown; reused?: boolean }
 ): ChatState {
 	const existing = state.toolEntries[callId];
 	const merged: ToolEntry = existing
@@ -282,6 +282,7 @@ function upsertToolEntry(
 				args: target.args !== undefined && target.args !== null ? target.args : existing.args,
 				output: target.output !== undefined && target.output !== null ? target.output : existing.output,
 				error: target.error || existing.error,
+				reused: target.reused ?? existing.reused,
 				expanded: existing.expanded,
 		  }
 		: {
@@ -291,6 +292,7 @@ function upsertToolEntry(
 				args: target.args,
 				output: target.output,
 				error: target.error,
+				reused: target.reused,
 				expanded: false,
 		  };
 	return { ...state, toolEntries: { ...state.toolEntries, [callId]: merged } };
@@ -384,12 +386,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 				error: action.error,
 				args: action.args,
 				output: action.output,
+				reused: action.reused,
 			});
 			return ensureToolStep(withEntry, action.callId);
 		}
 		case 'toolResult': {
 			// 仅补充数据，不单独渲染（tool_state_change 已覆盖）；未创建条目时补建 success 步骤
-			const withEntry = upsertToolEntry(state, action.callId, 'tool', { state: 'success', output: action.result, error: action.error });
+			const withEntry = upsertToolEntry(state, action.callId, 'tool', { state: 'success', output: action.result, error: action.error, reused: action.reused });
 			return ensureToolStep(withEntry, action.callId);
 		}
 		case 'replyChangeSet': {
@@ -493,6 +496,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 							...existing,
 							state: 'success',
 							output: m.content,
+							reused: m.reused,
 						};
 						messages = messages.map((item) =>
 							item.kind === 'tool' && item.callId === m.toolCallId ? { ...item, seq: m.seq } : item
@@ -505,6 +509,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 							tool: 'tool',
 							state: 'success',
 							output: m.content,
+							reused: m.reused,
 							expanded: false,
 						};
 						messages = [...messages, { id: nextId('tool'), kind: 'tool', callId, turn: turnCounter, seq: m.seq }];

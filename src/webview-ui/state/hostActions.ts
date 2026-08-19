@@ -50,13 +50,14 @@ export function hostToAction(msg: HostToWebviewMessage): ChatAction | null {
 				error: msg.error,
 				args: msg.args,
 				output: msg.output,
+				reused: msg.reused,
 			};
 		case 'replyChangeSet':
 			return { type: 'replyChangeSet', changeSet: msg.changeSet };
 		case 'toolCall':
 			return { type: 'toolCall', callId: msg.call_id, tool: msg.tool, args: msg.args };
 		case 'toolResult':
-			return { type: 'toolResult', callId: msg.call_id, status: msg.status, result: msg.result, error: msg.error };
+			return { type: 'toolResult', callId: msg.call_id, status: msg.status, result: msg.result, error: msg.error, reused: msg.reused };
 		case 'thought':
 			return { type: 'thought', text: msg.text };
 		case 'progress':

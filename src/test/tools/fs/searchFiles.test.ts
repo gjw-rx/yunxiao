@@ -14,6 +14,21 @@ class FallbackSearchFilesTool extends SearchFilesTool {
 	}
 }
 
+/** 记录 ripgrep 调用次数，验证同一轮重复搜索不会重复执行进程。 */
+class CountingSearchFilesTool extends SearchFilesTool {
+	private calls = 0;
+
+	protected spawnRg(): Promise<string> {
+		this.calls++;
+		return Promise.resolve(RG_JSON_FIXTURE);
+	}
+
+	/** 返回 ripgrep 的执行次数。 */
+	getCalls(): number {
+		return this.calls;
+	}
+}
+
 const RG_JSON_FIXTURE = [
 	'{"type":"begin","data":{"path":{"text":"f.txt"}}}',
 	'{"type":"context","data":{"path":{"text":"f.txt"},"lines":{"text":"line1\\n"},"line_number":1}}',
@@ -97,6 +112,19 @@ describe('searchFiles', () => {
 			assert.strictEqual(result.status, 'success');
 			const parsed = JSON.parse(result.result as string);
 			assert.strictEqual(parsed.matches.length, 0);
+		});
+
+		it('同一轮重复搜索时复用已有结果', async () => {
+			// Arrange
+			const countingTool = new CountingSearchFilesTool();
+			const context = await makeContext({ sessionId: 'session-1', runId: 'run-1' });
+			// Act
+			await countingTool.execute({ pattern: 'match', path: '.' }, context);
+			const result = await countingTool.execute({ pattern: 'match', path: '.' }, context);
+			// Assert
+			assert.strictEqual(countingTool.getCalls(), 1);
+			assert.strictEqual(result.metadata?.reused, true);
+			assert.ok(result.result?.includes('已复用当前轮搜索结果'));
 		});
 
 		it('拒绝越界路径', async () => {
