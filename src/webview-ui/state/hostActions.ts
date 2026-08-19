@@ -18,7 +18,7 @@ export function hostToAction(msg: HostToWebviewMessage): ChatAction | null {
 		case 'runtimeState':
 			return { type: 'runtimeState', status: msg.status, message: msg.message };
 		case 'modelInfo':
-			return { type: 'modelInfo', model: msg.model };
+			return { type: 'modelInfo', model: msg.model, modelId: msg.modelId, reasoningEffort: msg.reasoningEffort };
 		case 'approvalMode':
 			return { type: 'approvalMode', mode: msg.mode };
 		case 'modelPicker':

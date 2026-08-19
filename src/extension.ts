@@ -426,6 +426,7 @@ async function _activate(context: vscode.ExtensionContext) {
 			providerId: modelConfig.provider,
 			temperature: modelConfig.temperature,
 			maxTokens: modelConfig.maxTokens,
+			reasoningEffort: modelConfig.reasoningEffort,
 			maxSteps: config.get<number>('agent.maxSteps', 25),
 			workspaceRoots,
 			maxFileSize: config.get<number>('maxFileSize', DEFAULT_MAX_FILE_SIZE),
@@ -477,8 +478,9 @@ async function _activate(context: vscode.ExtensionContext) {
 			temperature: config.temperature,
 			maxTokens: config.maxTokens,
 			maxContextTokens: config.maxContextTokens ?? 262144,
+			reasoningEffort: config.reasoningEffort,
 		});
-		provider.refreshModelInfo();
+		void provider.refreshModelInfo();
 		logger.log('[Extension] 模型配置已保存并更新后续运行（进行中的会话不受影响）');
 	};
 

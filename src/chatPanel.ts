@@ -6,6 +6,7 @@ import type { EventBus, AgentEvent } from './core/eventBus';
 import type { LocalSessionManager } from './core/localSessionManager';
 import type { SkillRegistry } from './skill/skillRegistry';
 import type { ModelConfigStore, ModelSettingsInput } from './config/modelConfigStore';
+import { isReasoningLevel } from './config/modelConfigStore';
 import type { ModelConfig } from './config/modelConfig';
 import type { SyncSource } from './config/syncConfig';
 import type { SkillInstallResult } from './skill/skillInstaller';
@@ -318,17 +319,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * 将当前生效模型名称推送到已打开的对话面板。
+   * 将当前生效模型名称、模型 ID 与推理强度推送到已打开的对话面板。
+   * 从模型存储读取非敏感快照，不携带 API Key / baseURL 等敏感连接信息。
    *
-   * @returns void
+   * @returns Promise<void>
    */
-  refreshModelInfo(): void {
-    const modelName = this._settingsDeps?.getModelName() ?? '';
-    if (!this._chatWebview || !modelName) {
+  async refreshModelInfo(): Promise<void> {
+    const deps = this._settingsDeps;
+    if (!this._chatWebview || !deps) {
       return;
     }
-    this._chatWebview.postMessage({ command: 'modelInfo', model: modelName });
-    logger.log(`[ChatPanel] 已刷新对话模型信息 model=${modelName}`);
+    const modelName = deps.getModelName() ?? '';
+    if (!modelName) {
+      return;
+    }
+    let modelId: string | undefined;
+    let reasoningEffort: unknown;
+    try {
+      const view = await deps.modelStore.getSettingsView();
+      modelId = view.defaultModelId;
+      reasoningEffort = view.reasoningEffort;
+    } catch (error) {
+      logger.error(`[ChatPanel] 读取模型信息快照失败: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    this._chatWebview.postMessage({
+      command: 'modelInfo',
+      model: modelName,
+      ...(modelId ? { modelId } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+    });
+    logger.log(`[ChatPanel] 已刷新对话模型信息 model=${modelName} modelId=${modelId ?? '未配置'} reasoningEffort=${String(reasoningEffort ?? '未设置')}`);
   }
 
   /**
@@ -1088,7 +1108,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         const modelName = this._settingsDeps?.getModelName() ?? '';
         if (modelName) {
-          webview.postMessage({ command: 'modelInfo', model: modelName });
+          await this.refreshModelInfo();
         }
         break;
       }
@@ -1264,7 +1284,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const view = await deps.modelStore.getSettingsView();
           const models = (view.models ?? [])
             .filter((model) => model.enabled)
-            .map((model) => ({ id: model.id, model: model.model, provider: model.provider, isDefault: model.isDefault }));
+            .map((model) => ({
+              id: model.id,
+              model: model.model,
+              provider: model.provider,
+              isDefault: model.isDefault,
+              ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}),
+            }));
           webview.postMessage({ command: 'modelPicker', models });
           logger.log(`[ChatPanel] 已返回模型弹窗候选项 count=${models.length}`);
         } catch (err) {
@@ -1291,6 +1317,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         } catch (err) {
           logger.error(`[ChatPanel] 模型弹窗切换失败: ${err instanceof Error ? err.message : String(err)}`);
           vscode.window.showErrorMessage(`切换模型失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+      case 'selectReasoningLevel': {
+        const deps = this._settingsDeps;
+        const modelId = typeof msg.modelId === 'string' ? msg.modelId : '';
+        const level = msg.level;
+        if (!deps || !modelId || !isReasoningLevel(level)) {
+          logger.error(`[ChatPanel] 拒绝无效推理强度请求 modelId=${modelId || '空'} level=${String(level)}`);
+          break;
+        }
+        try {
+          // 重新校验目标模型仍是当前默认且已启用，再持久化并应用运行配置
+          const config = await deps.modelStore.setReasoningEffort(modelId, level);
+          deps.onModelConfigSaved?.(config);
+          await this.refreshModelInfo();
+          logger.log(`[ChatPanel] 推理强度已更新 modelId=${modelId} level=${level}`);
+        } catch (err) {
+          logger.error(`[ChatPanel] 设置推理强度失败 modelId=${modelId} level=${String(level)}: ${err instanceof Error ? err.message : String(err)}`);
+          vscode.window.showErrorMessage(`设置推理强度失败：${err instanceof Error ? err.message : String(err)}`);
         }
         break;
       }

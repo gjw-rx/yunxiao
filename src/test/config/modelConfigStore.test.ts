@@ -226,4 +226,70 @@ describe('ModelConfigStore', () => {
 			assert.strictEqual((await store.getSettingsView()).models?.find((item) => item.id === first!.id)?.enabled, false);
 		});
 	});
+
+	describe('推理强度持久化', () => {
+		it('新建模型默认保存中档推理强度', async () => {
+			const { store } = setup();
+			await store.save(validInput({ model: 'model-a' }));
+			const config = await store.getModelConfig();
+			assert.strictEqual(config.reasoningEffort, 'medium');
+		});
+
+		it('读取升级前无推理字段的旧档案时不补写字段', async () => {
+			const { store, globalConfigRoot } = setup();
+			await store.save(validInput({ model: 'legacy-model' }));
+			const filePath = path.join(globalConfigRoot, 'modelConfig', 'models.json');
+			const doc = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+			doc.models = doc.models.map((m: Record<string, unknown>) => {
+				const { reasoningEffort: _removed, ...rest } = m;
+				return rest;
+			});
+			fs.writeFileSync(filePath, JSON.stringify(doc), 'utf8');
+
+			const config = await store.getModelConfig();
+			assert.strictEqual(config.reasoningEffort, undefined, '旧档案缺失字段应保持未设置');
+			const raw = fs.readFileSync(filePath, 'utf8');
+			assert.ok(!raw.includes('reasoningEffort'), '读取不得静默补写字段');
+		});
+
+		it('编辑模型其他字段时保留已有推理强度', async () => {
+			const { store } = setup();
+			await store.save(validInput({ model: 'model-a' }));
+			const view = await store.getSettingsView();
+			const id = view.defaultModelId!;
+			await store.setReasoningEffort(id, 'high');
+			await store.save(validInput({ id, model: 'model-a', temperature: 0.5 }));
+			const config = await store.getModelConfig();
+			assert.strictEqual(config.reasoningEffort, 'high', '编辑其他字段应保留既有档位');
+		});
+
+		it('setReasoningEffort 按模型持久化并进入完整配置', async () => {
+			const { store } = setup();
+			await store.save(validInput({ model: 'model-a' }));
+			const view = await store.getSettingsView();
+			const id = view.defaultModelId!;
+			const config = await store.setReasoningEffort(id, 'low');
+			assert.strictEqual(config.reasoningEffort, 'low');
+			assert.strictEqual((await store.getModelConfig()).reasoningEffort, 'low');
+		});
+
+		it('拒绝非法档位', async () => {
+			const { store } = setup();
+			await store.save(validInput({ model: 'model-a' }));
+			const view = await store.getSettingsView();
+			const id = view.defaultModelId!;
+			await assert.rejects(() => store.setReasoningEffort(id, 'max' as never));
+			assert.strictEqual((await store.getModelConfig()).reasoningEffort, 'medium', '非法档位不得改变原值');
+		});
+
+		it('拒绝为非当前默认模型设置档位', async () => {
+			const { store } = setup();
+			await store.save(validInput({ model: 'model-a' }));
+			await store.save(validInput({ model: 'model-b' }));
+			const view = await store.getSettingsView();
+			const nonDefault = view.models?.find((m) => m.model === 'model-b');
+			assert.ok(nonDefault);
+			await assert.rejects(() => store.setReasoningEffort(nonDefault!.id, 'high'));
+		});
+	});
 });

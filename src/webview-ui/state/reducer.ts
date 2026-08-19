@@ -49,6 +49,10 @@ export interface ChatState {
 	isStreaming: boolean;
 	/** 模型名称 */
 	modelName: string;
+	/** 当前默认模型 ID（模型配置弹层标识当前模型）。 */
+	modelId?: string;
+	/** 当前模型记忆的推理强度三档（缺失时未显式设置）。 */
+	reasoningEffort?: 'low' | 'medium' | 'high';
 	/** 当前工作区工具审批模式。 */
 	approvalMode: ApprovalMode;
 	/** 已启用模型的选择弹窗候选项 */
@@ -182,7 +186,7 @@ export type ChatAction =
 	| { type: 'planModeState'; sessionId: string; state: SessionPlanState }
 	| { type: 'historyLoaded'; messages: HistoryEntry[] }
 	| { type: 'workspaceFiles'; files: WorkspaceFile[] }
-	| { type: 'modelInfo'; model: string }
+	| { type: 'modelInfo'; model: string; modelId?: string; reasoningEffort?: 'low' | 'medium' | 'high' }
 	| { type: 'approvalMode'; mode: ApprovalMode }
 	| { type: 'modelPicker'; models: readonly ModelPickerItem[] }
 	| { type: 'slashCommands'; groups: SlashCommandGroup[] }
@@ -556,7 +560,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 		case 'workspaceFiles':
 			return { ...state, workspaceFiles: action.files };
 		case 'modelInfo':
-			return { ...state, modelName: action.model };
+			// 档位缺省时保留既有值，避免旧宿主/无档位推送覆盖当前档位显示
+			return {
+				...state,
+				modelName: action.model,
+				modelId: action.modelId ?? state.modelId,
+				reasoningEffort: action.reasoningEffort ?? state.reasoningEffort,
+			};
 		case 'approvalMode':
 			return { ...state, approvalMode: action.mode };
 		case 'modelPicker':

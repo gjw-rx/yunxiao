@@ -25,9 +25,11 @@ import type {
 } from '../mcp/types';
 import type { SessionPlanState, PlanStage } from '../memory/planTypes';
 import type { UsageGranularity, TokenUsageStatsResult } from '../memory/tokenUsageStats';
+import type { ReasoningLevel } from '../llm/types';
 
 export type { SessionPlanState, PlanStage };
 export type { UsageGranularity, TokenUsageStatsResult };
+export type { ReasoningLevel };
 
 export type {
 	McpServerView,
@@ -118,6 +120,8 @@ export interface ModelPickerItem {
 	readonly provider: string;
 	/** 是否为当前默认模型。 */
 	readonly isDefault: boolean;
+	/** 该模型记忆的推理强度三档（缺失时未显式设置）。 */
+	readonly reasoningEffort?: ReasoningLevel;
 }
 
 /** 设置页提交的模型配置（API Key 可选：非空时覆盖 SecretStorage，空/缺省保持现状）。 */
@@ -388,6 +392,10 @@ export interface ApprovalEntry {
 export interface ModelInfoMessage {
 	readonly command: 'modelInfo';
 	readonly model: string;
+	/** 当前默认模型 ID（供弹层标识当前模型）。 */
+	readonly modelId?: string;
+	/** 当前模型记忆的推理强度三档（缺失时未显式设置）。 */
+	readonly reasoningEffort?: ReasoningLevel;
 }
 
 /** 宿主同步当前工作区审批模式。 */
@@ -940,6 +948,15 @@ export interface SelectModelMessage {
 	readonly modelId: string;
 }
 
+/** 从对话输入框模型配置弹层为当前模型提交推理强度三档。 */
+export interface SelectReasoningLevelMessage {
+	readonly command: 'selectReasoningLevel';
+	/** 当前默认模型 ID（宿主须重新校验其仍是当前默认）。 */
+	readonly modelId: string;
+	/** 推理强度三档（low/medium/high）。 */
+	readonly level: ReasoningLevel;
+}
+
 /** 设置页请求模型配置快照（挂载时发送）。 */
 export interface RequestModelSettingsMessage {
 	readonly command: 'requestModelSettings';
@@ -1101,6 +1118,7 @@ export type WebviewToHostMessage =
 	| CompactContextMessage
 	| RequestModelPickerMessage
 	| SelectModelMessage
+	| SelectReasoningLevelMessage
 	| RequestModelSettingsMessage
 	| SaveModelSettingsMessage
 	| SetDefaultModelMessage

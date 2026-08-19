@@ -62,6 +62,12 @@ export interface ToolDefinition {
 export type ToolChoice = 'auto' | 'none' | 'required';
 
 /**
+ * 用户可见的推理强度三档（模型配置弹层与按模型持久化使用）。
+ * 与 `ReasoningEffort` 的 low/medium/high 一一对应；仅展示这三档，不含 minimal/disabled。
+ */
+export type ReasoningLevel = 'low' | 'medium' | 'high';
+
+/**
  * 思维链强度（OpenAI reasoning 规范）。
  * - OpenAI: minimal | low | medium | high
  * - DeepSeek: low | medium | high（配合 thinking.type='enabled'）

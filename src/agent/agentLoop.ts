@@ -239,9 +239,9 @@ export class AgentLoop {
 	 * 更新后续运行使用的模型连接参数（模型配置保存后调用）。
 	 * 进行中的 run 使用启动时的 provider 快照，不受本次更新影响；保存完成后启动的新运行使用新配置。
 	 *
-	 * @param partial 需要更新的模型相关配置字段
+	 * @param partial 需要更新的模型相关配置字段（含可选推理强度）
 	 */
-	updateModelConfig(partial: Pick<AgentLoopConfig, 'model' | 'providerId' | 'temperature' | 'maxTokens'> & { readonly maxContextTokens?: number }): void {
+	updateModelConfig(partial: Pick<AgentLoopConfig, 'model' | 'providerId' | 'temperature' | 'maxTokens' | 'reasoningEffort'> & { readonly maxContextTokens?: number }): void {
 		this.config = {
 			...this.config,
 			...partial,
@@ -249,7 +249,7 @@ export class AgentLoop {
 				? { compaction: { ...this.config.compaction, maxContextTokens: partial.maxContextTokens, maxOutputTokens: partial.maxTokens } }
 				: {}),
 		};
-		logger.log(`[AgentLoop] 模型配置已更新（后续运行生效）model=${partial.model}`);
+		logger.log(`[AgentLoop] 模型配置已更新（后续运行生效）model=${partial.model} reasoningEffort=${partial.reasoningEffort ?? 'default'}`);
 	}
 
 	/**
@@ -304,6 +304,12 @@ export class AgentLoop {
 		// 运行中切换默认模型不改变本 run 已形成账的 provider/模型归属（下一次 run 才用新配置）
 		const runModelId = this.config.model;
 		const runProviderId = this.config.providerId;
+		// 本次运行固定使用启动时的生成配置快照：temperature / maxTokens / reasoningEffort
+		// 在 run 入口一次性捕获，运行内所有 LLM step 均使用该快照，运行中更新配置不影响当前 run
+		const runModel = this.config.model;
+		const runTemperature = this.config.temperature;
+		const runMaxTokens = this.config.maxTokens;
+		const runReasoningEffort = this.config.reasoningEffort;
 
 		const userMessage = this.messageStore.append(sessionId, {
 			role: 'user',
@@ -432,7 +438,7 @@ export class AgentLoop {
 					const compaction = await compactIfNeeded(
 						sessionId,
 						runProvider,
-						this.config.model,
+						runModel,
 						this.config.compaction,
 						this.messageStore,
 						this.eventBus,
@@ -448,13 +454,13 @@ export class AgentLoop {
 
 				// ── 7. 构建 LLM 请求并调用 ──
 				const request: LLMRequest = {
-					model: this.config.model,
+					model: runModel,
 					messages,
 					tools: toolChoice === 'none' ? undefined : tools,
 					toolChoice,
-					temperature: this.config.temperature,
-					maxTokens: this.config.maxTokens,
-					reasoningEffort: this.config.reasoningEffort,
+					temperature: runTemperature,
+					maxTokens: runMaxTokens,
+					reasoningEffort: runReasoningEffort,
 					stream: true,
 					// 将取消信号透传给 AI SDK runtime，真正取消 provider 请求
 					abortSignal: signal,
@@ -535,7 +541,7 @@ export class AgentLoop {
 						const compacted = await compactIfNeeded(
 							sessionId,
 							runProvider,
-							this.config.model,
+							runModel,
 							this.config.compaction,
 							this.messageStore,
 							this.eventBus,

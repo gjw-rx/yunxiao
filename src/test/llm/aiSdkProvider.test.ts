@@ -27,9 +27,13 @@ const mockConfig: ModelConfig = {
 };
 
 /** 用 mock fetch 响应指定的 SSE 文本 */
-function mockFetchSse(sseText: string, status = 200): () => void {
+function mockFetchSse(sseText: string, status = 200): { restore: () => void; bodies: string[] } {
 	const original = globalThis.fetch;
-	globalThis.fetch = (async () => {
+	const bodies: string[] = [];
+	globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+		if (init?.body) {
+			bodies.push(String(init.body));
+		}
 		const encoder = new TextEncoder();
 		const stream = new ReadableStream({
 			start(controller) {
@@ -39,7 +43,7 @@ function mockFetchSse(sseText: string, status = 200): () => void {
 		});
 		return new Response(stream, { status, headers: { 'Content-Type': 'text/event-stream' } });
 	}) as typeof fetch;
-	return () => { globalThis.fetch = original; };
+	return { restore: () => { globalThis.fetch = original; }, bodies };
 }
 
 /** 用 mock fetch 抛网络错误 */
@@ -72,7 +76,7 @@ describe('AISDKProvider 集成', () => {
 			'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n' +
 			'data: {"choices":[{"delta":{"content":" world"}}]}\n\n' +
 			'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}}\n\n';
-		const restore = mockFetchSse(sse);
+		const restore = mockFetchSse(sse).restore;
 		const provider = new AISDKProvider(mockConfig);
 		const events = await collectEvents(provider, {
 			model: 'gpt-4o-mini',
@@ -99,7 +103,7 @@ describe('AISDKProvider 集成', () => {
 			'data: {"choices":[{"delta":{"reasoning_content":"分析"}}]}\n\n' +
 			'data: {"choices":[{"delta":{"content":"最终"}}]}\n\n' +
 			'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n';
-		const restore = mockFetchSse(sse);
+		const restore = mockFetchSse(sse).restore;
 		const provider = new AISDKProvider(deepSeekConfig());
 		const events = await collectEvents(provider, {
 			model: 'deepseek-chat',
@@ -120,7 +124,7 @@ describe('AISDKProvider 集成', () => {
 			'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"fs_read_file","arguments":"{\\"path\\":"}}]}}]}\n\n' +
 			'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":" \\"/tmp/a.ts\\"}"}}]}}]}\n\n' +
 			'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n';
-		const restore = mockFetchSse(sse);
+		const restore = mockFetchSse(sse).restore;
 		const provider = new AISDKProvider(mockConfig);
 		const events = await collectEvents(provider, {
 			model: 'gpt-4o-mini',
@@ -157,7 +161,7 @@ describe('AISDKProvider 集成', () => {
 	});
 
 	it('HTTP 401 → error 事件', async () => {
-		const restore = mockFetchSse('{"error":{"message":"invalid api key"}}', 401);
+		const restore = mockFetchSse('{"error":{"message":"invalid api key"}}', 401).restore;
 		const provider = new AISDKProvider(mockConfig);
 		const events = await collectEvents(provider, {
 			model: 'gpt-4o-mini',
@@ -175,7 +179,7 @@ describe('AISDKProvider 集成', () => {
 		const sse =
 			'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n' +
 			'data: {"choices":[{"delta":{"content":" more"}}]}\n\n';
-		const restore = mockFetchSse(sse);
+		const restore = mockFetchSse(sse).restore;
 		const provider = new AISDKProvider(mockConfig);
 		const controller = new AbortController();
 
@@ -211,7 +215,7 @@ describe('AISDKProvider 集成', () => {
 		const sse =
 			'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n' +
 			'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":40}}}\n\n';
-		const restore = mockFetchSse(sse);
+		const restore = mockFetchSse(sse).restore;
 		const provider = new AISDKProvider(mockConfig);
 		const events = await collectEvents(provider, {
 			model: 'gpt-4o-mini',
@@ -223,5 +227,64 @@ describe('AISDKProvider 集成', () => {
 		const usage = events.find((e) => e.type === 'usage') as { cacheReadTokens?: number } | undefined;
 		assert.ok(usage, '应产生 usage 事件');
 		assert.strictEqual(usage.cacheReadTokens, 40);
+	});
+
+	it('OpenAI-compatible 三档推理强度映射为 reasoningEffort', async () => {
+		const sse = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n' +
+			'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n';
+		const cases: Array<[string, string]> = [
+			['low', 'low'],
+			['medium', 'medium'],
+			['high', 'high'],
+		];
+		for (const [level, expected] of cases) {
+			const { restore, bodies } = mockFetchSse(sse);
+			const provider = new AISDKProvider(mockConfig);
+			await collectEvents(provider, {
+				model: 'gpt-5-mini',
+				messages: [{ role: 'user', content: 'hi' }],
+				reasoningEffort: level as 'low' | 'medium' | 'high',
+				stream: true,
+			});
+			restore();
+			const body = JSON.parse(bodies[0]);
+			// AI SDK 会把 providerOptions.reasoningEffort 映射为请求体顶层的 reasoning_effort
+			assert.strictEqual(body?.reasoning_effort, expected, `档位 ${level} 应映射为 ${expected}`);
+			assert.strictEqual(body?.thinking, undefined, 'OpenAI-compatible 不应带 thinking');
+		}
+	});
+
+	it('DeepSeek 高档启用 thinking 并省略 temperature', async () => {
+		const sse = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n' +
+			'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n';
+		const { restore, bodies } = mockFetchSse(sse);
+		const provider = new AISDKProvider(deepSeekConfig());
+		await collectEvents(provider, {
+			model: 'deepseek-chat',
+			messages: [{ role: 'user', content: 'hi' }],
+			reasoningEffort: 'high',
+			stream: true,
+		});
+		restore();
+		const body = JSON.parse(bodies[0]);
+		assert.deepStrictEqual(body?.thinking, { type: 'enabled' });
+		assert.strictEqual(body?.reasoning_effort, 'high');
+		assert.strictEqual(body.temperature, undefined, 'DeepSeek 思考模式应省略 temperature');
+	});
+
+	it('未设置档位时保持原有默认请求（不新增 reasoning 参数）', async () => {
+		const sse = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n' +
+			'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n';
+		const { restore, bodies } = mockFetchSse(sse);
+		const provider = new AISDKProvider(mockConfig);
+		await collectEvents(provider, {
+			model: 'gpt-4o-mini',
+			messages: [{ role: 'user', content: 'hi' }],
+			stream: true,
+		});
+		restore();
+		const body = JSON.parse(bodies[0]);
+		assert.strictEqual(body?.reasoning_effort, undefined, '未设置档位不应新增 reasoning 参数');
+		assert.strictEqual(body.temperature, 0.7, '未设置档位应保留 temperature');
 	});
 });

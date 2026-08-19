@@ -7,10 +7,17 @@
  */
 import { useEffect, useRef, useState, type JSX, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { post } from '../../bridge/vscode';
-import type { ApprovalMode, ModelPickerItem, PlanStage, SlashCommand, SlashCommandGroup, WorkspaceFile } from '../../protocol';
+import type { ApprovalMode, ModelPickerItem, PlanStage, ReasoningLevel, SlashCommand, SlashCommandGroup, WorkspaceFile } from '../../protocol';
 import { findSlashCommandToken, type SlashCommandToken } from '../../utils/chatBehavior';
 import { SlashCommandPicker, type FilteredSlashCommand } from '../commands/SlashCommandPicker';
 import { FilePicker } from '../files/FilePicker';
+
+/** 用户可见的推理强度三档选项（值 → 展示名）。 */
+const REASONING_LEVELS: ReadonlyArray<{ readonly value: ReasoningLevel; readonly label: string }> = [
+	{ value: 'low', label: '低' },
+	{ value: 'medium', label: '中' },
+	{ value: 'high', label: '高' },
+];
 
 /** 输入组件属性。 */
 export interface MessageInputProps {
@@ -20,6 +27,10 @@ export interface MessageInputProps {
 	isStreaming: boolean;
 	/** 模型名称 */
 	modelName: string;
+	/** 当前默认模型 ID（弹层标识当前模型）。 */
+	modelId?: string;
+	/** 当前模型记忆的推理强度三档（缺失时未显式设置）。 */
+	reasoningEffort?: 'low' | 'medium' | 'high';
 	/** 当前工作区审批模式。 */
 	approvalMode: ApprovalMode;
 	/** 已启用模型的选择弹窗候选项 */
@@ -57,6 +68,8 @@ export function MessageInput({
 	currentSessionId,
 	isStreaming,
 	modelName,
+	modelId,
+	reasoningEffort,
 	approvalMode,
 	modelProfiles,
 	selectedFiles,
@@ -76,6 +89,7 @@ export function MessageInput({
 	const [text, setText] = useState('');
 	const inputRef = useRef<HTMLTextAreaElement>(null);
 	const modelPickerRef = useRef<HTMLDivElement>(null);
+	const modelButtonRef = useRef<HTMLButtonElement>(null);
 	const approvalModeRef = useRef<HTMLDivElement>(null);
 
 	// ── 选择器状态 ──
@@ -87,7 +101,8 @@ export function MessageInput({
 	const [fileIndex, setFileIndex] = useState(0);
 	const [fileAtStart, setFileAtStart] = useState(-1);
 	const [filteredFiles, setFilteredFiles] = useState<WorkspaceFile[]>([]);
-	const [modelPickerOpen, setModelPickerOpen] = useState(false);
+	// 模型配置弹层视图状态机：null=关闭；root=根视图；model=模型子视图；reasoning=推理强度子视图
+	const [modelPickerView, setModelPickerView] = useState<'root' | 'model' | 'reasoning' | null>(null);
 	const [approvalModeOpen, setApprovalModeOpen] = useState(false);
 
 	// 输入框自动增高（上限 160px）
@@ -109,22 +124,24 @@ export function MessageInput({
 		}
 	}, [draftText, onDraftConsumed]);
 
-	// 模型选择弹窗打开时，点击外部或按 Esc 关闭弹窗
+	// 模型配置弹层或审批模式菜单打开时，点击外部或按 Esc 关闭；关闭后焦点回到触发按钮
 	useEffect(() => {
-		if (!modelPickerOpen && !approvalModeOpen) return;
+		if (!modelPickerView && !approvalModeOpen) return;
 		const closeOnOutsideClick = (event: MouseEvent): void => {
 			if (
 				!modelPickerRef.current?.contains(event.target as Node) &&
 				!approvalModeRef.current?.contains(event.target as Node)
 			) {
-				setModelPickerOpen(false);
+				setModelPickerView(null);
 				setApprovalModeOpen(false);
+				modelButtonRef.current?.focus();
 			}
 		};
 		const closeOnEscape = (event: globalThis.KeyboardEvent): void => {
 			if (event.key === 'Escape') {
-				setModelPickerOpen(false);
+				setModelPickerView(null);
 				setApprovalModeOpen(false);
+				modelButtonRef.current?.focus();
 			}
 		};
 		document.addEventListener('mousedown', closeOnOutsideClick);
@@ -133,28 +150,38 @@ export function MessageInput({
 			document.removeEventListener('mousedown', closeOnOutsideClick);
 			document.removeEventListener('keydown', closeOnEscape);
 		};
-	}, [modelPickerOpen, approvalModeOpen]);
+	}, [modelPickerView, approvalModeOpen]);
 
-	/** 切换模型选择弹窗并在打开时请求最新已启用模型列表。 */
+	/** 切换模型配置弹层：打开根视图并请求最新已启用模型列表。 */
 	const toggleModelPicker = (): void => {
-		if (modelPickerOpen) {
-			setModelPickerOpen(false);
+		if (modelPickerView) {
+			setModelPickerView(null);
 			return;
 		}
-		setModelPickerOpen(true);
+		setModelPickerView('root');
 		post({ command: 'requestModelPicker' });
 	};
 
-	/** 提交选中的模型 ID，并关闭模型选择弹窗。 */
+	/** 提交选中的模型 ID，关闭弹层并请求宿主切换默认模型。 */
 	const selectModel = (modelId: string): void => {
-		setModelPickerOpen(false);
+		setModelPickerView(null);
 		post({ command: 'selectModel', modelId });
+	};
+
+	/** 提交当前模型的推理强度三档，关闭弹层并请求宿主持久化。 */
+	const selectReasoningLevel = (level: ReasoningLevel): void => {
+		if (!modelId) {
+			setModelPickerView(null);
+			return;
+		}
+		setModelPickerView(null);
+		post({ command: 'selectReasoningLevel', modelId, level });
 	};
 
 	/** 切换审批模式菜单的展开状态。 */
 	const toggleApprovalMode = (): void => {
 		setApprovalModeOpen((open) => !open);
-		setModelPickerOpen(false);
+		setModelPickerView(null);
 	};
 
 	/** 提交审批模式切换请求，最终状态以宿主回推为准。 */
@@ -498,12 +525,13 @@ export function MessageInput({
 							<button
 								type="button"
 								id="modelName"
+								ref={modelButtonRef}
 								className="model-switch-button"
 								disabled={isStreaming || !modelName}
-								title="切换模型"
+								title="模型与推理强度设置"
 								aria-label={`切换模型 ${modelName || '--'}`}
 								aria-haspopup="menu"
-								aria-expanded={modelPickerOpen}
+								aria-expanded={modelPickerView !== null}
 								onClick={toggleModelPicker}
 							>
 								<span>{modelName || '--'}</span>
@@ -511,25 +539,86 @@ export function MessageInput({
 									<path d="M3 4.5 6 7.5l3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
 								</svg>
 							</button>
-							{modelPickerOpen && (
-								<div className="model-picker" role="menu" aria-label="选择模型">
-									{modelProfiles.length === 0 ? (
-										<div className="model-picker-empty" role="status">正在加载模型…</div>
-									) : (
-										modelProfiles.map((profile) => (
+							{modelPickerView && (
+								<div className="model-config-popover" role="menu" aria-label="模型配置">
+									{modelPickerView === 'root' && (
+										<div className="model-config-root">
 											<button
 												type="button"
-												key={profile.id}
-												className={`model-picker-item${profile.isDefault ? ' selected' : ''}`}
+												className="model-config-row"
 												role="menuitem"
-												aria-label={profile.model}
-												onClick={() => selectModel(profile.id)}
+												aria-label="切换模型"
+												onClick={() => setModelPickerView('model')}
 											>
-												<span className="model-picker-name">{profile.model}</span>
-												<span className="model-picker-provider">{profile.provider}</span>
-												{profile.isDefault && <span className="model-picker-check" aria-label="当前模型">✓</span>}
+												<span className="model-config-row-label">模型</span>
+												<span className="model-config-row-value">{modelName || '--'}</span>
+												<span className="model-config-row-chevron" aria-hidden="true">›</span>
 											</button>
-										))
+											<button
+												type="button"
+												className="model-config-row"
+												role="menuitem"
+												aria-label="推理强度"
+												onClick={() => setModelPickerView('reasoning')}
+											>
+												<span className="model-config-row-label">推理强度</span>
+												<span className="model-config-row-value">
+													{reasoningEffort ? REASONING_LEVELS.find((r) => r.value === reasoningEffort)?.label ?? reasoningEffort : '默认'}
+												</span>
+												<span className="model-config-row-chevron" aria-hidden="true">›</span>
+											</button>
+										</div>
+									)}
+									{modelPickerView === 'model' && (
+										<div className="model-config-sub">
+											<button type="button" className="model-config-back" role="menuitem" aria-label="返回" onClick={() => setModelPickerView('root')}>
+												<span aria-hidden="true">‹</span> 返回
+											</button>
+											<div className="model-config-list">
+												{modelProfiles.length === 0 ? (
+													<div className="model-picker-empty" role="status">正在加载模型…</div>
+												) : (
+													modelProfiles.map((profile) => (
+														<button
+															type="button"
+															key={profile.id}
+															className={`model-picker-item${profile.isDefault ? ' selected' : ''}`}
+															role="menuitemradio"
+															aria-checked={profile.isDefault}
+															aria-label={profile.model}
+															onClick={() => selectModel(profile.id)}
+														>
+															<span className="model-picker-name">{profile.model}</span>
+															<span className="model-picker-provider">{profile.provider}</span>
+															{profile.isDefault && <span className="model-picker-check" aria-label="当前模型">✓</span>}
+														</button>
+													))
+												)}
+											</div>
+										</div>
+									)}
+									{modelPickerView === 'reasoning' && (
+										<div className="model-config-sub">
+											<button type="button" className="model-config-back" role="menuitem" aria-label="返回" onClick={() => setModelPickerView('root')}>
+												<span aria-hidden="true">‹</span> 返回
+											</button>
+											<div className="model-config-list">
+												{REASONING_LEVELS.map((level) => (
+													<button
+														type="button"
+														key={level.value}
+														className={`model-picker-item${reasoningEffort === level.value ? ' selected' : ''}`}
+														role="menuitemradio"
+														aria-checked={reasoningEffort === level.value}
+														aria-label={`推理强度 ${level.label}`}
+														onClick={() => selectReasoningLevel(level.value)}
+													>
+														<span className="model-picker-name">{level.label}</span>
+														{reasoningEffort === level.value && <span className="model-picker-check" aria-label="当前档位">✓</span>}
+													</button>
+												))}
+											</div>
+										</div>
 									)}
 								</div>
 							)}

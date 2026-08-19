@@ -206,6 +206,8 @@ export function App(): JSX.Element {
 				currentSessionId={state.currentSessionId}
 				isStreaming={state.isStreaming}
 				modelName={state.modelName}
+				modelId={state.modelId}
+				reasoningEffort={state.reasoningEffort}
 				approvalMode={state.approvalMode}
 				modelProfiles={state.modelProfiles}
 				selectedFiles={state.selectedFiles}
