@@ -37,6 +37,8 @@ export interface ToolMessage {
 	readonly role: 'tool';
 	readonly toolCallId: string;
 	readonly content: string;
+	/** 对应 tool call 的工具名；Anthropic tool_result 转换需要，缺失的历史记录由历史加载器恢复后补齐。 */
+	readonly toolName?: string;
 }
 
 /** LLM 消息（discriminated union） */

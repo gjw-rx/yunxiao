@@ -6,7 +6,9 @@
  *
  * 设计要点：
  * - assistant 的 toolCalls 拆分为 tool-call content parts（input 为已解析对象）
- * - tool 消息的 toolName 在历史中不可得，传空串（OpenAI-compatible 请求只需 tool_call_id + content）
+ * - tool 消息携带 toolName 时原样传给 AI SDK（Anthropic tool_result 必须与 tool_use 工具名一致）；
+ *   历史加载器已从配对的 assistant tool call 恢复旧记录缺失的 toolName，
+ *   此处不再兜底为空串——无法恢复的孤立结果由历史完整性校验拦截，不会到达本转换器。
  * - 不引入 AI SDK UI 消息类型，保持存储层独立
  */
 import type { LLMMessage } from './types';
@@ -59,15 +61,19 @@ function convertAssistantMessage(msg: { readonly role: 'assistant'; readonly con
 	return { role: 'assistant', content: parts };
 }
 
-/** 转换 tool 消息：toolCallId + content → tool-result part。toolName 不可得时传空串。 */
-function convertToolMessage(msg: { readonly role: 'tool'; readonly toolCallId: string; readonly content: string }): ModelMessage {
+/**
+ * 转换 tool 消息：toolCallId + content → tool-result part。
+ * toolName 优先取消息自带字段（新记录写入或历史加载器恢复）；仍缺失时传空串，
+ * 兼容 OpenAI-compatible（该协议只需 tool_call_id + content，忽略 toolName）。
+ */
+function convertToolMessage(msg: { readonly role: 'tool'; readonly toolCallId: string; readonly content: string; readonly toolName?: string }): ModelMessage {
 	return {
 		role: 'tool',
 		content: [
 			{
 				type: 'tool-result',
 				toolCallId: msg.toolCallId,
-				toolName: '', // OpenAI-compatible 请求只需 tool_call_id + content
+				toolName: msg.toolName ?? '',
 				output: { type: 'text', value: msg.content },
 			},
 		],

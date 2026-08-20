@@ -314,6 +314,7 @@
     "serialize-javascript": "^7.0.6"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "3.0.111",
     "@ai-sdk/openai-compatible": "2.0.66",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "adm-zip": "^0.5.16",

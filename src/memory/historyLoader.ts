@@ -77,13 +77,25 @@ export function findToolPairViolations(messages: readonly Message[]): string | n
 }
 
 /** 将 CompactionMessage 转换为 LLMMessage[]：summary -> system，recentContext 展开。 */
-/** 将 Message[] 转换为 LLMMessage[]（剥离 seq，attachments 内联）。 */
+/**
+ * 将 Message[] 转换为 LLMMessage[]（剥离 seq，attachments 内联）。
+ * 转换前先建立 toolCallId → toolName 映射（来自 assistant.toolCalls），
+ * 供缺失 toolName 的旧 tool 结果记录恢复工具名（不修改磁盘上的旧记录）。
+ */
 function convertToLLMMessages(messages: Message[]): LLMMessage[] {
-	return messages.map(convertMessage);
+	const toolNameByCallId = new Map<string, string>();
+	for (const message of messages) {
+		if (message.role === 'assistant' && message.toolCalls?.length) {
+			for (const call of message.toolCalls) {
+				toolNameByCallId.set(call.id, call.name);
+			}
+		}
+	}
+	return messages.map((msg) => convertMessage(msg, toolNameByCallId));
 }
 
-/** 转换单条 Message 为 LLMMessage。 */
-function convertMessage(msg: Message): LLMMessage {
+/** 转换单条 Message 为 LLMMessage。 @param toolNameByCallId 从 assistant tool call 收集的 toolCallId → toolName 映射，用于恢复旧 tool 结果记录缺失的工具名。 */
+function convertMessage(msg: Message, toolNameByCallId: ReadonlyMap<string, string>): LLMMessage {
 	switch (msg.role) {
 		case 'system':
 			return { role: 'system', content: msg.content };
@@ -95,8 +107,10 @@ function convertMessage(msg: Message): LLMMessage {
 				content: msg.content,
 				...(msg.toolCalls ? { toolCalls: msg.toolCalls } : {}),
 			};
-		case 'tool':
-			return { role: 'tool', toolCallId: msg.toolCallId, content: msg.content };
+		case 'tool': {
+			const toolName = msg.toolName ?? toolNameByCallId.get(msg.toolCallId);
+			return { role: 'tool', toolCallId: msg.toolCallId, content: msg.content, ...(toolName ? { toolName } : {}) };
+		}
 		case 'compaction':
 			// compaction 在 convertCompaction 中处理，此处不应到达
 			return { role: 'system', content: msg.summary };

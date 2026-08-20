@@ -850,16 +850,18 @@ export class AgentLoop {
 				this.trackTodoWriteResult(sessionId, tc.name, result);
 			}
 		});
-		for (const result of results) {
+		schedulable.forEach((tc, index) => {
+			const result = results[index];
 			if (result) {
 				this.messageStore.append(sessionId, {
 					role: 'tool',
 					toolCallId: result.call_id,
 					content: toolResultToContent(result),
 					reused: result.metadata?.reused,
+					toolName: tc.name,
 				});
 			}
-		}
+		});
 
 		return { blocked };
 	}

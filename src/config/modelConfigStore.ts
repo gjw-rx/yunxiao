@@ -9,6 +9,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
+	ANTHROPIC_DEFAULT_BASE_URL,
 	DEFAULT_MODEL_CONFIG,
 	normalizeRuntime,
 	type ModelConfig,
@@ -126,7 +127,7 @@ const MAX_TOKENS_MIN = 1;
 const MAX_TOKENS_MAX = 128_000;
 const MAX_CONTEXT_TOKENS_MIN = 1_024;
 const MAX_CONTEXT_TOKENS_MAX = 10_000_000;
-const SUPPORTED_PROVIDERS: readonly string[] = ['openai'];
+const SUPPORTED_PROVIDERS: readonly string[] = ['openai', 'anthropic'];
 
 /** 旧版 globalState 持久化结构。 */
 interface LegacyStoredModelFields {
@@ -170,6 +171,7 @@ interface StoredModelDocument {
 export function validateModelSettings(input: ModelSettingsInput): string | null {
 	if (!input.model || !input.model.trim()) {return '模型名称不能为空';}
 	if (!SUPPORTED_PROVIDERS.includes(input.provider)) {return `不支持的模型服务: ${input.provider}（仅支持 ${SUPPORTED_PROVIDERS.join('、')}）`;}
+	if (input.provider === 'anthropic' && normalizeRuntime(input.runtime) === 'legacy') {return 'Anthropic 模型仅支持 ai-sdk 运行时，不支持 legacy 手写 OpenAI 运行时';}
 	if (input.baseURL) {
 		try {
 			const url = new URL(input.baseURL);
@@ -266,11 +268,12 @@ export class ModelConfigStore {
 		const existing = input.id ? document.models.find((item) => item.id === input.id) : undefined;
 		if (input.id && !existing) {throw new Error('未找到要编辑的模型配置');}
 		const id = existing?.id ?? this._newId(document.models);
+		const defaultBaseURL = input.provider === 'anthropic' ? ANTHROPIC_DEFAULT_BASE_URL : DEFAULT_MODEL_CONFIG.baseURL;
 		const profile: StoredModelProfile = {
 			id,
 			provider: input.provider,
 			model: input.model.trim(),
-			baseURL: input.baseURL || DEFAULT_MODEL_CONFIG.baseURL,
+			baseURL: input.baseURL || defaultBaseURL,
 			temperature: input.temperature,
 			maxTokens: input.maxTokens,
 			maxContextTokens: input.maxContextTokens ?? DEFAULT_MODEL_CONFIG.maxContextTokens ?? 262144,

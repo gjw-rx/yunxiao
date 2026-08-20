@@ -155,6 +155,39 @@ describe('ModelConfigStore', () => {
 			assert.strictEqual(saved.apiKey, 'sk-new');
 			assert.strictEqual(saved.model, 'gpt-4o-mini');
 		});
+
+		it('provider=anthropic 未填写 baseURL 时使用 Anthropic 官方地址', async () => {
+			const { store } = setup();
+			const saved = await store.save({
+				provider: 'anthropic',
+				model: 'claude-3-5-sonnet-latest',
+				baseURL: '',
+				temperature: 0.7,
+				maxTokens: 4096,
+				apiKey: 'sk-ant-test',
+			});
+			assert.strictEqual(saved.baseURL, 'https://api.anthropic.com/v1');
+		});
+
+		it('provider=anthropic 填写自定义 baseURL 时保留原值', async () => {
+			const { store } = setup();
+			const saved = await store.save({
+				provider: 'anthropic',
+				model: 'claude-3-5-sonnet-latest',
+				baseURL: 'https://my-proxy.example.com/v1',
+				temperature: 0.7,
+				maxTokens: 4096,
+				apiKey: 'sk-ant-test',
+			});
+			assert.strictEqual(saved.baseURL, 'https://my-proxy.example.com/v1');
+		});
+
+		it('旧 provider=openai 档案读取结果不受 Anthropic 支持影响', async () => {
+			const { store } = setup();
+			const saved = await store.save(validInput({ apiKey: 'sk-openai' }));
+			assert.strictEqual(saved.provider, 'openai');
+			assert.strictEqual(saved.baseURL, 'https://api.openai.com/v1');
+		});
 	});
 
 	describe('校验', () => {
@@ -184,8 +217,21 @@ describe('ModelConfigStore', () => {
 		});
 
 		it('不支持的 provider 被拒绝（避免持久化后激活/更新失败）', () => {
-			assert.ok(validateModelSettings(validInput({ provider: 'anthropic' })));
+			assert.ok(validateModelSettings(validInput({ provider: 'unknown-provider' })));
 			assert.ok(validateModelSettings(validInput({ provider: '' })));
+		});
+
+		it('provider=anthropic 且未指定 runtime 时校验通过', () => {
+			assert.strictEqual(validateModelSettings(validInput({ provider: 'anthropic', baseURL: 'https://api.anthropic.com/v1' })), null);
+		});
+
+		it('provider=anthropic 且 runtime=legacy 被拒绝', () => {
+			const error = validateModelSettings(validInput({ provider: 'anthropic', baseURL: 'https://api.anthropic.com/v1', runtime: 'legacy' }));
+			assert.ok(error && error.includes('ai-sdk'), '应返回中文可操作错误');
+		});
+
+		it('provider=anthropic 且 runtime=ai-sdk 校验通过', () => {
+			assert.strictEqual(validateModelSettings(validInput({ provider: 'anthropic', baseURL: 'https://api.anthropic.com/v1', runtime: 'ai-sdk' })), null);
 		});
 
 		it('非法 API 地址被拒绝', () => {

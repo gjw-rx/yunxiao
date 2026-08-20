@@ -160,6 +160,22 @@ function ModelSettings({
 		setApiKey('');
 	};
 
+	/** 切换模型服务：新建模型时若目标服务有专属默认地址且当前地址为空或仍是另一服务的默认地址，则自动填充。 @param nextProvider 目标 Provider ID。 @returns 无返回值。 */
+	const handleProviderChange = (nextProvider: string): void => {
+		setProvider(nextProvider);
+		if (nextProvider === 'anthropic') {
+			if (!baseURL || baseURL === 'https://api.openai.com/v1') {
+				setBaseURL('https://api.anthropic.com/v1');
+			}
+			// Anthropic 不支持 legacy 运行时，切换服务时一并纠正
+			if (runtime === 'legacy') {
+				setRuntime('ai-sdk');
+			}
+		} else if (nextProvider === 'openai' && baseURL === 'https://api.anthropic.com/v1') {
+			setBaseURL('https://api.openai.com/v1');
+		}
+	};
+
 	const handleSave = (): void => {
 		onSave({
 			id: selectedProfile?.id,
@@ -193,7 +209,7 @@ function ModelSettings({
 						<div className="settings-model-table-head" role="row"><span>模型</span><span>服务商</span><span>状态</span><span>操作</span></div>
 						{profiles.map((profile) => <div className={`settings-model-table-row${editingModelId === profile.id ? ' selected' : ''}`} role="row" key={profile.id}>
 							<div><strong>{profile.model}</strong>{profile.isDefault ? <span className="settings-default-tag">当前默认</span> : null}</div>
-							<span>{profile.provider === 'openai' ? 'OpenAI Compatible' : profile.provider}</span>
+							<span>{profile.provider === 'openai' ? 'OpenAI Compatible' : profile.provider === 'anthropic' ? 'Anthropic Messages' : profile.provider}</span>
 							<span className={profile.enabled ? 'settings-enabled' : 'settings-disabled'}>{profile.enabled ? '已启用' : '已停用'}</span>
 							<div className="settings-model-actions">
 								<button type="button" onClick={() => handleEdit(profile.id)} disabled={saving}>编辑</button>
@@ -209,29 +225,30 @@ function ModelSettings({
 				<div className="settings-card-header">
 					<div>
 						<h2>连接设置</h2>
-						<p>连接 OpenAI 兼容的模型服务。</p>
+						<p>连接 OpenAI 兼容或 Anthropic 原生 Messages 模型服务。</p>
 					</div>
-					<span className="settings-status-badge">{provider === 'openai' ? 'OpenAI Compatible' : '未选择服务'}</span>
+					<span className="settings-status-badge">{provider === 'openai' ? 'OpenAI Compatible' : provider === 'anthropic' ? 'Anthropic Messages' : '未选择服务'}</span>
 				</div>
 				<div className="settings-form-section">
 					<div className="settings-form-grid">
 						<label className="settings-field">
 							<span className="settings-field-label">模型服务</span>
-							<select value={provider} onChange={(e) => setProvider(e.target.value)} aria-label="模型服务">
+							<select value={provider} onChange={(e) => handleProviderChange(e.target.value)} aria-label="模型服务">
 								<option value="" disabled>请选择模型服务</option>
 								<option value="openai">OpenAI 兼容服务</option>
+								<option value="anthropic">Anthropic（Claude 原生 Messages API）</option>
 							</select>
-							<span className="settings-field-help">当前支持 OpenAI 兼容协议。</span>
+							<span className="settings-field-help">{provider === 'anthropic' ? '通过 Anthropic 官方 Messages API 调用 Claude。' : '当前支持 OpenAI 兼容协议。'}</span>
 						</label>
 						<label className="settings-field">
 							<span className="settings-field-label">模型名称</span>
-							<input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="如 gpt-4o-mini" aria-label="默认模型" />
+							<input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder={provider === 'anthropic' ? '如 claude-3-5-sonnet-latest' : '如 gpt-4o-mini'} aria-label="默认模型" />
 							<span className="settings-field-help">{selectedProfile?.isDefault || !model?.models ? '当前用于后续新建会话。' : '保存后可在列表中设为默认模型。'}</span>
 						</label>
 						<label className="settings-field settings-field-wide">
 							<span className="settings-field-label">API 地址</span>
-							<input value={baseURL} onChange={(e) => setBaseURL(e.target.value)} placeholder="https://api.openai.com/v1" aria-label="API 地址" />
-							<span className="settings-field-help">填写服务根地址，无需附加 chat/completions。</span>
+							<input value={baseURL} onChange={(e) => setBaseURL(e.target.value)} placeholder={provider === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1'} aria-label="API 地址" />
+							<span className="settings-field-help">{provider === 'anthropic' ? '留空则使用 Anthropic 官方地址，也可填写兼容代理地址。' : '填写服务根地址，无需附加 chat/completions。'}</span>
 						</label>
 						<label className="settings-field settings-field-wide">
 							<span className="settings-field-label">API Key{apiKeyConfigured ? '（已配置，输入新值可更新）' : '（未配置）'}</span>
@@ -275,9 +292,9 @@ function ModelSettings({
 							<select value={runtime} onChange={(e) => setRuntime(e.target.value as '' | 'ai-sdk' | 'legacy')} aria-label="模型运行时">
 								<option value="" disabled>请选择模型运行时</option>
 								<option value="ai-sdk">AI SDK</option>
-								<option value="legacy">兼容模式</option>
+								<option value="legacy" disabled={provider === 'anthropic'}>兼容模式</option>
 							</select>
-							<span className="settings-field-help">兼容模式仅用于旧服务适配。</span>
+							<span className="settings-field-help">{provider === 'anthropic' ? 'Anthropic 仅支持 AI SDK 运行时。' : '兼容模式仅用于旧服务适配。'}</span>
 						</label>
 					</div>
 				</div>

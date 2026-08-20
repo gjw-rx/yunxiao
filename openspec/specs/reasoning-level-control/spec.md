@@ -2,7 +2,6 @@
 
 ## Purpose
 定义按模型持久化并映射到 LLM Provider 请求的推理强度控制契约：三档（低/中/高）选择、按模型存储、兼容旧配置、仅影响之后启动的运行，并保证协议不暴露敏感配置。
-
 ## Requirements
 ### Requirement: 用户可为当前模型选择三档推理强度
 系统 SHALL 在对话输入区的模型配置弹层中为当前模型提供“低”“中”“高”三个推理强度选项，并 MUST 分别规范化为 `low`、`medium`、`high`。系统 SHALL 清晰标记当前选中项，不得向用户展示本次范围外的推理档位。
@@ -42,7 +41,7 @@
 - **THEN** 当前运行的所有后续 LLM step 继续使用低档，下一次新运行使用高档
 
 ### Requirement: Provider 将规范化档位映射为请求参数
-系统 SHALL 由 LLM Provider 层把 `low`、`medium`、`high` 映射为上游请求参数，AgentLoop 与 Webview MUST 保持 provider agnostic。OpenAI-compatible 请求 SHALL 使用 reasoning effort；DeepSeek 请求 SHALL 同时启用 thinking 并遵守其 temperature 约束。未显式设置档位时 SHALL 沿用现有 Provider 默认行为。
+系统 SHALL 由 LLM Provider 层把 `low`、`medium`、`high` 映射为上游请求参数，AgentLoop 与 Webview MUST 保持 provider agnostic。OpenAI-compatible 请求 SHALL 使用 reasoning effort；DeepSeek 请求 SHALL 同时启用 thinking 并遵守其 temperature 约束；Anthropic Messages 请求 SHALL 使用 Anthropic Provider 的原生 `effort` 选项。未显式设置档位时 SHALL 沿用对应 Provider 默认行为。
 
 #### Scenario: OpenAI-compatible 模型使用中档
 - **WHEN** AgentLoop 以 `medium` 调用 OpenAI-compatible 模型
@@ -52,9 +51,17 @@
 - **WHEN** AgentLoop 以 `high` 调用 DeepSeek 模型
 - **THEN** Provider 启用 DeepSeek thinking、发送 high reasoning effort，并省略不兼容的 temperature
 
+#### Scenario: Anthropic 模型使用低档
+- **WHEN** AgentLoop 以 `low` 调用 Anthropic Messages 模型
+- **THEN** AI SDK Provider 在 Anthropic provider options 中发送 `effort=low`，且请求不包含 OpenAI-compatible reasoning options
+
+#### Scenario: Anthropic 模型使用中档或高档
+- **WHEN** AgentLoop 以 `medium` 或 `high` 调用 Anthropic Messages 模型
+- **THEN** AI SDK Provider 将选定档位原样映射为 Anthropic `effort`
+
 #### Scenario: 旧模型没有显式档位
 - **WHEN** AgentLoop 调用一个推理强度为未设置的旧模型档案
-- **THEN** 非 DeepSeek Provider 不新增 reasoning 参数，DeepSeek 继续采用变更前的默认思考行为
+- **THEN** 非 DeepSeek Provider 不新增 reasoning 或 effort 参数，DeepSeek 继续采用变更前的默认思考行为
 
 ### Requirement: 推理控制协议不得暴露敏感配置
 宿主与 Webview 之间的推理控制消息 SHALL 只包含模型 ID、非敏感展示信息和规范化档位，MUST NOT 包含 API Key、baseURL 或 Provider 私有请求选项。
@@ -62,3 +69,4 @@
 #### Scenario: 宿主同步推理状态
 - **WHEN** 宿主向 Webview 发送当前模型及推理强度
 - **THEN** 消息中不包含 API Key、baseURL 或原始 provider options
+

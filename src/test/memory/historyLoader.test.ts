@@ -140,6 +140,75 @@ describe('HistoryLoader', () => {
 			assert.strictEqual(toolMsg.content, 'file content here');
 		});
 
+		it('新写入 tool 结果自带 toolName 时原样保留', () => {
+			const store = new MessageStore();
+			store.append('s1', {
+				role: 'assistant',
+				content: '',
+				toolCalls: [{ id: 'call_1', name: 'fs_read_file', arguments: '{}' }],
+			});
+			store.append('s1', {
+				role: 'tool',
+				toolCallId: 'call_1',
+				content: '内容',
+				toolName: 'fs_read_file',
+			});
+
+			const result = loadHistoryForLLM('s1', store);
+			const toolMsg = result[1] as LLMMessage & { toolName?: string };
+			assert.strictEqual(toolMsg.toolName, 'fs_read_file');
+		});
+
+		it('旧记录缺失 toolName 时从配对 assistant tool call 恢复', () => {
+			const store = new MessageStore();
+			store.append('s1', {
+				role: 'assistant',
+				content: '',
+				toolCalls: [{ id: 'call_1', name: 'git_status', arguments: '{}' }],
+			});
+			// 旧记录：不携带 toolName（模拟迁移前写入的历史数据）
+			store.append('s1', {
+				role: 'tool',
+				toolCallId: 'call_1',
+				content: 'clean',
+			});
+
+			const result = loadHistoryForLLM('s1', store);
+			const toolMsg = result[1] as LLMMessage & { toolName?: string };
+			assert.strictEqual(toolMsg.toolName, 'git_status', '历史加载器应从配对的 assistant tool call 恢复工具名');
+		});
+
+		it('并行同名工具调用按调用 ID 分别恢复各自 toolName', () => {
+			const store = new MessageStore();
+			store.append('s1', {
+				role: 'assistant',
+				content: '',
+				toolCalls: [
+					{ id: 'call_1', name: 'git_status', arguments: '{}' },
+					{ id: 'call_2', name: 'git_status', arguments: '{}' },
+				],
+			});
+			store.append('s1', { role: 'tool', toolCallId: 'call_1', content: 'result1' });
+			store.append('s1', { role: 'tool', toolCallId: 'call_2', content: 'result2' });
+
+			const result = loadHistoryForLLM('s1', store);
+			const first = result[1] as LLMMessage & { toolName?: string; toolCallId: string };
+			const second = result[2] as LLMMessage & { toolName?: string; toolCallId: string };
+			assert.strictEqual(first.toolCallId, 'call_1');
+			assert.strictEqual(first.toolName, 'git_status');
+			assert.strictEqual(second.toolCallId, 'call_2');
+			assert.strictEqual(second.toolName, 'git_status');
+		});
+
+		it('孤立 tool 结果（无配对 assistant tool call）拒绝构建上下文，不发送空工具名', () => {
+			const store = new MessageStore();
+			store.append('s1', { role: 'user', content: 'hi' });
+			// 直接写入孤立 tool 结果，无前序 assistant tool call 声明该 callId
+			store.append('s1', { role: 'tool', toolCallId: 'orphan_call', content: 'result' });
+
+			assert.throws(() => loadHistoryForLLM('s1', store), /工具配对不完整/);
+		});
+
 		it('system 消息直接转换', () => {
 			const store = new MessageStore();
 			store.append('s1', { role: 'system', content: 'You are a helper.' });

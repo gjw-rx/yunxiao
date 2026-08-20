@@ -114,6 +114,8 @@ export interface ToolMessage {
 	readonly content: string;
 	/** 工具结果是否复用了当前运行中此前已加载的数据。 */
 	readonly reused?: boolean;
+	/** 对应 tool call 的工具名；新写入记录必须携带，旧记录缺失时由历史加载器从配对 assistant tool call 恢复。 */
+	readonly toolName?: string;
 	readonly seq: number;
 }
 

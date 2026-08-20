@@ -48,6 +48,9 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
 	runtime: 'ai-sdk',
 };
 
+/** Anthropic 官方 Messages API 默认地址（未填写自定义 baseURL 时使用）。 */
+export const ANTHROPIC_DEFAULT_BASE_URL = 'https://api.anthropic.com/v1';
+
 /** 合法 runtime 取值集合 */
 const VALID_RUNTIMES: ReadonlySet<string> = new Set(['ai-sdk', 'legacy']);
 
