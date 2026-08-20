@@ -595,6 +595,11 @@ export class SessionFileStore {
 		const corruptSessions: string[] = [];
 		for (const file of files) {
 			const sessionId = file.slice(0, -'.jsonl'.length);
+			// 旧裸 Message JSONL（无 v2 header）：用量统计不解析，静默跳过（与读取/迁移路径的旧格式处理一致），
+			// 避免对历史遗留文件反复打印「归档损坏」错误日志、并被误计为损坏会话。
+			if (!this.hasArchiveHeader(file)) {
+				continue;
+			}
 			const archive = loadArchive(path.join(this.sessionDir, file), sessionId);
 			if (archive.corrupt) {
 				corruptSessions.push(sessionId);
@@ -670,6 +675,11 @@ export class SessionFileStore {
 		for (const file of files) {
 			const sessionId = file.slice(0, -'.jsonl'.length);
 			seen.add(sessionId);
+			// 旧裸 Message JSONL（无 v2 header）：不视为会话，静默跳过（沿用下方 !archive.header 语义，
+			// 但提前拦截避免 loadArchive 对历史遗留文件反复打印「归档损坏」错误日志）。
+			if (!this.hasArchiveHeader(file)) {
+				continue;
+			}
 			const archive = loadArchive(path.join(this.sessionDir, file), sessionId);
 			if (!archive.header) {
 				// 无合法 header：不视为会话（旧裸格式由单会话迁移/读取路径处理）
@@ -852,6 +862,29 @@ export class SessionFileStore {
 			return JSON.parse(line) as SessionRecord;
 		} catch {
 			return undefined;
+		}
+	}
+
+	/**
+	 * 探测文件是否为 v2 版本化归档：取首个非空行判断是否为 session header。
+	 * 旧裸 Message JSONL（首行非 header）与空/坏行文件在此返回 false，
+	 * 供扫描类入口在调用 loadArchive 前跳过，避免对历史遗留文件反复打印「归档损坏」错误日志。
+	 * @param file 会话 JSONL 文件路径。
+	 * @returns 是否为 v2 归档。
+	 */
+	private hasArchiveHeader(file: string): boolean {
+		try {
+			const raw = fs.readFileSync(file, 'utf8');
+			for (const line of raw.split('\n')) {
+				if (!line.trim()) {
+					continue;
+				}
+				const record = this.tryParseRecord(line);
+				return record?.type === 'session';
+			}
+			return false;
+		} catch {
+			return false;
 		}
 	}
 
