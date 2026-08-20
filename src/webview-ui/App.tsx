@@ -74,15 +74,18 @@ export function App(): JSX.Element {
 		);
 	}
 
-	/** 发送消息：显示拼接文本（引用/Skill 提示），发送原始文本与独立字段。 */
-	const handleSend = (text: string, files: WorkspaceFile[], skills: SlashCommand[]): void => {
+	/** 发送消息：显示拼接文本（引用/Command 提示），发送原始文本与独立字段。 */
+	const handleSend = (text: string, files: WorkspaceFile[], skills: SlashCommand[], command?: SlashCommand | null): void => {
 		if (!state.currentSessionId) {
 			return;
 		}
-		// 用户气泡展示引用文件与已选 Skill（纯文本提示，不污染工具调用路径）
+		// 用户气泡展示引用文件、已选 Skill 与 Command（纯文本提示，不污染工具调用路径）
 		const displayParts: string[] = [];
 		if (files.length > 0) {
 			displayParts.push(`引用文件: ${files.map((f) => f.path).join(', ')}`);
+		}
+		if (command) {
+			displayParts.push(`调用 Command: /${command.command}`);
 		}
 		if (skills.length > 0) {
 			displayParts.push(`调用 Skill: ${skills.map((s) => `/${s.command}`).join(', ')}`);
@@ -91,13 +94,14 @@ export function App(): JSX.Element {
 			displayParts.push(text);
 		}
 		dispatchRef.current({ type: 'userMessageSent', text: displayParts.join('\n') });
-		// 文件引用与 Skill 作为独立字段传递，由扩展主进程拼装上下文注入
+		// 文件引用、Skill 与 Command 作为独立字段传递，由扩展主进程拼装上下文注入（Command 仅携带名称/作用域，正文由宿主展开）
 		post({
 			command: 'sendMessage',
 			sessionId: state.currentSessionId,
 			text,
 			files,
 			skills: skills.map((s) => s.command),
+			...(command && command.sourceScope ? { commandRef: { name: command.command, scope: command.sourceScope } } : {}),
 		});
 	};
 
@@ -115,6 +119,16 @@ export function App(): JSX.Element {
 			return;
 		}
 		dispatchRef.current({ type: 'setSelectedSkills', skills: [...state.selectedSkills, skill] });
+	};
+
+	/** 选中自定义 Command：替换已有引用（每条消息最多一个）。 */
+	const handleAddCommand = (command: SlashCommand): void => {
+		dispatchRef.current({ type: 'setSelectedCommand', command });
+	};
+
+	/** 移除已选 Command。 */
+	const handleRemoveCommand = (): void => {
+		dispatchRef.current({ type: 'setSelectedCommand', command: null });
 	};
 
 	/** 切换 Plan 模式：normal 进入，planning/review 退出，executing 禁用。 */
@@ -212,6 +226,7 @@ export function App(): JSX.Element {
 				modelProfiles={state.modelProfiles}
 				selectedFiles={state.selectedFiles}
 				selectedSkills={state.selectedSkills}
+				selectedCommand={state.selectedCommand}
 				slashCommandGroups={state.slashCommandGroups}
 				workspaceFiles={state.workspaceFiles}
 				draftText={state.pendingDraft}
@@ -222,8 +237,10 @@ export function App(): JSX.Element {
 				onRemoveSkill={(skill) =>
 					dispatchRef.current({ type: 'setSelectedSkills', skills: state.selectedSkills.filter((s) => s.id !== skill.id) })
 				}
+				onRemoveCommand={handleRemoveCommand}
 				onAddFile={handleAddFile}
 				onAddSkill={handleAddSkill}
+				onAddCommand={handleAddCommand}
 				onSend={handleSend}
 				planStage={state.planMode?.stage}
 				onTogglePlan={handleTogglePlanMode}

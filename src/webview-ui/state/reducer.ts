@@ -67,6 +67,8 @@ export interface ChatState {
 	selectedFiles: WorkspaceFile[];
 	/** 已选 Skill */
 	selectedSkills: SlashCommand[];
+	/** 已选自定义 Command（每条消息最多一个，选择其他 Command 时替换） */
+	selectedCommand: SlashCommand | null;
 	/** 错误提示文本（5 秒后由 UI 清空） */
 	error: string;
 	/** 会话级 token 累计 */
@@ -109,6 +111,7 @@ export const initialState: ChatState = {
 	workspaceFiles: [],
 	selectedFiles: [],
 	selectedSkills: [],
+	selectedCommand: null,
 	error: '',
 	sessionTokenUsage: null,
 	todoSnapshot: null,
@@ -194,6 +197,7 @@ export type ChatAction =
 	| { type: 'currentSessionDeleted' }
 	| { type: 'setSelectedFiles'; files: WorkspaceFile[] }
 	| { type: 'setSelectedSkills'; skills: SlashCommand[] }
+	| { type: 'setSelectedCommand'; command: SlashCommand | null }
 	| { type: 'userMessageSent'; text: string }
 	| { type: 'deleteUserMessage'; messageId: string }
 	| { type: 'deleteAssistantMessage'; messageId: string }
@@ -586,11 +590,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 			return { ...state, selectedFiles: action.files };
 		case 'setSelectedSkills':
 			return { ...state, selectedSkills: action.skills };
+		case 'setSelectedCommand':
+			return { ...state, selectedCommand: action.command };
 		case 'userMessageSent': {
 			// 用户消息由前端渲染（宿主不回传）：开启新回合并追加消息
 			const turn = state.turnCounter + 1;
 			const messages = [...state.messages, { id: nextId('user'), kind: 'user' as const, text: action.text, turn }];
-			return { ...state, messages, turnCounter: turn, selectedFiles: [], selectedSkills: [], isStreaming: true };
+			return { ...state, messages, turnCounter: turn, selectedFiles: [], selectedSkills: [], selectedCommand: null, isStreaming: true };
 		}
 		case 'deleteUserMessage': {
 			// 删除用户消息及其后续同回合内容（与迁移前"删除此消息"行为一致）

@@ -20,7 +20,7 @@ describe('Extension Test Suite', () => {
 		assert.ok(initializationIndex > registrationIndex, '首次 Skill 初始化必须在侧栏 Provider 注册后启动');
 		assert.ok(!source.includes('logger.show();'), '扩展激活不得自动打开日志面板');
 		assert.match(source, /syncChain = syncChain\.then\(run, run\)/, '所有 Skill 重载必须复用串行同步队列');
-		assert.match(source, /await syncSkills\(\);\s*provider\.refreshModelInfo\(\);\s*provider\.setRuntimeStatus\('ready'\)/, '首次同步完成后必须发布 ready 状态');
+		assert.match(source, /await syncSkills\(\);\s*(?:\/\/[^\n]*\n\s*)?(?:await commandStore\.refresh\(\);\s*)?provider\.refreshModelInfo\(\);\s*provider\.setRuntimeStatus\('ready'\)/, '首次同步完成后必须发布 ready 状态（Command 加载不阻塞就绪）');
 		assert.match(source, /setSyncSource[\s\S]*?await syncSkills\(\);/, '切换 Skill 来源必须等待同步完成');
 		assert.match(source, /setSkillDirectories[\s\S]*?await syncSkills\(\);/, '保存 Skill 目录必须等待同步完成');
 		assert.match(source, /source === 'agent'\s*\?\s*\[path\.join\(os\.homedir\(\), '\.agents', 'skills'\)\]/, 'agent 来源必须加载全局 ~/.agents/skills 目录');

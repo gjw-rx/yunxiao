@@ -5,7 +5,7 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { PlanStage, SlashCommandGroup } from '../protocol';
+import type { PlanStage, SlashCommand, SlashCommandGroup } from '../protocol';
 
 const bridge = vi.hoisted(() => ({
 	/** 捕获发往扩展宿主的消息。 */
@@ -42,8 +42,16 @@ describe('MessageInput', () => {
 			slashCommandGroups?: SlashCommandGroup[];
 			reasoningEffort?: 'low' | 'medium' | 'high';
 			modelId?: string;
+			selectedCommand?: SlashCommand | null;
 		} = {},
-	): void => {
+	): {
+		onSend: ReturnType<typeof vi.fn>;
+		onAddCommand: ReturnType<typeof vi.fn>;
+		onRemoveCommand: ReturnType<typeof vi.fn>;
+	} => {
+		const onSend = vi.fn();
+		const onAddCommand = vi.fn();
+		const onRemoveCommand = vi.fn();
 		render(
 			<MessageInput
 				currentSessionId="session-1"
@@ -55,18 +63,22 @@ describe('MessageInput', () => {
 				modelProfiles={modelProfiles}
 				selectedFiles={[]}
 				selectedSkills={[]}
+				selectedCommand={options.selectedCommand ?? null}
 				slashCommandGroups={options.slashCommandGroups ?? []}
 				workspaceFiles={[]}
 				onDraftConsumed={vi.fn()}
 				onRemoveFile={vi.fn()}
 				onRemoveSkill={vi.fn()}
+				onRemoveCommand={onRemoveCommand}
 				onAddFile={vi.fn()}
 				onAddSkill={vi.fn()}
-				onSend={vi.fn()}
+				onAddCommand={onAddCommand}
+				onSend={onSend}
 				planStage={options.planStage ?? 'normal'}
 				onTogglePlan={vi.fn()}
 			/>,
 		);
+		return { onSend, onAddCommand, onRemoveCommand };
 	};
 
 	/** 打开模型配置弹层（根视图）。 */
@@ -199,6 +211,7 @@ describe('MessageInput', () => {
 					label: 'Plan 模式',
 					description: '进入或退出只读规划模式',
 					send: true,
+					kind: 'basic',
 					action: 'planMode',
 				}],
 			}],
@@ -222,6 +235,7 @@ describe('MessageInput', () => {
 				label: 'Plan 模式',
 				description: '进入或退出只读规划模式',
 				send: true,
+				kind: 'basic',
 				action: 'planMode',
 			}],
 		}];
@@ -234,5 +248,88 @@ describe('MessageInput', () => {
 		cleanup();
 		renderMessageInput({ planStage: 'executing', slashCommandGroups: commands });
 		expect(screen.getByRole('button', { name: 'Plan 模式：执行中' }).getAttribute('disabled')).not.toBeNull();
+	});
+
+	it('选中自定义 Command：生成 Command 引用、不自动发送、保留补充文字', () => {
+		const commandGroups: SlashCommandGroup[] = [{
+			id: 'commands',
+			label: '命令',
+			commands: [{
+				id: 'command.review',
+				command: 'review',
+				label: 'review',
+				description: '审查改动',
+				send: false,
+				kind: 'command',
+				sourceScope: 'global',
+			}],
+		}];
+		const { onSend, onAddCommand } = renderMessageInput({ slashCommandGroups: commandGroups });
+		const input = screen.getByRole('textbox', { name: '消息输入' });
+
+		fireEvent.change(input, { target: { value: '重点检查 /review', selectionStart: 14 } });
+		fireEvent.keyDown(input, { key: 'Enter' });
+
+		// 生成 Command 引用（不发送），补充文字保留
+		expect(onAddCommand).toHaveBeenCalledWith(expect.objectContaining({ id: 'command.review' }));
+		expect(onSend).not.toHaveBeenCalled();
+		expect((input as HTMLTextAreaElement).value).toBe('重点检查 ');
+	});
+
+	it('选中另一个 Command：替换旧引用（onAddCommand 携带新候选）', () => {
+		const commandGroups: SlashCommandGroup[] = [{
+			id: 'commands',
+			label: '命令',
+			commands: [{
+				id: 'command.plan',
+				command: 'plan-cmd',
+				label: 'plan-cmd',
+				description: '规划',
+				send: false,
+				kind: 'command',
+				sourceScope: 'project',
+			}],
+		}];
+		const { onAddCommand } = renderMessageInput({ slashCommandGroups: commandGroups });
+		const input = screen.getByRole('textbox', { name: '消息输入' });
+
+		fireEvent.change(input, { target: { value: '/plan-cmd', selectionStart: 9 } });
+		fireEvent.keyDown(input, { key: 'Enter' });
+
+		// 替换逻辑由 App 的 handleAddCommand 实现（始终以新候选替换旧引用）
+		expect(onAddCommand).toHaveBeenCalledWith(expect.objectContaining({ id: 'command.plan' }));
+	});
+
+	it('已选 Command 展示 chip 且可移除', () => {
+		const selectedCommand: SlashCommand = {
+			id: 'command.review',
+			command: 'review',
+			label: 'review',
+			description: '审查改动',
+			send: false,
+			kind: 'command',
+			sourceScope: 'global',
+		};
+		const { onRemoveCommand } = renderMessageInput({ selectedCommand });
+		expect(screen.getByRole('button', { name: '移除 Command review' })).toBeTruthy();
+		fireEvent.click(screen.getByRole('button', { name: '移除 Command review' }));
+		expect(onRemoveCommand).toHaveBeenCalled();
+	});
+
+	it('仅选中 Command 时发送按钮可用，发送时携带 Command 引用', () => {
+		const selectedCommand: SlashCommand = {
+			id: 'command.review',
+			command: 'review',
+			label: 'review',
+			description: '审查改动',
+			send: false,
+			kind: 'command',
+			sourceScope: 'global',
+		};
+		const { onSend } = renderMessageInput({ selectedCommand });
+		const sendButton = screen.getByRole('button', { name: '发送' });
+		expect(sendButton.getAttribute('disabled')).toBeNull();
+		fireEvent.click(sendButton);
+		expect(onSend).toHaveBeenCalledWith('', [], [], selectedCommand);
 	});
 });

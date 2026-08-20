@@ -50,7 +50,7 @@ describe('Hooks 设置页', () => {
 	it('导航顺序：Hooks 位于 MCP 下方、使用情况上方', () => {
 		const { container } = render(<SettingsPage />);
 		const labels = Array.from(container.querySelectorAll('.settings-nav-item')).map((el) => el.textContent ?? '');
-		expect(labels).toEqual(['模型', 'Skill', 'MCP', 'Hooks', '使用情况']);
+		expect(labels).toEqual(['模型', 'Skill', '命令', 'MCP', 'Hooks', '使用情况']);
 	});
 
 	it('点击 Hooks 分类显示运行状态、生命周期与 RTK 主卡片', () => {
@@ -177,7 +177,7 @@ describe('Hooks 设置页', () => {
 		// 窄窗口滚动行为由既有 @media 规则保证（导航横向滚动、内容区纵向滚动）；
 		// 此处验证全部导航项为 button 元素且带 aria-label（键盘可达性与可访问性）。
 		const navButtons = Array.from(nav?.querySelectorAll('button') ?? []);
-		expect(navButtons.length).toBe(5);
+		expect(navButtons.length).toBe(6);
 		for (const btn of navButtons) {
 			expect(btn.tagName).toBe('BUTTON');
 			expect(btn.getAttribute('aria-label')).toBeTruthy();

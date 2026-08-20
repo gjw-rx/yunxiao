@@ -9,6 +9,9 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { post, subscribe } from '../../bridge/vscode';
 import type {
+	CommandInfo,
+	CommandInput,
+	CommandScope,
 	HostToWebviewMessage,
 	ModelSettingsInput,
 	ModelSettingsView,
@@ -26,7 +29,7 @@ import { MCP_SECRET_PLACEHOLDER } from '../../protocol';
 import { formatNumber } from '../../utils/format';
 
 /** 设置分类标识。 */
-type SettingsSection = 'model' | 'skill' | 'mcp' | 'hooks' | 'usage';
+type SettingsSection = 'model' | 'skill' | 'command' | 'mcp' | 'hooks' | 'usage';
 
 /** 设置分类导航项。 */
 interface SettingsNavItem {
@@ -36,10 +39,11 @@ interface SettingsNavItem {
 	readonly label: string;
 }
 
-/** 设置页分类列表（顺序：模型、Skill、MCP、Hooks、使用情况）。 */
+/** 设置页分类列表（顺序：模型、Skill、命令、MCP、Hooks、使用情况）。 */
 const SETTINGS_NAV_ITEMS: readonly SettingsNavItem[] = [
 	{ id: 'model', label: '模型' },
 	{ id: 'skill', label: 'Skill' },
+	{ id: 'command', label: '命令' },
 	{ id: 'mcp', label: 'MCP' },
 	{ id: 'hooks', label: 'Hooks' },
 	{ id: 'usage', label: '使用情况' },
@@ -73,6 +77,9 @@ function SettingsSectionIcon({ section }: { section: SettingsSection }): JSX.Ele
 	}
 	if (section === 'skill') {
 		return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35"><path d="M8 1.7 9.4 5l3.4 1.4-3.4 1.4L8 11.1 6.6 7.8 3.2 6.4 6.6 5 8 1.7Z" /><path d="m12.1 10.2.7 1.7 1.7.7-1.7.7-.7 1.7-.7-1.7-1.7-.7 1.7-.7.7-1.7Z" /></svg>;
+	}
+	if (section === 'command') {
+		return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35"><path d="M3.5 5.5 6 8 3.5 10.5M9 12h3.5" /><path d="M8 2v12" /></svg>;
 	}
 	if (section === 'mcp') {
 		return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35"><path d="M2 4.5 8 2l6 2.5v7L8 14 2 11.5z" /><path d="M2 4.5 8 7l6-2.5M8 7v7" /></svg>;
@@ -448,6 +455,268 @@ function SkillSettings({
 				)}
 			</section>
 		</>
+	);
+}
+
+/** Command 设置页反馈（与模型/Skill 反馈隔离，推送不清空其他草稿）。 */
+type CommandFeedback = { kind: 'success' | 'error'; message: string } | null;
+
+/** Command 设置页双作用域快照（null=加载中）。 */
+interface CommandSnapshotView {
+	/** 全局作用域命令列表（含被项目覆盖的项）。 */
+	readonly global: readonly CommandInfo[];
+	/** 项目作用域命令列表。 */
+	readonly project: readonly CommandInfo[];
+	/** 全局命令目录绝对路径。 */
+	readonly globalDirectory?: string;
+	/** 项目命令目录绝对路径（未打开工作区时缺省）。 */
+	readonly projectDirectory?: string;
+	/** 项目作用域是否可用（未打开工作区时为 false，写操作禁用）。 */
+	readonly projectAvailable: boolean;
+}
+
+/**
+ * Command 分类：全局/项目作用域切换、实际目录、命令列表、刷新、创建/编辑/删除。
+ * 复用现有设置页 token 与卡片结构；正文仅作为模板输入，不在列表中回显全文。
+ *
+ * @param snapshot 宿主返回的双作用域快照（null=加载中）
+ * @param saving 是否正在写操作（保存/删除）
+ * @param feedback 操作反馈
+ * @param savedTick 写操作成功后递增的计数（用于关闭表单/删除确认）
+ * @param projectAvailable 项目作用域是否可用
+ * @param onRefresh 手动刷新命令
+ * @param onCreate 创建 Command
+ * @param onUpdate 编辑 Command
+ * @param onDelete 删除 Command
+ * @returns Command 分类 JSX
+ */
+function CommandSettings({
+	snapshot,
+	saving,
+	feedback,
+	savedTick,
+	onRefresh,
+	onCreate,
+	onUpdate,
+	onDelete,
+}: {
+	snapshot: CommandSnapshotView | null;
+	saving: boolean;
+	feedback: CommandFeedback;
+	savedTick: number;
+	onRefresh: () => void;
+	onCreate: (scope: CommandScope, input: CommandInput) => void;
+	onUpdate: (scope: CommandScope, name: string, input: CommandInput) => void;
+	onDelete: (scope: CommandScope, name: string) => void;
+}): JSX.Element {
+	const [scope, setScope] = useState<CommandScope>('global');
+	const [formOpen, setFormOpen] = useState(false);
+	const [editingName, setEditingName] = useState<string | undefined>(undefined);
+	const [name, setName] = useState('');
+	const [description, setDescription] = useState('');
+	const [body, setBody] = useState('');
+	const [confirmDeleteName, setConfirmDeleteName] = useState<string | undefined>(undefined);
+
+	const projectAvailable = snapshot?.projectAvailable ?? true;
+	const commands = scope === 'global' ? (snapshot?.global ?? []) : (snapshot?.project ?? []);
+	const directory = scope === 'global' ? snapshot?.globalDirectory : snapshot?.projectDirectory;
+	// 项目作用域在未打开工作区时禁用写操作并展示原因
+	const scopeWritable = scope === 'global' || projectAvailable;
+
+	// 写操作成功（savedTick 递增）后关闭表单与删除确认；失败时保留草稿与确认状态
+	useEffect(() => {
+		if (savedTick === 0) {
+			return;
+		}
+		setFormOpen(false);
+		setEditingName(undefined);
+		setName('');
+		setDescription('');
+		setBody('');
+		setConfirmDeleteName(undefined);
+	}, [savedTick]);
+
+	/** 打开新增 Command 表单并清空字段。 @returns 无返回值。 */
+	const handleCreate = (): void => {
+		setEditingName(undefined);
+		setName('');
+		setDescription('');
+		setBody('');
+		setFormOpen(true);
+	};
+
+	/** 打开编辑表单并回填描述（正文不在列表中回显，留空待输入）。 @param cmd 待编辑命令。 @returns 无返回值。 */
+	const handleEdit = (cmd: CommandInfo): void => {
+		setEditingName(cmd.name);
+		setName(cmd.name);
+		setDescription(cmd.description ?? '');
+		setBody('');
+		setFormOpen(true);
+	};
+
+	/** 提交保存：创建或更新当前作用域的 Command。 @returns 无返回值。 */
+	const handleSave = (): void => {
+		if (editingName) {
+			onUpdate(scope, editingName, { description: description.trim() || undefined, body });
+		} else {
+			onCreate(scope, { name: name.trim(), description: description.trim() || undefined, body });
+		}
+	};
+
+	/** 提交删除确认。 @returns 无返回值。 */
+	const handleDelete = (name: string): void => {
+		onDelete(scope, name);
+		setConfirmDeleteName(undefined);
+	};
+
+	return (
+		<div className="settings-command-page">
+			<div className="settings-heading">
+				<span className="settings-eyebrow">能力中心</span>
+				<h1>命令</h1>
+				<p>将常用提示词保存为可复用模板；命令正文仅作为模型输入，绝不执行。</p>
+			</div>
+			<section className="settings-card settings-form-card" aria-label="命令作用域">
+				<div className="settings-card-header">
+					<div>
+						<h2>作用域</h2>
+						<p>全局命令对所有项目生效，项目命令可覆盖同名全局命令。</p>
+					</div>
+				</div>
+				<div className="settings-form-section">
+					<div className="settings-radio-group" role="tablist" aria-label="命令作用域">
+						<button
+							type="button"
+							role="tab"
+							aria-selected={scope === 'global'}
+							className={`settings-radio settings-scope-tab${scope === 'global' ? ' active' : ''}`}
+							onClick={() => setScope('global')}
+						>
+							全局
+						</button>
+						<button
+							type="button"
+							role="tab"
+							aria-selected={scope === 'project'}
+							className={`settings-radio settings-scope-tab${scope === 'project' ? ' active' : ''}`}
+							disabled={!projectAvailable}
+							onClick={() => setScope('project')}
+						>
+							项目
+						</button>
+					</div>
+					{directory ? <p className="settings-target-path">目录 <code>{directory}</code></p> : null}
+					{!projectAvailable ? (
+						<p className="settings-note settings-note-error">未打开工作区，无法管理项目 Command；全局作用域仍可用。</p>
+					) : null}
+				</div>
+			</section>
+			{feedback ? (
+				<div className={`settings-feedback ${feedback.kind === 'error' ? 'settings-feedback-error' : ''}`} role={feedback.kind === 'error' ? 'alert' : 'status'}>
+					{feedback.message}
+				</div>
+			) : null}
+			<section className="settings-card" aria-label="Command 列表">
+				<div className="settings-card-header settings-card-header-list">
+					<div>
+						<h2 aria-label="命令列表">命令</h2>
+						<p>按名称排序；同名项目命令会覆盖全局命令。</p>
+					</div>
+					<div className="settings-command-list-actions">
+						<button type="button" className="settings-secondary-button" onClick={onRefresh} disabled={saving}>↻ 刷新</button>
+						<button type="button" className="settings-primary-button" onClick={handleCreate} disabled={saving || !scopeWritable}>+ 创建命令</button>
+						<span className="settings-count-badge">{commands.length}</span>
+					</div>
+				</div>
+				{snapshot === null ? (
+					<p className="settings-note">正在加载…</p>
+				) : commands.length === 0 ? (
+					<div className="settings-empty-card">
+						<strong>{scope === 'global' ? '暂无全局命令' : '暂无项目命令'}</strong>
+						<span>{scope === 'global' ? '创建第一个全局命令后，所有项目均可引用。' : '在项目作用域创建命令，可覆盖同名全局命令。'}</span>
+					</div>
+				) : (
+					<ul className="settings-skill-list">
+						{commands.map((cmd) => (
+							<li key={`${cmd.scope}-${cmd.name}`} className="settings-row">
+								<div>
+									<strong>/{cmd.name}</strong>
+									<span>{cmd.description || '（无描述）'}</span>
+									{cmd.overridden ? <em className="settings-overridden-tag">被项目覆盖</em> : null}
+								</div>
+								<span className="settings-value">{cmd.sourcePath}</span>
+								<div className="settings-model-actions">
+									<button type="button" onClick={() => handleEdit(cmd)} disabled={saving || !scopeWritable}>编辑</button>
+									{confirmDeleteName === cmd.name ? (
+										<span className="mcp-confirm-delete">
+											<span>确认删除？</span>
+											<button type="button" className="settings-danger-button" onClick={() => handleDelete(cmd.name)} disabled={saving}>确认</button>
+											<button type="button" className="settings-secondary-button" onClick={() => setConfirmDeleteName(undefined)}>取消</button>
+										</span>
+									) : (
+										<button type="button" className="settings-danger-action" onClick={() => setConfirmDeleteName(cmd.name)} disabled={saving || !scopeWritable}>删除</button>
+									)}
+								</div>
+							</li>
+						))}
+					</ul>
+				)}
+			</section>
+			{formOpen ? (
+				<section className="settings-card settings-form-card" aria-label={editingName ? '编辑 Command' : '新建 Command'}>
+					<div className="settings-card-header">
+						<div>
+							<h2>{editingName ? `编辑 /${editingName}` : '新建命令'}</h2>
+							<p>正文必须非空；名称仅创建时可修改（由文件名决定）。</p>
+						</div>
+						<span className="settings-status-badge">{scope === 'global' ? '全局' : '项目'}</span>
+					</div>
+					<div className="settings-form-section">
+						<div className="settings-form-grid">
+							<label className="settings-field">
+								<span className="settings-field-label">命令名</span>
+								<input
+									value={name}
+									onChange={(e) => setName(e.target.value)}
+									disabled={Boolean(editingName) || saving}
+									placeholder="小写字母/数字开头，可含 - _"
+									aria-label="命令名"
+								/>
+								<span className="settings-field-help">保存后以 <code>{name || '名称'}.md</code> 写入作用域目录。</span>
+							</label>
+							<label className="settings-field settings-field-wide">
+								<span className="settings-field-label">描述（可选）</span>
+								<input
+									value={description}
+									onChange={(e) => setDescription(e.target.value)}
+									disabled={saving}
+									placeholder="一句话说明该命令的用途"
+									aria-label="命令描述"
+								/>
+							</label>
+							<label className="settings-field settings-field-wide">
+								<span className="settings-field-label">正文</span>
+								<textarea
+									value={body}
+									onChange={(e) => setBody(e.target.value)}
+									rows={5}
+									disabled={saving}
+									placeholder="输入命令模板正文（作为模型输入，不执行任何代码）"
+									aria-label="命令正文"
+								/>
+								<span className="settings-field-help">正文将作为模型输入文本，不会在扩展宿主中执行。</span>
+							</label>
+						</div>
+					</div>
+					<footer className="settings-card-footer">
+						<button type="button" className="settings-secondary-button" onClick={() => setFormOpen(false)} disabled={saving}>取消</button>
+						<button type="button" className="settings-save-btn" onClick={handleSave} disabled={saving || !name.trim() || !body.trim()}>
+							{saving ? '保存中…' : editingName ? '保存修改' : '创建命令'}
+						</button>
+					</footer>
+				</section>
+			) : null}
+		</div>
 	);
 }
 
@@ -1074,6 +1343,10 @@ function SettingsContent({
 	rtkStatus,
 	hooksTestResult,
 	hooksSaving,
+	commandSnapshot,
+	commandSaving,
+	commandFeedback,
+	commandSavedTick,
 	onSaveModel,
 	onSetDefaultModel,
 	onSetModelEnabled,
@@ -1088,6 +1361,10 @@ function SettingsContent({
 	onSaveHooks,
 	onDetectRtk,
 	onTestRtkRewrite,
+	onRefreshCommands,
+	onCreateCommand,
+	onUpdateCommand,
+	onDeleteCommand,
 	usageStats,
 	usageLoading,
 	usageError,
@@ -1111,6 +1388,10 @@ function SettingsContent({
 	rtkStatus?: RtkStatusView;
 	hooksTestResult: HooksTestView;
 	hooksSaving: boolean;
+	commandSnapshot: CommandSnapshotView | null;
+	commandSaving: boolean;
+	commandFeedback: CommandFeedback;
+	commandSavedTick: number;
 	onSaveModel: (input: ModelSettingsInput) => void;
 	/** 设置默认模型回调。 */
 	onSetDefaultModel: (modelId: string) => void;
@@ -1134,6 +1415,14 @@ function SettingsContent({
 	onDetectRtk: () => void;
 	/** 固定样例改写测试回调。 */
 	onTestRtkRewrite: () => void;
+	/** 手动刷新 Command 回调。 */
+	onRefreshCommands: () => void;
+	/** 创建 Command 回调。 */
+	onCreateCommand: (scope: CommandScope, input: CommandInput) => void;
+	/** 编辑 Command 回调。 */
+	onUpdateCommand: (scope: CommandScope, name: string, input: CommandInput) => void;
+	/** 删除 Command 回调。 */
+	onDeleteCommand: (scope: CommandScope, name: string) => void;
 	/** 使用情况统计结果（null=未加载完成）。 */
 	usageStats: TokenUsageStatsResult | null;
 	/** 使用情况是否请求中。 */
@@ -1162,6 +1451,20 @@ function SettingsContent({
 				onSourceChange={onSourceChange}
 				onDirectoriesSave={onDirectoriesSave}
 				onUploadArchive={onUploadArchive}
+			/>
+		);
+	}
+	if (section === 'command') {
+		return (
+			<CommandSettings
+				snapshot={commandSnapshot}
+				saving={commandSaving}
+				feedback={commandFeedback}
+				savedTick={commandSavedTick}
+				onRefresh={onRefreshCommands}
+				onCreate={onCreateCommand}
+				onUpdate={onUpdateCommand}
+				onDelete={onDeleteCommand}
 			/>
 		);
 	}
@@ -1231,6 +1534,14 @@ export function SettingsPage(): JSX.Element {
 	const hooksInitialSnapshotPendingRef = useRef(true);
 	// 当前待确认的异步动作：install=安装后等待新快照，source=来源切换后等待新快照（用 ref 供订阅闭包读取最新值）
 	const pendingActionRef = useRef<'archive' | 'source' | 'directories' | 'modelAction' | null>(null);
+	// ── Command 状态（与模型/Skill/MCP/Hooks 隔离：快照推送不清空其他分类草稿）──
+	const [commandSnapshot, setCommandSnapshot] = useState<CommandSnapshotView | null>(null);
+	const [commandSaving, setCommandSaving] = useState(false);
+	const [commandFeedback, setCommandFeedback] = useState<CommandFeedback>(null);
+	/** 写操作成功后递增的计数（CommandSettings 据此关闭表单/删除确认）。 */
+	const [commandSavedTick, setCommandSavedTick] = useState(0);
+	// 当前待确认的 Command 异步动作（成功后展示反馈并递增 savedTick）
+	const commandPendingRef = useRef<'create' | 'update' | 'delete' | 'refresh' | null>(null);
 	// ── 使用情况状态（与其他分类草稿隔离：usageStats/usageError 只更新自身，不清空模型/Skill/MCP/Hooks 草稿）──
 	const [usageStats, setUsageStats] = useState<TokenUsageStatsResult | null>(null);
 	const [usageLoading, setUsageLoading] = useState(false);
@@ -1255,6 +1566,7 @@ export function SettingsPage(): JSX.Element {
 	useEffect(() => {
 		post({ command: 'requestModelSettings' });
 		post({ command: 'requestSkills' });
+		post({ command: 'requestCommands' });
 		post({ command: 'requestMcpSettings' });
 		post({ command: 'requestHooksSnapshot' });
 		return subscribe((msg: HostToWebviewMessage) => {
@@ -1287,9 +1599,40 @@ export function SettingsPage(): JSX.Element {
 				case 'settingsError':
 					setSaving(false);
 					setHooksSaving(false);
+					// Command 操作失败：路由到 Command 反馈，保留表单草稿与删除确认状态
+					if (commandPendingRef.current) {
+						setCommandSaving(false);
+						setCommandFeedback({ kind: 'error', message: msg.message });
+						commandPendingRef.current = null;
+						break;
+					}
 					pendingActionRef.current = null;
 					setFeedback({ kind: 'error', message: msg.message });
 					break;
+				case 'commandsList': {
+					// 状态推送只更新 Command 快照，不影响模型/Skill/MCP/Hooks 草稿
+					setCommandSnapshot({
+						global: msg.global,
+						project: msg.project,
+						...(msg.globalDirectory ? { globalDirectory: msg.globalDirectory } : {}),
+						...(msg.projectDirectory ? { projectDirectory: msg.projectDirectory } : {}),
+						projectAvailable: msg.projectAvailable,
+					});
+					const pending = commandPendingRef.current;
+					if (pending) {
+						setCommandSaving(false);
+						setCommandFeedback({
+							kind: 'success',
+							message: pending === 'create' ? '命令已创建，列表已刷新' : pending === 'update' ? '命令已更新，列表已刷新' : pending === 'delete' ? '命令已删除，列表已刷新' : '命令已刷新',
+						});
+						// 写操作成功：通知 CommandSettings 关闭表单/删除确认（失败时 commandPendingRef 被清空，草稿保留）
+						if (pending !== 'refresh') {
+							setCommandSavedTick((tick) => tick + 1);
+						}
+						commandPendingRef.current = null;
+					}
+					break;
+				}
 				case 'mcpSettings':
 					// 状态推送只更新 MCP 快照，不影响模型/Skill 草稿
 					setMcpServers(msg.servers);
@@ -1438,6 +1781,38 @@ export function SettingsPage(): JSX.Element {
 		post({ command: 'uploadSkillArchive' });
 	};
 
+	/** 请求宿主重新扫描双作用域命令并回推最新快照。 */
+	const handleRefreshCommands = (): void => {
+		setCommandFeedback(null);
+		setCommandSaving(true);
+		commandPendingRef.current = 'refresh';
+		post({ command: 'refreshCommands' });
+	};
+
+	/** 提交创建 Command 到宿主。 @param scope 作用域。 @param input 输入。 @returns 无返回值。 */
+	const handleCreateCommand = (scope: CommandScope, input: CommandInput): void => {
+		setCommandFeedback(null);
+		setCommandSaving(true);
+		commandPendingRef.current = 'create';
+		post({ command: 'createCommand', scope, input });
+	};
+
+	/** 提交编辑 Command 到宿主。 @param scope 作用域。 @param name 命令名。 @param input 输入。 @returns 无返回值。 */
+	const handleUpdateCommand = (scope: CommandScope, name: string, input: CommandInput): void => {
+		setCommandFeedback(null);
+		setCommandSaving(true);
+		commandPendingRef.current = 'update';
+		post({ command: 'updateCommand', scope, name, input });
+	};
+
+	/** 提交删除 Command 到宿主。 @param scope 作用域。 @param name 命令名。 @returns 无返回值。 */
+	const handleDeleteCommand = (scope: CommandScope, name: string): void => {
+		setCommandFeedback(null);
+		setCommandSaving(true);
+		commandPendingRef.current = 'delete';
+		post({ command: 'deleteCommand', scope, name });
+	};
+
 	/** 提交 MCP JSON 保存（add 新增/批量导入，edit 编辑单个 Server）。 */
 	const handleSaveMcpJson = (json: string, mode: McpSaveMode, editingServerId?: string): void => {
 		setMcpFeedback(null);
@@ -1505,7 +1880,7 @@ export function SettingsPage(): JSX.Element {
 				</nav>
 			</aside>
 			<main className="settings-content">
-				<div className="settings-content-inner">
+				<div className={`settings-content-inner${activeSection === 'command' ? ' settings-command-content-inner' : ''}`}>
 					{feedback ? (
 						<div className={`settings-feedback ${feedback.kind === 'error' ? 'settings-feedback-error' : ''}`} role="status">
 							{feedback.message}
@@ -1540,6 +1915,14 @@ export function SettingsPage(): JSX.Element {
 						onSaveHooks={handleSaveHooks}
 						onDetectRtk={handleDetectRtk}
 						onTestRtkRewrite={handleTestRtkRewrite}
+						onRefreshCommands={handleRefreshCommands}
+						onCreateCommand={handleCreateCommand}
+						onUpdateCommand={handleUpdateCommand}
+						onDeleteCommand={handleDeleteCommand}
+						commandSnapshot={commandSnapshot}
+						commandSaving={commandSaving}
+						commandFeedback={commandFeedback}
+						commandSavedTick={commandSavedTick}
 						usageStats={usageStats}
 						usageLoading={usageLoading}
 						usageError={usageError}

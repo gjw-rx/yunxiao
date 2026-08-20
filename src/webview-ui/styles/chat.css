@@ -3518,3 +3518,331 @@
 	.change-diff-file-directory { display: none; }
 	.change-review-header { align-items: start; flex-direction: column; }
 }
+
+/* ── Command 设置分类（复用现有设置页 token）── */
+.settings-command-content-inner {
+	width: min(1120px, 100%);
+	background: var(--bg);
+}
+.settings-command-page {
+	--command-ink: var(--fg);
+	--command-muted: var(--muted);
+	--command-subtle: var(--step-bg);
+	--command-border: var(--border-light);
+	--command-border-strong: var(--border);
+	--command-accent: var(--accent);
+	--command-accent-hover: var(--btn-hover);
+	color: var(--command-ink);
+}
+.settings-command-page .settings-heading {
+	margin-bottom: 30px;
+}
+.settings-command-page .settings-eyebrow {
+	margin-bottom: 10px;
+	color: var(--command-muted);
+	letter-spacing: .12em;
+}
+.settings-command-page .settings-heading h1 {
+	color: var(--command-ink);
+	font-size: 34px;
+	font-weight: 500;
+	letter-spacing: -.045em;
+}
+.settings-command-page .settings-heading p {
+	max-width: 640px;
+	margin-top: 11px;
+	color: var(--command-muted);
+	font-size: 13px;
+	line-height: 1.7;
+}
+.settings-command-page .settings-card {
+	border-color: var(--command-border);
+	border-radius: 10px;
+	background: var(--vscode-editorWidget-background, var(--bg));
+	box-shadow: 0 1px 2px color-mix(in srgb, var(--fg) 4%, transparent);
+}
+.settings-command-page .settings-card + .settings-card {
+	margin-top: 18px;
+}
+.settings-command-page [aria-label="命令作用域"] {
+	border: 0;
+	background: transparent;
+	box-shadow: none;
+}
+.settings-command-page [aria-label="命令作用域"] .settings-card-header {
+	display: none;
+}
+.settings-command-page [aria-label="命令作用域"] .settings-form-section {
+	padding: 0 0 22px;
+}
+.settings-command-page .settings-card-header {
+	padding: 20px 22px 15px;
+}
+.settings-command-page .settings-card-header-list {
+	padding-top: 19px;
+	padding-bottom: 16px;
+	border-color: var(--command-border);
+}
+.settings-command-page .settings-card-header h2 {
+	color: var(--command-ink);
+	font-size: 14px;
+	font-weight: 500;
+	letter-spacing: -.01em;
+}
+.settings-command-page .settings-card-header p {
+	color: var(--command-muted);
+	font-size: 11px;
+}
+.settings-command-page .settings-form-section {
+	padding: 6px 22px 22px;
+}
+.settings-command-page .settings-radio-group {
+	gap: 3px;
+	padding: 3px;
+	border: 1px solid var(--command-border);
+	border-radius: 9px;
+	background: var(--command-subtle);
+}
+.settings-command-page .settings-scope-tab {
+	height: 32px;
+	padding: 0 15px;
+	border: 0;
+	border-radius: 6px;
+	color: var(--command-muted);
+	background: transparent;
+	font-size: 11px;
+	font-weight: 400;
+}
+.settings-command-page .settings-scope-tab:hover:not(:disabled) {
+	color: var(--command-ink);
+	background: color-mix(in srgb, var(--command-accent) 8%, transparent);
+}
+.settings-command-page .settings-scope-tab.active {
+	color: var(--command-accent);
+	background: var(--vscode-editorWidget-background, var(--bg));
+	box-shadow: 0 1px 3px color-mix(in srgb, var(--fg) 12%, transparent);
+}
+.settings-command-page .settings-target-path {
+	margin: 15px 0 0;
+	color: var(--command-muted);
+	font-size: 10px;
+}
+.settings-command-page .settings-target-path code {
+	margin-left: 7px;
+	border: 1px solid var(--command-border);
+	color: var(--command-ink);
+	background: var(--command-subtle);
+	font-size: 10px;
+}
+.settings-command-page .settings-note-error {
+	color: var(--error);
+}
+.settings-command-page .settings-card-footer {
+	padding: 13px 22px;
+	border-color: var(--command-border);
+	background: color-mix(in srgb, var(--command-subtle) 70%, transparent);
+}
+.settings-command-page .settings-primary-button,
+.settings-command-page .settings-save-btn {
+	border-color: var(--command-accent);
+	border-radius: 7px;
+	background: var(--command-accent);
+	color: var(--btn-fg);
+	font-weight: 500;
+	box-shadow: 0 4px 10px color-mix(in srgb, var(--command-accent) 16%, transparent);
+}
+.settings-command-page .settings-primary-button:hover:not(:disabled),
+.settings-command-page .settings-save-btn:hover:not(:disabled) {
+	border-color: var(--command-accent-hover);
+	background: var(--command-accent-hover);
+}
+.settings-command-page .settings-secondary-button {
+	border-color: var(--command-border-strong);
+	border-radius: 7px;
+	background: var(--btn-secondary-bg);
+	color: var(--btn-secondary-fg);
+	font-weight: 400;
+}
+.settings-command-page .settings-secondary-button:hover:not(:disabled) {
+	border-color: var(--command-accent);
+	background: color-mix(in srgb, var(--command-accent) 8%, var(--btn-secondary-bg));
+	color: var(--command-accent);
+}
+.settings-command-page .settings-count-badge {
+	border-color: var(--command-border);
+	color: var(--command-muted);
+	background: var(--command-subtle);
+}
+.settings-command-list-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.settings-command-list-actions .settings-primary-button,
+.settings-command-list-actions .settings-secondary-button {
+	min-height: 32px;
+	font-weight: 400;
+}
+.settings-command-page .settings-feedback {
+	border-color: color-mix(in srgb, var(--command-accent) 35%, var(--command-border));
+	border-radius: 8px;
+	color: var(--command-accent);
+	background: color-mix(in srgb, var(--command-accent) 8%, transparent);
+}
+.settings-command-page .settings-feedback-error {
+	border-color: color-mix(in srgb, var(--error) 35%, var(--command-border));
+	color: var(--error);
+	background: color-mix(in srgb, var(--error) 8%, transparent);
+}
+.settings-command-page .settings-row {
+	min-height: 74px;
+	padding: 15px 22px;
+	border-color: var(--command-border);
+}
+.settings-command-page .settings-row strong {
+	color: var(--command-ink);
+	font-size: 13px;
+}
+.settings-command-page .settings-row span {
+	color: var(--command-muted);
+	line-height: 1.45;
+}
+.settings-command-page .settings-value {
+	border-color: var(--command-border);
+	color: var(--command-muted);
+	background: var(--command-subtle);
+}
+.settings-command-page .settings-row .settings-model-actions button {
+	border-color: var(--command-border);
+	border-radius: 6px;
+	color: var(--command-muted);
+	background: transparent;
+}
+.settings-command-page .settings-row .settings-model-actions button:hover:not(:disabled) {
+	border-color: color-mix(in srgb, var(--command-accent) 45%, var(--command-border));
+	color: var(--command-accent);
+	background: color-mix(in srgb, var(--command-accent) 8%, transparent);
+}
+.settings-command-page .settings-row .settings-danger-action:hover:not(:disabled) {
+	border-color: color-mix(in srgb, var(--error) 45%, var(--command-border));
+	color: var(--error);
+	background: color-mix(in srgb, var(--error) 8%, transparent);
+}
+.settings-command-page .settings-empty-card {
+	min-height: 250px;
+	padding: 42px 24px;
+	border-top: 0;
+}
+.settings-command-page .settings-empty-card::before {
+	display: grid;
+	width: 42px;
+	height: 42px;
+	margin-bottom: 14px;
+	place-items: center;
+	border: 1px solid color-mix(in srgb, var(--command-accent) 25%, var(--command-border));
+	border-radius: 12px;
+	color: var(--command-accent);
+	background: color-mix(in srgb, var(--command-accent) 8%, var(--command-subtle));
+	content: 'ϟ';
+	font-size: 24px;
+	font-weight: 650;
+}
+.settings-command-page .settings-empty-card strong {
+	color: var(--command-ink);
+	font-size: 14px;
+	font-weight: 500;
+}
+.settings-command-page .settings-empty-card span {
+	color: var(--command-muted);
+	font-size: 12px;
+}
+.settings-command-page .settings-form-card .settings-form-section {
+	padding-top: 4px;
+}
+.settings-command-page .settings-field-label {
+	color: var(--command-ink);
+	font-weight: 400;
+}
+.settings-command-page .settings-field-help {
+	color: #7b8798;
+}
+.settings-command-page .settings-field input,
+.settings-command-page .settings-field textarea {
+	border-color: var(--command-border);
+	border-radius: 7px;
+	color: var(--command-ink);
+	background: var(--input-bg);
+}
+.settings-command-page .settings-field input:hover,
+.settings-command-page .settings-field textarea:hover {
+	border-color: #b9c5d4;
+}
+.settings-command-page .settings-field input:focus,
+.settings-command-page .settings-field textarea:focus {
+	border-color: color-mix(in srgb, var(--command-accent) 65%, var(--command-border));
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--command-accent) 12%, transparent);
+}
+.settings-command-page .settings-status-badge,
+.settings-command-page .settings-overridden-tag {
+	border-color: color-mix(in srgb, var(--command-accent) 35%, var(--command-border));
+	color: var(--command-accent);
+	background: color-mix(in srgb, var(--command-accent) 8%, transparent);
+}
+@media (max-width: 620px) {
+	.settings-command-page .settings-card-header-list {
+		align-items: flex-start;
+		flex-direction: column;
+		gap: 12px;
+	}
+	.settings-command-list-actions {
+		width: 100%;
+		flex-wrap: wrap;
+	}
+	.settings-command-list-actions .settings-primary-button {
+		flex: 1;
+	}
+}
+
+.settings-scope-tab {
+	height: 30px;
+	padding: 0 14px;
+	border: 1px solid var(--border-light);
+	border-radius: var(--radius);
+	background: transparent;
+	color: var(--muted);
+	font-size: 11px;
+	font-weight: 600;
+	cursor: pointer;
+	transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+.settings-scope-tab:hover:not(:disabled) { color: var(--fg); border-color: var(--border); }
+.settings-scope-tab.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--border-light)); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.settings-scope-tab:disabled { opacity: 0.45; cursor: not-allowed; }
+.settings-overridden-tag {
+	display: inline-block;
+	padding: 1px 6px;
+	border-radius: 999px;
+	color: var(--warning);
+	background: color-mix(in srgb, var(--warning) 12%, transparent);
+	font-size: 9px;
+	font-style: normal;
+	font-weight: 600;
+}
+.settings-row .settings-model-actions { gap: 4px; }
+.settings-row .mcp-confirm-delete { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; }
+/* 聊天输入区 Command 引用 chip（区别于 Skill chip） */
+.command-reference-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: 240px;
+	padding: 2px 6px 2px 4px;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--accent) 14%, var(--step-bg));
+	color: var(--accent);
+	font-size: 11px;
+	line-height: 1.6;
+}
+.command-reference-prefix { font-weight: 700; }
+.command-reference-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.command-reference-chip .file-reference-remove { color: var(--muted); }

@@ -39,6 +39,9 @@ import { SkillRegistry } from './skill/skillRegistry';
 import { loadSkillsFromDirectory } from './skill/skillLoader';
 import { SkillTool } from './skill/skillTool';
 import { installSkillArchive, type SkillInstallResult } from './skill/skillInstaller';
+import { CommandStore } from './command/commandStore';
+import { CommandRegistry } from './command/commandRegistry';
+import { resolveCommandDirectories } from './command/commandLoader';
 import { ModelConfigStore } from './config/modelConfigStore';
 import type { ModelConfig } from './config/modelConfig';
 import {
@@ -206,6 +209,15 @@ async function _activate(context: vscode.ExtensionContext) {
 	// 不再读取 yunxiaoAgent.skills.directories / yunxiaoAgent.sync.source VS Code 配置。
 	const skillRegistry = new SkillRegistry();
 	registry.register(new SkillTool(skillRegistry));
+
+	// Command 系统：固定目录（全局 ~/.yunForce/command，项目 <首个工作区根>/.yunForce/command），
+	// 以「项目同名覆盖全局」规则合并；激活时加载，CRUD 成功后由设置面板触发串行重载并刷新斜杠菜单。
+	const commandStore = new CommandStore(
+		resolveCommandDirectories(getWorkspaceRoots()),
+		new CommandRegistry(),
+	);
+	// 注入 provider：斜杠菜单组装、设置页快照与发送时安全展开
+	provider.setCommandStore(commandStore);
 
 	// MCP Client Manager：后台渐进连接 MCP Server，工具动态注册到 ToolRegistry。
 	// MCP 失败不得阻塞 Webview、本地工具或 Skill 初始化。
@@ -570,6 +582,8 @@ async function _activate(context: vscode.ExtensionContext) {
 		logger.log('[Extension] 开始后台初始化 Skill');
 		try {
 			await syncSkills();
+			// 激活时串行加载 Command 注册表（目录缺失视为空作用域，不阻塞就绪）
+			await commandStore.refresh();
 			provider.refreshModelInfo();
 			provider.setRuntimeStatus('ready');
 			provider.refreshSlashCommands();

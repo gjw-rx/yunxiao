@@ -156,9 +156,15 @@ export interface SkillInfo {
 	readonly sourcePath?: string;
 }
 
+/** 斜杠候选显式类型：basic=基础功能，command=自定义 Command，agent=子智能体，skill=普通 Skill。 */
+export type SlashCandidateKind = 'basic' | 'command' | 'agent' | 'skill';
+
+/** Command 来源作用域（与宿主 src/command/types.ts 的 CommandScope 保持一致）。 */
+export type CommandScope = 'global' | 'project';
+
 /** 单个斜杠命令（与 src/chat/slashCommands.ts 的 SlashCommand 结构一致）。 */
 export interface SlashCommand {
-	/** 唯一标识（如 basic.new-session / skill.<name>） */
+	/** 唯一标识（如 basic.new-session / skill.<name> / command.<name>） */
 	readonly id: string;
 	/** 命令词（不含 /），用于过滤与回填，如 new、plan */
 	readonly command: string;
@@ -168,14 +174,18 @@ export interface SlashCommand {
 	readonly description?: string;
 	/** true=选中即发送；false=回填输入框由用户编辑后发送 */
 	readonly send: boolean;
+	/** 显式候选类型，用于 Webview 稳定区分 Command 与 Skill（不再依赖 id 前缀猜测）。 */
+	readonly kind: SlashCandidateKind;
+	/** 自定义 Command 的生效来源作用域（kind=command 时存在，供发送时携带引用）。 */
+	readonly sourceScope?: CommandScope;
 	/** 可选特殊动作：直接触发扩展侧命令而非发消息 */
 	readonly action?: 'newSession' | 'stopStream' | 'switchModel' | 'compactContext' | 'planMode';
 }
 
 /** 斜杠命令分组。 */
 export interface SlashCommandGroup {
-	/** 分组标识 */
-	readonly id: 'basic' | 'agents' | 'skills';
+	/** 分组标识（基础功能 / 命令 / 子智能体 / SKILL） */
+	readonly id: 'basic' | 'commands' | 'agents' | 'skills';
 	/** 分组展示名 */
 	readonly label: string;
 	/** 组内命令 */
@@ -625,6 +635,45 @@ export interface SkillsListMessage {
 	readonly installTarget?: string;
 }
 
+/** 设置页 Command 快照条目（非敏感：不携带正文，避免把长模板塞进列表）。 */
+export interface CommandInfo {
+	/** 命令名（文件名，不含 .md） */
+	readonly name: string;
+	/** 可选描述 */
+	readonly description?: string;
+	/** 所属物理作用域 */
+	readonly scope: CommandScope;
+	/** 是否被项目作用域同名命令覆盖（全局项且项目存在同名时为 true） */
+	readonly overridden: boolean;
+	/** 来源文件绝对路径 */
+	readonly sourcePath: string;
+}
+
+/** 设置页双作用域 Command 快照（响应 requestCommands / CRUD 成功后推送最新快照）。 */
+export interface CommandsListMessage {
+	readonly command: 'commandsList';
+	/** 全局作用域命令列表（含被项目覆盖的项） */
+	readonly global: readonly CommandInfo[];
+	/** 项目作用域命令列表（未打开工作区时为空） */
+	readonly project: readonly CommandInfo[];
+	/** 全局命令目录绝对路径（设置页展示实际目录） */
+	readonly globalDirectory?: string;
+	/** 项目命令目录绝对路径（未打开工作区时缺省） */
+	readonly projectDirectory?: string;
+	/** 项目作用域是否可用（未打开工作区时为 false，写操作禁用） */
+	readonly projectAvailable: boolean;
+}
+
+/** 设置页创建/编辑 Command 的输入（正文必须非空；name 仅创建时使用）。 */
+export interface CommandInput {
+	/** 命令名（仅创建时使用；由文件名确定唯一标识） */
+	readonly name?: string;
+	/** 可选描述（缺省清除描述） */
+	readonly description?: string;
+	/** 正文（必须非空） */
+	readonly body: string;
+}
+
 /** 设置页操作错误（校验失败 / 安装失败 / 无工作区等，消息可直接展示）。 */
 export interface SettingsErrorMessage {
 	readonly command: 'settingsError';
@@ -761,6 +810,7 @@ export type HostToWebviewMessage =
 	| ModelSettingsMessage
 	| ModelSettingsSavedMessage
 	| SkillsListMessage
+	| CommandsListMessage
 	| SettingsErrorMessage
 	| McpSettingsMessage
 	| McpSettingsSavedMessage
@@ -789,13 +839,23 @@ export interface CreateSessionMessage {
 	readonly command: 'createSession';
 }
 
-/** 发送用户消息（文件引用与 Skill 作为独立字段）。 */
+/** 发送消息时携带的 Command 引用（仅名称与作用域标识，不携带正文；Host 发送时重新解析）。 */
+export interface CommandReference {
+	/** 命令名（不含 /） */
+	readonly name: string;
+	/** 选择时的来源作用域（Host 以最新注册表解析的生效命令为准） */
+	readonly scope: CommandScope;
+}
+
+/** 发送用户消息（文件引用、Skill 与 Command 作为独立字段；Command 正文由 Host 发送时安全展开）。 */
 export interface SendMessageMessage {
 	readonly command: 'sendMessage';
 	readonly sessionId: string;
 	readonly text: string;
 	readonly files: WorkspaceFile[];
 	readonly skills: string[];
+	/** 所选 Command 引用（可选；携带时 Host 从最新注册表解析并展开正文，不信任 Webview 传入正文）。 */
+	readonly commandRef?: CommandReference;
 }
 
 /** 停止当前流式回复。 */
@@ -999,6 +1059,39 @@ export interface RequestSkillsMessage {
 	readonly command: 'requestSkills';
 }
 
+/** 设置页请求双作用域 Command 快照（命令分类挂载时发送）。 */
+export interface RequestCommandsMessage {
+	readonly command: 'requestCommands';
+}
+
+/** 设置页创建 Command（写入目标作用域目录并回推最新快照）。 */
+export interface CreateCommandMessage {
+	readonly command: 'createCommand';
+	readonly scope: CommandScope;
+	readonly input: CommandInput;
+}
+
+/** 设置页编辑已有 Command（仅更新该作用域目标文件并回推最新快照）。 */
+export interface UpdateCommandMessage {
+	readonly command: 'updateCommand';
+	readonly scope: CommandScope;
+	/** 现有命令名（文件名即身份） */
+	readonly name: string;
+	readonly input: CommandInput;
+}
+
+/** 设置页删除 Command（仅删除对应文件并回推最新快照）。 */
+export interface DeleteCommandMessage {
+	readonly command: 'deleteCommand';
+	readonly scope: CommandScope;
+	readonly name: string;
+}
+
+/** 设置页手动刷新 Command（重新扫描双作用域并回推最新快照）。 */
+export interface RefreshCommandsMessage {
+	readonly command: 'refreshCommands';
+}
+
 /** 设置页切换配置来源（none/claude/trae/agent，四值互斥）。 */
 export interface SetSyncSourceMessage {
 	readonly command: 'setSyncSource';
@@ -1125,6 +1218,11 @@ export type WebviewToHostMessage =
 	| SetModelEnabledMessage
 	| DeleteModelMessage
 	| RequestSkillsMessage
+	| RequestCommandsMessage
+	| CreateCommandMessage
+	| UpdateCommandMessage
+	| DeleteCommandMessage
+	| RefreshCommandsMessage
 	| SetSyncSourceMessage
 	| SetSkillDirectoriesMessage
 	| UploadSkillArchiveMessage

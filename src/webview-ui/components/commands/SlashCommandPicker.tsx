@@ -53,8 +53,8 @@ export function SlashCommandPicker({ commands, activeIndex, onSelect, onClose }:
 			</div>
 		);
 		for (const command of group) {
-			// skill 命令选中后生成引用块加入对话框（不直接发送），基础命令回车直达
-			const keyHint = command.id && command.id.indexOf('skill.') === 0 ? '↵ 加入对话框' : 'Enter';
+			// 提示区分三类选中行为：command 生成 Command 引用块、skill/agent 生成 Skill 引用块、基础命令回车直达
+			const keyHint = command.kind === 'command' ? '↵ 选择' : command.kind === 'skill' || command.kind === 'agent' ? '↵ 加入对话框' : 'Enter';
 			rows.push(
 				<button
 					ref={idx === activeIndex ? activeOptionRef : null}

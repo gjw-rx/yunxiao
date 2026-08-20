@@ -324,3 +324,135 @@ describe('SettingsPage', () => {
 		expect(screen.getByLabelText('使用情况统计')).toBeTruthy();
 	});
 });
+
+describe('SettingsPage Command 分类', () => {
+	/** 挂载时请求 Command 快照。 */
+	it('挂载时请求 Command 快照', () => {
+		render(<SettingsPage />);
+		expect(bridge.post).toHaveBeenCalledWith({ command: 'requestCommands' });
+	});
+
+	/** 导航项顺序：模型、Skill、命令、MCP、Hooks、使用情况。 */
+	it('导航包含命令项且位于 Skill 与 MCP 之间', () => {
+		const { container } = render(<SettingsPage />);
+		const nav = container.querySelector('.settings-nav nav');
+		const buttons = Array.from(nav?.querySelectorAll('button') ?? []);
+		const labels = buttons.map((b) => b.textContent?.trim());
+		expect(labels.indexOf('Skill')).toBeGreaterThan(-1);
+		expect(labels.indexOf('命令')).toBeGreaterThan(labels.indexOf('Skill'));
+		expect(labels.indexOf('MCP')).toBeGreaterThan(labels.indexOf('命令'));
+	});
+
+	/** 点击命令分类展示全局/项目标签与空状态。 */
+	it('命令分类展示全局/项目标签与空状态', async () => {
+		render(<SettingsPage />);
+		fireEvent.click(screen.getByRole('button', { name: '命令' }));
+		emit({ command: 'commandsList', global: [], project: [], globalDirectory: '/u/.yunForce/command', projectDirectory: '/ws/.yunForce/command', projectAvailable: true });
+
+		await waitFor(() => expect(screen.getByRole('heading', { name: '命令' })).toBeTruthy());
+		expect(screen.getByRole('tab', { name: '全局' })).toBeTruthy();
+		expect(screen.getByRole('tab', { name: '项目' })).toBeTruthy();
+		expect(screen.getByText(/目录/)).toBeTruthy();
+		expect(screen.getByText('暂无全局命令')).toBeTruthy();
+	});
+
+	/** 切换项目标签显示项目命令列表与覆盖标记。 */
+	it('切换项目标签显示项目命令列表与覆盖标记', async () => {
+		render(<SettingsPage />);
+		fireEvent.click(screen.getByRole('button', { name: '命令' }));
+		emit({
+			command: 'commandsList',
+			global: [{ name: 'review', scope: 'global', overridden: true, sourcePath: '/u/.yunForce/command/review.md' }],
+			project: [{ name: 'review', description: '项目版', scope: 'project', overridden: false, sourcePath: '/ws/.yunForce/command/review.md' }],
+			globalDirectory: '/u/.yunForce/command',
+			projectDirectory: '/ws/.yunForce/command',
+			projectAvailable: true,
+		});
+		await waitFor(() => expect(screen.getByText('/review')).toBeTruthy());
+		// 全局作用域展示被项目覆盖标记
+		expect(screen.getByText('被项目覆盖')).toBeTruthy();
+		fireEvent.click(screen.getByRole('tab', { name: '项目' }));
+		expect(screen.getByText('项目版')).toBeTruthy();
+	});
+
+	/** 无工作区时项目作用域禁用并说明原因。 */
+	it('无工作区时项目作用域禁用并说明原因', async () => {
+		render(<SettingsPage />);
+		fireEvent.click(screen.getByRole('button', { name: '命令' }));
+		emit({ command: 'commandsList', global: [], project: [], globalDirectory: '/u/.yunForce/command', projectAvailable: false });
+
+		await waitFor(() => expect(screen.getByText('未打开工作区，无法管理项目 Command；全局作用域仍可用。')).toBeTruthy());
+		expect(screen.getByRole('tab', { name: '项目' }).getAttribute('disabled')).not.toBeNull();
+		// 项目 tab 未选中时创建按钮（全局作用域）仍可用
+		const createButton = screen.getByRole('button', { name: '+ 创建命令' });
+		expect(createButton.getAttribute('disabled')).toBeNull();
+	});
+
+	/** 创建 Command：提交 createCommand 并在成功后刷新列表与反馈。 */
+	it('创建全局 Command 提交 createCommand，成功后刷新列表', async () => {
+		render(<SettingsPage />);
+		fireEvent.click(screen.getByRole('button', { name: '命令' }));
+		emit({ command: 'commandsList', global: [], project: [], globalDirectory: '/u/.yunForce/command', projectAvailable: true });
+		await waitFor(() => expect(screen.getByRole('button', { name: '+ 创建命令' })).toBeTruthy());
+
+		fireEvent.click(screen.getByRole('button', { name: '+ 创建命令' }));
+		fireEvent.change(screen.getByLabelText('命令名'), { target: { value: 'review' } });
+		fireEvent.change(screen.getByLabelText('命令正文'), { target: { value: '请审查当前改动' } });
+		fireEvent.click(screen.getByRole('button', { name: '创建命令' }));
+
+		expect(bridge.post).toHaveBeenCalledWith({
+			command: 'createCommand',
+			scope: 'global',
+			input: { name: 'review', body: '请审查当前改动' },
+		});
+		// 宿主回推最新快照：列表刷新 + 成功反馈 + 表单关闭
+		emit({
+			command: 'commandsList',
+			global: [{ name: 'review', scope: 'global', overridden: false, sourcePath: '/u/.yunForce/command/review.md' }],
+			project: [],
+			globalDirectory: '/u/.yunForce/command',
+			projectAvailable: true,
+		});
+		await waitFor(() => expect(screen.getByText('命令已创建，列表已刷新')).toBeTruthy());
+		expect(screen.queryByRole('button', { name: '创建命令' })).toBeNull();
+	});
+
+	/** 失败时回传 settingsError，表单草稿保留。 */
+	it('创建失败保留表单草稿并展示错误', async () => {
+		render(<SettingsPage />);
+		fireEvent.click(screen.getByRole('button', { name: '命令' }));
+		emit({ command: 'commandsList', global: [], project: [], globalDirectory: '/u/.yunForce/command', projectAvailable: true });
+		await waitFor(() => expect(screen.getByRole('button', { name: '+ 创建命令' })).toBeTruthy());
+
+		fireEvent.click(screen.getByRole('button', { name: '+ 创建命令' }));
+		fireEvent.change(screen.getByLabelText('命令名'), { target: { value: 'bad/name' } });
+		fireEvent.change(screen.getByLabelText('命令正文'), { target: { value: '正文' } });
+		fireEvent.click(screen.getByRole('button', { name: '创建命令' }));
+
+		emit({ command: 'settingsError', message: '命令名不合法' });
+		await waitFor(() => expect(screen.getByText('命令名不合法')).toBeTruthy());
+		// 草稿保留：表单仍打开且名称未被清空
+		expect((screen.getByLabelText('命令名') as HTMLInputElement).value).toBe('bad/name');
+		expect((screen.getByLabelText('命令正文') as HTMLTextAreaElement).value).toBe('正文');
+	});
+
+	/** 删除 Command：二次确认后提交 deleteCommand 并刷新列表。 */
+	it('删除 Command 需二次确认并提交 deleteCommand', async () => {
+		render(<SettingsPage />);
+		fireEvent.click(screen.getByRole('button', { name: '命令' }));
+		emit({
+			command: 'commandsList',
+			global: [{ name: 'review', scope: 'global', overridden: false, sourcePath: '/u/.yunForce/command/review.md' }],
+			project: [],
+			globalDirectory: '/u/.yunForce/command',
+			projectAvailable: true,
+		});
+		await waitFor(() => expect(screen.getByRole('button', { name: '删除' })).toBeTruthy());
+
+		fireEvent.click(screen.getByRole('button', { name: '删除' }));
+		expect(screen.getByText('确认删除？')).toBeTruthy();
+		expect(bridge.post).not.toHaveBeenCalledWith(expect.objectContaining({ command: 'deleteCommand' }));
+		fireEvent.click(screen.getByRole('button', { name: '确认' }));
+		expect(bridge.post).toHaveBeenCalledWith({ command: 'deleteCommand', scope: 'global', name: 'review' });
+	});
+});

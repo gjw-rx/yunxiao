@@ -24,6 +24,10 @@ import type { RtkTransformHook } from './hook/rtkAdapter';
 import { detectRtk, type RtkDetectionResult } from './hook/rtkDetector';
 import { summarizeTodos, type TodoStateUpdate } from './memory/todoTypes';
 import { buildSlashCommandGroups } from './chat/slashCommands';
+import type { CommandStore, CommandInput } from './command/commandStore';
+import type { CommandScope, CommandSnapshot } from './command/types';
+import type { CommandInfo } from './webview-ui/protocol';
+import { buildCommandMessage } from './command/commandMessage';
 import { DEFAULT_MAX_FILE_SIZE, isBinaryExt, redactSecrets } from './tools/fs/readFile';
 import { APPROVAL_MODE_CONFIG_KEY, isApprovalMode, type ApprovalMode } from './core/approvalGateway';
 import * as logger from './logger';
@@ -113,6 +117,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _createSessionRequest = 0;
   private readonly _pendingApprovals = new Map<string, ApprovalResolver>();
   private _skillRegistry?: SkillRegistry;
+  /** Command 管理服务（装配后提供注册表、双作用域快照与 CRUD）。 */
+  private _commandStore?: CommandStore;
   private _settingsDeps?: SettingsPanelDeps;
   /** 最近一次 RTK 检测状态缓存（设置页快照复用）。 */
   private _rtkStatus?: RtkStatusView;
@@ -140,6 +146,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   setSkillRegistry(skillRegistry: SkillRegistry): void {
     this._skillRegistry = skillRegistry;
+  }
+
+  /**
+   * 注入 Command 管理服务（装配完成后调用，用于斜杠菜单、设置页快照与发送展开）。
+   *
+   * @param commandStore Command 管理服务
+   */
+  setCommandStore(commandStore: CommandStore): void {
+    this._commandStore = commandStore;
   }
 
   /**
@@ -226,7 +241,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _pushSlashCommands(webview: vscode.Webview): void {
     webview.postMessage({
       command: 'slashCommands',
-      groups: buildSlashCommandGroups(this._skillRegistry),
+      groups: buildSlashCommandGroups(this._skillRegistry, this._commandStore?.registry),
     });
   }
 
@@ -590,6 +605,95 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * 组装设置页双作用域 Command 快照（不携带正文，仅非敏感元数据）。
+   *
+   * @param store Command 管理服务
+   * @returns CommandsListMessage 的非 command 字段
+   */
+  private _buildCommandsPayload(store: CommandStore): {
+    global: CommandInfo[];
+    project: CommandInfo[];
+    globalDirectory?: string;
+    projectDirectory?: string;
+    projectAvailable: boolean;
+  } {
+    const registry = store.registry;
+    const toInfo = (command: { name: string; description?: string; scope: CommandScope; sourcePath: string }): CommandInfo => ({
+      name: command.name,
+      ...(command.description ? { description: command.description } : {}),
+      scope: command.scope,
+      overridden: registry.isOverridden(command.name),
+      sourcePath: command.sourcePath,
+    });
+    const globalDirectory = registry.getGlobalDirectory();
+    const projectDirectory = registry.getProjectDirectory();
+    return {
+      global: registry.listGlobal().map(toInfo),
+      project: registry.listProject().map(toInfo),
+      ...(globalDirectory ? { globalDirectory } : {}),
+      ...(projectDirectory ? { projectDirectory } : {}),
+      projectAvailable: projectDirectory !== undefined,
+    };
+  }
+
+  /**
+   * 处理设置页 Command 写操作（create/update/delete/refresh）：成功后回推最新快照并刷新斜杠菜单。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息（scope/name/input）
+   * @param kind 操作类别
+   */
+  private async _handleCommandWrite(
+    panel: vscode.WebviewPanel,
+    msg: { command: string; [key: string]: unknown },
+    kind: 'create' | 'update' | 'delete' | 'refresh',
+  ): Promise<void> {
+    const store = this._commandStore;
+    if (!store) {
+      panel.webview.postMessage({ command: 'settingsError', message: 'Command 管理服务未就绪' });
+      return;
+    }
+    const scope: CommandScope = msg.scope === 'project' ? 'project' : 'global';
+    const startedAt = Date.now();
+    try {
+      let snapshot: CommandSnapshot;
+      if (kind === 'refresh') {
+        snapshot = await store.refresh();
+      } else if (kind === 'create') {
+        snapshot = await store.create(scope, msg.input as CommandInput);
+      } else if (kind === 'update') {
+        snapshot = await store.update(scope, msg.name as string, msg.input as CommandInput);
+      } else {
+        snapshot = await store.delete(scope, msg.name as string);
+      }
+      // 成功：设置页与聊天斜杠菜单共用同一份已完成的注册表快照
+      panel.webview.postMessage({ command: 'commandsList', ...this._buildCommandsPayload(store) });
+      this.refreshSlashCommands();
+      logger.log(
+        `[ChatPanel] Command ${kind} 成功 scope=${scope} 全局=${snapshot.global.commands.length} 项目=${snapshot.project?.commands.length ?? 0} 耗时=${Date.now() - startedAt}ms`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(`[ChatPanel] Command ${kind} 失败 scope=${scope} error=${message}`);
+      panel.webview.postMessage({ command: 'settingsError', message });
+    }
+  }
+
+  /**
+   * 主动向已打开设置面板推送最新 Command 快照（激活/外部刷新后由扩展侧调用）。
+   *
+   * @returns Promise<void>
+   */
+  pushCommandsSnapshot(): void {
+    const panel = this._settingsPanel;
+    const store = this._commandStore;
+    if (!panel || !store) {
+      return;
+    }
+    panel.webview.postMessage({ command: 'commandsList', ...this._buildCommandsPayload(store) });
+  }
+
+  /**
    * 处理设置面板消息：模型配置读取/保存、Skill 列表读取、来源切换与安装。
    * 密钥永不回传；校验失败返回可显示的 settingsError。
    *
@@ -737,6 +841,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'requestUsageStats': {
         await this._handleRequestUsageStats(panel, msg);
+        break;
+      }
+      case 'requestCommands': {
+        const store = this._commandStore;
+        if (!store) {
+          panel.webview.postMessage({ command: 'settingsError', message: 'Command 管理服务未就绪' });
+          break;
+        }
+        panel.webview.postMessage({ command: 'commandsList', ...this._buildCommandsPayload(store) });
+        break;
+      }
+      case 'createCommand': {
+        await this._handleCommandWrite(panel, msg, 'create');
+        break;
+      }
+      case 'updateCommand': {
+        await this._handleCommandWrite(panel, msg, 'update');
+        break;
+      }
+      case 'deleteCommand': {
+        await this._handleCommandWrite(panel, msg, 'delete');
+        break;
+      }
+      case 'refreshCommands': {
+        await this._handleCommandWrite(panel, msg, 'refresh');
         break;
       }
     }
@@ -1152,7 +1281,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const skills = Array.isArray(msg.skills)
           ? (msg.skills as string[])
           : [];
-        if (userText.trim() === '/compact' && files.length === 0 && skills.length === 0) {
+        // Command 引用：仅信任名称/作用域标识，不信任 Webview 传入的任何正文；正文由 Host 从最新注册表解析
+        const rawCommand = msg.commandRef;
+        const commandRef =
+          rawCommand && typeof rawCommand === 'object' && typeof (rawCommand as { name?: unknown }).name === 'string'
+            ? {
+                name: (rawCommand as { name: string }).name,
+                scope: (rawCommand as { scope?: string }).scope === 'project' ? ('project' as const) : ('global' as const),
+              }
+            : undefined;
+        if (userText.trim() === '/compact' && files.length === 0 && skills.length === 0 && !commandRef) {
           try {
             const result = await this._sessionManager.compactContext(sessionId);
             const message = result.status === 'compacted'
@@ -1169,16 +1307,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           break;
         }
-        let text = userText;
-        // 已选 Skill 引用块转成斜杠命令文本（如 /plan），前置到用户消息
-        if (skills.length > 0) {
-          const skillBlock = skills.map((name) => `/${name}`).join('\n');
-          text = userText ? `${skillBlock}\n\n${userText}` : skillBlock;
+        // 发送时从最新有效注册表重新解析 Command；缺失则拒绝本次发送，不追加用户消息
+        const command = commandRef?.name ? this._commandStore?.registry.get(commandRef.name) : undefined;
+        if (commandRef?.name && !command) {
+          const message = `命令 /${commandRef.name} 已不存在或无效，请刷新后重新选择`;
+          webview.postMessage({ command: 'error', message });
+          logger.log(`[ChatPanel] 拒绝发送失效 Command sessionId=${sessionId} name=${commandRef.name}`);
+          break;
         }
-        // 读取引用文件内容，拼接为结构化上下文前置到用户文本（见 _buildFileContext）
-        if (files.length > 0) {
-          const contextBlock = await this._buildFileContext(files);
-          text = text ? `${contextBlock}\n\n${text}` : contextBlock;
+        let text: string;
+        if (command) {
+          // Command 展开块位于文件上下文之后、Skill 引用与用户补充说明之前
+          const contextBlock = files.length > 0 ? await this._buildFileContext(files) : undefined;
+          const skillBlock = skills.length > 0 ? skills.map((name) => `/${name}`).join('\n') : undefined;
+          text = buildCommandMessage({ command, userText, fileContext: contextBlock, skillBlock });
+        } else {
+          text = userText;
+          // 已选 Skill 引用块转成斜杠命令文本（如 /plan），前置到用户消息
+          if (skills.length > 0) {
+            const skillBlock = skills.map((name) => `/${name}`).join('\n');
+            text = userText ? `${skillBlock}\n\n${userText}` : skillBlock;
+          }
+          // 读取引用文件内容，拼接为结构化上下文前置到用户文本（见 _buildFileContext）
+          if (files.length > 0) {
+            const contextBlock = await this._buildFileContext(files);
+            text = text ? `${contextBlock}\n\n${text}` : contextBlock;
+          }
         }
         // 经会话状态机发起流；事件经事件总线回流（见 _forwardEvent）
         this._sessionManager.sendMessage(sessionId, text);

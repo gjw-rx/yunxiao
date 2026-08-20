@@ -39,6 +39,8 @@ export interface MessageInputProps {
 	selectedFiles: WorkspaceFile[];
 	/** 已选 Skill */
 	selectedSkills: SlashCommand[];
+	/** 已选自定义 Command（每条消息最多一个，选择其他 Command 时替换） */
+	selectedCommand: SlashCommand | null;
 	/** 斜杠命令分组 */
 	slashCommandGroups: SlashCommandGroup[];
 	/** 工作区文件（@ 引用候选） */
@@ -51,12 +53,16 @@ export interface MessageInputProps {
 	onRemoveFile: (file: WorkspaceFile) => void;
 	/** 移除已选 Skill */
 	onRemoveSkill: (skill: SlashCommand) => void;
+	/** 移除已选 Command */
+	onRemoveCommand: () => void;
 	/** 选中 @ 文件：加入已引用列表 */
 	onAddFile: (file: WorkspaceFile) => void;
 	/** 选中 skill 命令：加入已选列表（不直接发送） */
 	onAddSkill: (skill: SlashCommand) => void;
-	/** 发送消息（由 App 组装引用/Skill 显示文本并 post sendMessage） */
-	onSend: (text: string, files: WorkspaceFile[], skills: SlashCommand[]) => void;
+	/** 选中自定义 Command：生成/替换 Command 引用（不直接发送，补充文字保留在输入框） */
+	onAddCommand: (command: SlashCommand) => void;
+	/** 发送消息（由 App 组装引用/Command 显示文本并 post sendMessage） */
+	onSend: (text: string, files: WorkspaceFile[], skills: SlashCommand[], command?: SlashCommand | null) => void;
 	/** 当前会话的 Plan 阶段（normal 视为未进入 Plan 模式；executing 时禁用切换）。 */
 	planStage?: PlanStage;
 	/** 切换 Plan 模式入口按钮（进入/退出由 App 依据当前阶段决定）。 */
@@ -74,14 +80,17 @@ export function MessageInput({
 	modelProfiles,
 	selectedFiles,
 	selectedSkills,
+	selectedCommand,
 	slashCommandGroups,
 	workspaceFiles,
 	draftText,
 	onDraftConsumed,
 	onRemoveFile,
 	onRemoveSkill,
+	onRemoveCommand,
 	onAddFile,
 	onAddSkill,
+	onAddCommand,
 	onSend,
 	planStage = 'normal',
 	onTogglePlan,
@@ -297,8 +306,18 @@ export function MessageInput({
 			});
 			return;
 		}
+		// 自定义 Command：生成/替换 Command 引用块（chip），不自动发送，补充文字保留在输入框
+		if (command.kind === 'command') {
+			if (token) {
+				const nextText = text.slice(0, token.start) + text.slice(token.end);
+				setText(nextText);
+				requestAnimationFrame(() => inputRef.current?.setSelectionRange(token.start, token.start));
+			}
+			onAddCommand(command);
+			return;
+		}
 		// skill 命令：加入对话框引用块（chip），由用户确认后发送
-		if (command.id && command.id.indexOf('skill.') === 0) {
+		if (command.kind === 'agent' || command.kind === 'skill' || (command.id && command.id.indexOf('skill.') === 0)) {
 			if (token) {
 				const nextText = text.slice(0, token.start) + text.slice(token.end);
 				setText(nextText);
@@ -323,14 +342,15 @@ export function MessageInput({
 		}
 	};
 
-	/** 发送：原始用户文本 + 引用/Skill 交由 App 组装显示与发送。 */
+	/** 发送：原始用户文本 + 引用/Command 交由 App 组装显示与发送。 */
 	const handleSend = (overrideText?: string): void => {
 		const userText = (overrideText ?? text).trim();
 		const files = selectedFiles.slice();
 		const skills = selectedSkills.slice();
-		if ((!userText && files.length === 0 && skills.length === 0) || !currentSessionId || isStreaming) return;
+		const command = selectedCommand;
+		if ((!userText && files.length === 0 && skills.length === 0 && !command) || !currentSessionId || isStreaming) return;
 
-		onSend(userText, files, skills);
+		onSend(userText, files, skills, command);
 		setText('');
 		closePickers();
 		inputRef.current?.focus();
@@ -418,6 +438,23 @@ export function MessageInput({
 								</span>
 							);
 						})}
+					</div>
+				)}
+				{selectedCommand && (
+					<div id="commandReferenceList" className="file-reference-list command-reference-list" aria-label="已选 Command">
+						<span className="command-reference-chip" title={selectedCommand.description || selectedCommand.command}>
+							<span className="command-reference-prefix">/</span>
+							<span className="command-reference-name">{selectedCommand.label}</span>
+							<button
+								type="button"
+								className="file-reference-remove"
+								aria-label={`移除 Command ${selectedCommand.label}`}
+								title="移除"
+								onClick={onRemoveCommand}
+							>
+								&times;
+							</button>
+						</span>
 					</div>
 				)}
 				{selectedSkills.length > 0 && (
@@ -628,7 +665,7 @@ export function MessageInput({
 								type="button"
 								id="sendBtn"
 								className="btn btn-icon"
-								disabled={!currentSessionId || (!text.trim() && selectedFiles.length === 0 && selectedSkills.length === 0)}
+								disabled={!currentSessionId || (!text.trim() && selectedFiles.length === 0 && selectedSkills.length === 0 && !selectedCommand)}
 								title="发送 (Enter)"
 								aria-label="发送"
 								onClick={() => handleSend()}

@@ -10,8 +10,8 @@ import { FilePicker } from '../components/files/FilePicker';
 
 /** 斜杠命令候选数据。 */
 const slashCommands: FilteredSlashCommand[] = [
-	{ id: 'command.first', command: 'first', label: 'First', description: '', send: false, groupLabel: '基础命令' },
-	{ id: 'command.second', command: 'second', label: 'Second', description: '', send: false, groupLabel: '基础命令' },
+	{ id: 'command.first', command: 'first', label: 'First', description: '', send: false, kind: 'command', groupLabel: '基础命令' },
+	{ id: 'command.second', command: 'second', label: 'Second', description: '', send: false, kind: 'command', groupLabel: '基础命令' },
 ];
 
 /** 文件候选数据。 */
