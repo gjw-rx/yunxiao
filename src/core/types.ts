@@ -47,6 +47,10 @@ export interface ToolResultMetadata {
 	readonly retryable?: boolean;
 	/** 结果在本地或云端因预算被裁剪。 */
 	readonly truncated?: boolean;
+	/** 文件读取结果是否复用了当前轮已加载的内容。 */
+	readonly reused?: boolean;
+	/** 结果是否为工具自行保证连续区间的分页内容。 */
+	readonly paginated?: boolean;
 	/** 结果中的高置信度敏感值已被脱敏。 */
 	readonly redacted?: boolean;
 	/** 本地执行已开始但结果未确认，禁止自动重放。 */

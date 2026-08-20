@@ -23,6 +23,13 @@ import type {
 	McpServerConfigView,
 	McpSettingsSnapshot,
 } from '../mcp/types';
+import type { SessionPlanState, PlanStage } from '../memory/planTypes';
+import type { UsageGranularity, TokenUsageStatsResult } from '../memory/tokenUsageStats';
+import type { ReasoningLevel } from '../llm/types';
+
+export type { SessionPlanState, PlanStage };
+export type { UsageGranularity, TokenUsageStatsResult };
+export type { ReasoningLevel };
 
 export type {
 	McpServerView,
@@ -113,6 +120,8 @@ export interface ModelPickerItem {
 	readonly provider: string;
 	/** 是否为当前默认模型。 */
 	readonly isDefault: boolean;
+	/** 该模型记忆的推理强度三档（缺失时未显式设置）。 */
+	readonly reasoningEffort?: ReasoningLevel;
 }
 
 /** 设置页提交的模型配置（API Key 可选：非空时覆盖 SecretStorage，空/缺省保持现状）。 */
@@ -160,7 +169,7 @@ export interface SlashCommand {
 	/** true=选中即发送；false=回填输入框由用户编辑后发送 */
 	readonly send: boolean;
 	/** 可选特殊动作：直接触发扩展侧命令而非发消息 */
-	readonly action?: 'newSession' | 'stopStream' | 'switchModel' | 'compactContext';
+	readonly action?: 'newSession' | 'stopStream' | 'switchModel' | 'compactContext' | 'planMode';
 }
 
 /** 斜杠命令分组。 */
@@ -209,6 +218,8 @@ export interface HistoryEntry {
 	readonly toolCalls?: readonly { id: string; name: string; arguments: string }[];
 	/** tool 消息关联的工具调用 ID */
 	readonly toolCallId?: string;
+	/** tool 消息是否复用了当前运行中此前已加载的数据。 */
+	readonly reused?: boolean;
 	/** assistant 消息的 token 账快照（真实 usage + 四类拆分） */
 	readonly tokenUsage?: {
 		readonly prompt_tokens: number;
@@ -224,6 +235,12 @@ export interface HistoryEntry {
 		readonly user_input: number;
 		readonly context: number;
 		readonly source: string;
+		/** 实际调用 Provider 标识（如 "openai"）；旧归档缺失时用于归入"未知模型" */
+		readonly provider_id?: string;
+		/** 实际调用模型标识（如 "gpt-4o-mini"）；旧归档缺失时用于归入"未知模型" */
+		readonly model_id?: string;
+		/** 调用当时的非敏感模型展示名（仅用于历史显示，不含鉴权信息） */
+		readonly model_label?: string;
 	};
 	/** user 消息的输入 token 分摊值（估算） */
 	readonly inputTokens?: number;
@@ -282,6 +299,12 @@ export interface TokenUsageDetail {
 	readonly no_cache_tokens?: number;
 	readonly cache_read_tokens?: number;
 	readonly cache_write_tokens?: number;
+	/** 实际调用 Provider 标识（如 "openai"）；旧归档缺失时用于归入"未知模型" */
+	readonly provider_id?: string;
+	/** 实际调用模型标识（如 "gpt-4o-mini"）；旧归档缺失时用于归入"未知模型" */
+	readonly model_id?: string;
+	/** 调用当时的非敏感模型展示名（仅用于历史显示，不含鉴权信息） */
+	readonly model_label?: string;
 }
 
 /** 会话级 token 累计 payload（sessionTokenUsage 事件）。 */
@@ -346,6 +369,8 @@ export interface ToolEntry {
 	readonly args?: unknown;
 	readonly output?: unknown;
 	readonly error?: string;
+	/** 当前工具结果是否复用了本轮此前已加载的数据。 */
+	readonly reused?: boolean;
 	/** 详情是否展开 */
 	readonly expanded: boolean;
 }
@@ -367,6 +392,10 @@ export interface ApprovalEntry {
 export interface ModelInfoMessage {
 	readonly command: 'modelInfo';
 	readonly model: string;
+	/** 当前默认模型 ID（供弹层标识当前模型）。 */
+	readonly modelId?: string;
+	/** 当前模型记忆的推理强度三档（缺失时未显式设置）。 */
+	readonly reasoningEffort?: ReasoningLevel;
 }
 
 /** 宿主同步当前工作区审批模式。 */
@@ -443,6 +472,8 @@ export interface ToolStateMessage {
 	readonly error?: string;
 	readonly args?: unknown;
 	readonly output?: unknown;
+	/** 当前工具结果是否复用了本轮此前已加载的数据。 */
+	readonly reused?: boolean;
 }
 
 /** Diff 结果（code_edit 成功且含 diff 数据时额外发送）。 */
@@ -485,6 +516,8 @@ export interface ToolResultMessage {
 	readonly status: string;
 	readonly result?: unknown;
 	readonly error?: string;
+	/** 当前工具结果是否复用了本轮此前已加载的数据。 */
+	readonly reused?: boolean;
 }
 
 /** 思考文本增量。 */
@@ -519,6 +552,16 @@ export interface TodoStateMessage {
 	readonly snapshot: TodoSnapshot;
 	/** 当前任务状态汇总。 */
 	readonly summary: TodoSummary;
+}
+
+/** 宿主推送的会话 Plan 模式状态（初始化/切换会话/加载历史/状态实时变化时回推）。 */
+export interface PlanModeStateMessage {
+	/** 消息命令名。 */
+	readonly command: 'planModeState';
+	/** 所属会话 ID（前端据此忽略非当前会话的实时事件）。 */
+	readonly sessionId: string;
+	/** 会话 Plan 状态（阶段 + 草案标记）。 */
+	readonly state: SessionPlanState;
 }
 
 /** 扩展侧触发新建会话（工具栏按钮）。 */
@@ -658,6 +701,20 @@ export interface HooksSnapshotMessage {
 	readonly rtk?: RtkStatusView;
 }
 
+/** 设置页使用情况统计快照（响应 requestUsageStats，携带标准化粒度和区间）。 */
+export interface UsageStatsMessage {
+	readonly command: 'usageStats';
+	/** 统计结果（粒度、起止区间、总量与模型明细；partial 表示部分归档不可读）。 */
+	readonly payload: TokenUsageStatsResult;
+}
+
+/** 设置页使用情况请求的有界错误（仅整体失败时发送，不携带敏感信息）。 */
+export interface UsageStatsErrorMessage {
+	readonly command: 'usageStatsError';
+	/** 可直接展示的中文错误消息。 */
+	readonly message: string;
+}
+
 /** 扩展运行时初始化状态。 */
 export type RuntimeStatus = 'initializing' | 'ready' | 'failed';
 
@@ -694,6 +751,7 @@ export type HostToWebviewMessage =
 	| PlanMessage
 	| HistoryLoadedMessage
 	| TodoStateMessage
+	| PlanModeStateMessage
 	| TriggerNewSessionMessage
 	| ApprovalRequestMessage
 	| WorkspaceFilesMessage
@@ -709,7 +767,9 @@ export type HostToWebviewMessage =
 	| McpOperationAcceptedMessage
 	| McpSettingsErrorMessage
 	| HooksSnapshotMessage
-	| HooksTestResultMessage;
+	| HooksTestResultMessage
+	| UsageStatsMessage
+	| UsageStatsErrorMessage;
 
 // ── Webview → Host 消息 ──
 
@@ -741,6 +801,30 @@ export interface SendMessageMessage {
 /** 停止当前流式回复。 */
 export interface StopStreamMessage {
 	readonly command: 'stopStream';
+	readonly sessionId: string;
+}
+
+/** 进入 Plan 模式（宿主动作，不发送聊天消息）。 */
+export interface EnterPlanModeMessage {
+	readonly command: 'enterPlanMode';
+	readonly sessionId: string;
+}
+
+/** 继续规划（review → planning，保留当前草案）。 */
+export interface ContinuePlanningMessage {
+	readonly command: 'continuePlanning';
+	readonly sessionId: string;
+}
+
+/** 退出 Plan 模式（回到 normal；按草案标记决定是否清空草案）。 */
+export interface ExitPlanModeMessage {
+	readonly command: 'exitPlanMode';
+	readonly sessionId: string;
+}
+
+/** 确认执行计划（review → executing 并启动同会话隐藏执行指令）。 */
+export interface ConfirmExecutionMessage {
+	readonly command: 'confirmExecution';
 	readonly sessionId: string;
 }
 
@@ -862,6 +946,15 @@ export interface RequestModelPickerMessage {
 export interface SelectModelMessage {
 	readonly command: 'selectModel';
 	readonly modelId: string;
+}
+
+/** 从对话输入框模型配置弹层为当前模型提交推理强度三档。 */
+export interface SelectReasoningLevelMessage {
+	readonly command: 'selectReasoningLevel';
+	/** 当前默认模型 ID（宿主须重新校验其仍是当前默认）。 */
+	readonly modelId: string;
+	/** 推理强度三档（low/medium/high）。 */
+	readonly level: ReasoningLevel;
 }
 
 /** 设置页请求模型配置快照（挂载时发送）。 */
@@ -986,6 +1079,15 @@ export interface TestRtkRewriteMessage {
 	readonly command: 'testRtkRewrite';
 }
 
+/** 设置页使用情况请求指定粒度与参考日期的统计快照（进入该分类或筛选变化时发送）。 */
+export interface RequestUsageStatsMessage {
+	readonly command: 'requestUsageStats';
+	/** 统计粒度：day（自然日）/ week（周一自然周）/ month（自然月）。 */
+	readonly granularity: UsageGranularity;
+	/** 参考日期（ISO 日期字符串，如 2026-08-15；宿主按本机时区确定所属区间）。 */
+	readonly reference: string;
+}
+
 /** Webview → Host 判别联合。 */
 export type WebviewToHostMessage =
 	| WebviewReadyMessage
@@ -993,6 +1095,10 @@ export type WebviewToHostMessage =
 	| CreateSessionMessage
 	| SendMessageMessage
 	| StopStreamMessage
+	| EnterPlanModeMessage
+	| ContinuePlanningMessage
+	| ExitPlanModeMessage
+	| ConfirmExecutionMessage
 	| LoadHistoryMessage
 	| ApprovalDecisionMessage
 	| OpenChangeReviewMessage
@@ -1012,6 +1118,7 @@ export type WebviewToHostMessage =
 	| CompactContextMessage
 	| RequestModelPickerMessage
 	| SelectModelMessage
+	| SelectReasoningLevelMessage
 	| RequestModelSettingsMessage
 	| SaveModelSettingsMessage
 	| SetDefaultModelMessage
@@ -1029,7 +1136,8 @@ export type WebviewToHostMessage =
 	| RequestHooksSnapshotMessage
 	| SaveHooksConfigMessage
 	| DetectRtkMessage
-	| TestRtkRewriteMessage;
+	| TestRtkRewriteMessage
+	| RequestUsageStatsMessage;
 
 /** 任一方向消息的命令名（用于日志与调试）。 */
 export type MessageCommand = HostToWebviewMessage['command'] | WebviewToHostMessage['command'];

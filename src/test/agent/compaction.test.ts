@@ -213,10 +213,11 @@ describe('上下文压缩检查点', () => {
 
 	it('二次压缩以最新检查点的摘要作为增量输入', async () => {
 		const store = new MessageStore();
+		store.append('incremental', { role: 'user', content: '第一次保留的上下文'.repeat(20) });
 		store.append('incremental', {
 			role: 'compaction',
 			summary: '已有摘要',
-			recentContext: [userMessage('第一次保留的上下文'.repeat(20), 0)],
+			firstKeptSeq: 0,
 		});
 		store.append('incremental', { role: 'assistant', content: '新的进展'.repeat(20) });
 
@@ -297,7 +298,8 @@ describe('上下文压缩检查点任务上下文', () => {
 
 	it('旧检查点（无任务上下文）可正常重建有效历史', async () => {
 		const store = new MessageStore();
-		store.append('legacy-cp', { role: 'compaction', summary: '旧摘要', recentContext: [userMessage('保留上下文', 0)] });
+		// 旧格式检查点（recentContext 副本）按兼容逻辑展开
+		store.append('legacy-cp', { role: 'compaction', summary: '旧摘要', recentContext: [userMessage('保留上下文', 0)] } as unknown as Parameters<MessageStore['append']>[1]);
 		store.append('legacy-cp', { role: 'user', content: '后续消息' });
 
 		const effective = store.getEffectiveHistory('legacy-cp');
@@ -313,10 +315,12 @@ describe('上下文压缩检查点任务上下文', () => {
 
 	it('历史重建时检查点任务上下文与摘要相邻提供给模型', async () => {
 		const store = new MessageStore();
+		// 新格式检查点：firstKeptSeq=0 保留 seq>=0 的原文（保留上下文 + 后续消息）
+		store.append('cp-rebuild', { role: 'user', content: '保留上下文' });
 		store.append('cp-rebuild', {
 			role: 'compaction',
 			summary: '新摘要',
-			recentContext: [userMessage('保留上下文', 0)],
+			firstKeptSeq: 0,
 			todoContext: '当前会话的任务进度：\n- [进行中] implement. 实现任务面板',
 		});
 		store.append('cp-rebuild', { role: 'user', content: '后续消息' });

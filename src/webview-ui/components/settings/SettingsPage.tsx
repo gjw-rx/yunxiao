@@ -19,8 +19,11 @@ import type {
 	SyncSource,
 	HooksConfigView,
 	RtkStatusView,
+	UsageGranularity,
+	TokenUsageStatsResult,
 } from '../../protocol';
 import { MCP_SECRET_PLACEHOLDER } from '../../protocol';
+import { formatNumber } from '../../utils/format';
 
 /** 设置分类标识。 */
 type SettingsSection = 'model' | 'skill' | 'mcp' | 'hooks' | 'usage';
@@ -49,6 +52,19 @@ const SOURCE_OPTIONS: readonly { value: SyncSource; label: string }[] = [
 	{ value: 'agent', label: 'Agent' },
 	{ value: 'none', label: '不加载' },
 ];
+
+/** 将 Date 格式化为本地 YYYY-MM-DD。 @param d 日期。 @returns 本地日期字符串。 */
+function toLocalISODate(d: Date): string {
+	const y = d.getFullYear();
+	const m = String(d.getMonth() + 1).padStart(2, '0');
+	const day = String(d.getDate()).padStart(2, '0');
+	return `${y}-${m}-${day}`;
+}
+
+/** 返回今天的本地 YYYY-MM-DD。 @returns 今天日期字符串。 */
+function todayLocalISO(): string {
+	return toLocalISODate(new Date());
+}
 
 /** 设置分类图标。 */
 function SettingsSectionIcon({ section }: { section: SettingsSection }): JSX.Element {
@@ -144,6 +160,22 @@ function ModelSettings({
 		setApiKey('');
 	};
 
+	/** 切换模型服务：新建模型时若目标服务有专属默认地址且当前地址为空或仍是另一服务的默认地址，则自动填充。 @param nextProvider 目标 Provider ID。 @returns 无返回值。 */
+	const handleProviderChange = (nextProvider: string): void => {
+		setProvider(nextProvider);
+		if (nextProvider === 'anthropic') {
+			if (!baseURL || baseURL === 'https://api.openai.com/v1') {
+				setBaseURL('https://api.anthropic.com/v1');
+			}
+			// Anthropic 不支持 legacy 运行时，切换服务时一并纠正
+			if (runtime === 'legacy') {
+				setRuntime('ai-sdk');
+			}
+		} else if (nextProvider === 'openai' && baseURL === 'https://api.anthropic.com/v1') {
+			setBaseURL('https://api.openai.com/v1');
+		}
+	};
+
 	const handleSave = (): void => {
 		onSave({
 			id: selectedProfile?.id,
@@ -177,7 +209,7 @@ function ModelSettings({
 						<div className="settings-model-table-head" role="row"><span>模型</span><span>服务商</span><span>状态</span><span>操作</span></div>
 						{profiles.map((profile) => <div className={`settings-model-table-row${editingModelId === profile.id ? ' selected' : ''}`} role="row" key={profile.id}>
 							<div><strong>{profile.model}</strong>{profile.isDefault ? <span className="settings-default-tag">当前默认</span> : null}</div>
-							<span>{profile.provider === 'openai' ? 'OpenAI Compatible' : profile.provider}</span>
+							<span>{profile.provider === 'openai' ? 'OpenAI Compatible' : profile.provider === 'anthropic' ? 'Anthropic Messages' : profile.provider}</span>
 							<span className={profile.enabled ? 'settings-enabled' : 'settings-disabled'}>{profile.enabled ? '已启用' : '已停用'}</span>
 							<div className="settings-model-actions">
 								<button type="button" onClick={() => handleEdit(profile.id)} disabled={saving}>编辑</button>
@@ -193,29 +225,30 @@ function ModelSettings({
 				<div className="settings-card-header">
 					<div>
 						<h2>连接设置</h2>
-						<p>连接 OpenAI 兼容的模型服务。</p>
+						<p>连接 OpenAI 兼容或 Anthropic 原生 Messages 模型服务。</p>
 					</div>
-					<span className="settings-status-badge">{provider === 'openai' ? 'OpenAI Compatible' : '未选择服务'}</span>
+					<span className="settings-status-badge">{provider === 'openai' ? 'OpenAI Compatible' : provider === 'anthropic' ? 'Anthropic Messages' : '未选择服务'}</span>
 				</div>
 				<div className="settings-form-section">
 					<div className="settings-form-grid">
 						<label className="settings-field">
 							<span className="settings-field-label">模型服务</span>
-							<select value={provider} onChange={(e) => setProvider(e.target.value)} aria-label="模型服务">
+							<select value={provider} onChange={(e) => handleProviderChange(e.target.value)} aria-label="模型服务">
 								<option value="" disabled>请选择模型服务</option>
 								<option value="openai">OpenAI 兼容服务</option>
+								<option value="anthropic">Anthropic（Claude 原生 Messages API）</option>
 							</select>
-							<span className="settings-field-help">当前支持 OpenAI 兼容协议。</span>
+							<span className="settings-field-help">{provider === 'anthropic' ? '通过 Anthropic 官方 Messages API 调用 Claude。' : '当前支持 OpenAI 兼容协议。'}</span>
 						</label>
 						<label className="settings-field">
 							<span className="settings-field-label">模型名称</span>
-							<input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="如 gpt-4o-mini" aria-label="默认模型" />
+							<input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder={provider === 'anthropic' ? '如 claude-3-5-sonnet-latest' : '如 gpt-4o-mini'} aria-label="默认模型" />
 							<span className="settings-field-help">{selectedProfile?.isDefault || !model?.models ? '当前用于后续新建会话。' : '保存后可在列表中设为默认模型。'}</span>
 						</label>
 						<label className="settings-field settings-field-wide">
 							<span className="settings-field-label">API 地址</span>
-							<input value={baseURL} onChange={(e) => setBaseURL(e.target.value)} placeholder="https://api.openai.com/v1" aria-label="API 地址" />
-							<span className="settings-field-help">填写服务根地址，无需附加 chat/completions。</span>
+							<input value={baseURL} onChange={(e) => setBaseURL(e.target.value)} placeholder={provider === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1'} aria-label="API 地址" />
+							<span className="settings-field-help">{provider === 'anthropic' ? '留空则使用 Anthropic 官方地址，也可填写兼容代理地址。' : '填写服务根地址，无需附加 chat/completions。'}</span>
 						</label>
 						<label className="settings-field settings-field-wide">
 							<span className="settings-field-label">API Key{apiKeyConfigured ? '（已配置，输入新值可更新）' : '（未配置）'}</span>
@@ -259,9 +292,9 @@ function ModelSettings({
 							<select value={runtime} onChange={(e) => setRuntime(e.target.value as '' | 'ai-sdk' | 'legacy')} aria-label="模型运行时">
 								<option value="" disabled>请选择模型运行时</option>
 								<option value="ai-sdk">AI SDK</option>
-								<option value="legacy">兼容模式</option>
+								<option value="legacy" disabled={provider === 'anthropic'}>兼容模式</option>
 							</select>
-							<span className="settings-field-help">兼容模式仅用于旧服务适配。</span>
+							<span className="settings-field-help">{provider === 'anthropic' ? 'Anthropic 仅支持 AI SDK 运行时。' : '兼容模式仅用于旧服务适配。'}</span>
 						</label>
 					</div>
 				</div>
@@ -418,19 +451,121 @@ function SkillSettings({
 	);
 }
 
-/** 使用情况分类静态内容（明确不代表真实统计）。 */
-function UsageSettings(): JSX.Element {
+/** 使用情况分类：受控视图，按粒度与参考周期向宿主请求统计并展示汇总与模型明细。 */
+function UsageSettings({
+	stats,
+	loading,
+	error,
+	granularity,
+	reference,
+	onGranularityChange,
+	onNavigate,
+	onRetry,
+}: {
+	/** 最近一次统计结果（未加载完成前为 null） */
+	stats: TokenUsageStatsResult | null;
+	/** 是否正在请求中 */
+	loading: boolean;
+	/** 整体失败的有界错误消息（可重试） */
+	error: string | null;
+	/** 当前统计粒度 */
+	granularity: UsageGranularity;
+	/** 当前参考日期（本地 YYYY-MM-DD） */
+	reference: string;
+	/** 切换粒度的回调 */
+	onGranularityChange: (granularity: UsageGranularity) => void;
+	/** 前后周期导航回调（prev=上一周期，next=下一周期） */
+	onNavigate: (direction: 'prev' | 'next') => void;
+	/** 失败后重试当前请求的回调 */
+	onRetry: () => void;
+}): JSX.Element {
+	const granularityLabel = granularity === 'day' ? '自然日' : granularity === 'week' ? '自然周（周一起）' : '自然月';
+	const isEmpty = stats !== null && !loading && stats.total_tokens === 0 && stats.models.length === 0;
+	const hasStats = stats !== null && !loading && !error;
+	// UI 按 total 降序渲染模型明细（宿主已排序，此处兜底保证展示顺序稳定）
+	const sortedModels = stats ? [...stats.models].sort((a, b) => b.total_tokens - a.total_tokens) : [];
+	const rangeText = stats
+		? `${new Date(stats.start).toLocaleDateString('zh-CN')} 至 ${new Date(stats.end).toLocaleDateString('zh-CN')}`
+		: `${new Date(`${reference}T00:00:00`).toLocaleDateString('zh-CN')} 起`;
+
 	return (
 		<>
 			<div className="settings-heading">
 				<span className="settings-eyebrow">透明度</span>
 				<h1>使用情况</h1>
-				<p>用量统计会在接入真实数据后显示在这里。</p>
+				<p>当前工作区本地已记录 token 的模型用量（实际已落账调用，回滚不撤销消耗；不含费用或云端账户统计）。</p>
 			</div>
-			<section className="settings-card settings-empty-card" aria-label="使用情况">
-				<div className="settings-empty-icon"><SettingsSectionIcon section="usage" /></div>
-				<strong>使用情况数据将在后续版本接入</strong>
-				<span>本页不会读取或展示真实 token、费用或账户统计。</span>
+			<section className="settings-card settings-usage-card" aria-label="使用情况统计">
+				<div className="settings-card-header settings-card-header-list">
+					<div>
+						<h2>用量统计</h2>
+						<p>按 {granularityLabel} 聚合，区间左闭右开。</p>
+					</div>
+					<span className="settings-status-badge">本地数据</span>
+				</div>
+				<div className="settings-usage-toolbar">
+					<div className="settings-radio-group" role="radiogroup" aria-label="统计粒度">
+						{(['day', 'week', 'month'] as const).map((value) => (
+							<label key={value} className="settings-radio">
+								<input
+									type="radio"
+									name="usageGranularity"
+									value={value}
+									checked={granularity === value}
+									disabled={loading}
+									onChange={() => onGranularityChange(value)}
+								/>
+								<span>{value === 'day' ? '日' : value === 'week' ? '周' : '月'}</span>
+							</label>
+						))}
+					</div>
+					<div className="settings-usage-nav">
+						<button type="button" onClick={() => onNavigate('prev')} disabled={loading} aria-label="上一周期">‹</button>
+						<span>{rangeText}</span>
+						<button type="button" onClick={() => onNavigate('next')} disabled={loading} aria-label="下一周期">›</button>
+					</div>
+				</div>
+				<div className="settings-card-divider" />
+				<div className="settings-usage-body">
+					{loading ? (
+						<div className="settings-usage-status" role="status">正在统计当前工作区用量…</div>
+					) : error ? (
+						<div className="settings-usage-status settings-usage-error" role="alert">
+							<span>{error}</span>
+							<button type="button" className="settings-save-btn" onClick={onRetry}>重试</button>
+						</div>
+					) : isEmpty ? (
+						<div className="settings-empty-card">
+							<strong>该时段暂无已记录 token 用量</strong>
+							<span>所选时间段内没有已落账的模型调用；切换粒度或时间段后重试。</span>
+						</div>
+					) : hasStats ? (
+						<>
+							{stats.partial ? (
+								<div className="settings-usage-status settings-usage-warning" role="status">
+									部分会话归档无法读取，以下为可用数据（可能不完整）。
+								</div>
+							) : null}
+							<div className="settings-usage-summary" aria-label="用量摘要">
+								<div className="settings-usage-total"><span>总量</span><strong>{formatNumber(stats.total_tokens)}</strong></div>
+								<div><span>输入</span><strong>{formatNumber(stats.prompt_tokens)}</strong></div>
+								<div><span>输出</span><strong>{formatNumber(stats.completion_tokens)}</strong></div>
+							</div>
+							<div className="settings-usage-table" role="table" aria-label="模型用量明细">
+								<div className="settings-usage-table-head" role="row"><span>模型</span><span>输入</span><span>输出</span><span>总量</span><span>缓存读取（输入侧）</span></div>
+								{sortedModels.map((row) => (
+									<div className="settings-usage-table-row" role="row" key={`${row.provider_id}/${row.model_id}`}>
+										<div><strong>{row.model_label}</strong>{row.provider_id !== 'unknown' ? <span className="settings-default-tag">{row.provider_id}</span> : null}</div>
+										<span>{formatNumber(row.prompt_tokens)}</span>
+										<span>{formatNumber(row.completion_tokens)}</span>
+										<span><strong>{formatNumber(row.total_tokens)}</strong></span>
+										<span>{row.cache_read_tokens > 0 ? formatNumber(row.cache_read_tokens) : '--'}</span>
+									</div>
+								))}
+							</div>
+						</>
+					) : null}
+				</div>
 			</section>
 		</>
 	);
@@ -953,6 +1088,14 @@ function SettingsContent({
 	onSaveHooks,
 	onDetectRtk,
 	onTestRtkRewrite,
+	usageStats,
+	usageLoading,
+	usageError,
+	usageGranularity,
+	usageReference,
+	onUsageGranularityChange,
+	onUsageNavigate,
+	onUsageRetry,
 }: {
 	section: SettingsSection;
 	model: ModelSettingsView | null;
@@ -991,6 +1134,22 @@ function SettingsContent({
 	onDetectRtk: () => void;
 	/** 固定样例改写测试回调。 */
 	onTestRtkRewrite: () => void;
+	/** 使用情况统计结果（null=未加载完成）。 */
+	usageStats: TokenUsageStatsResult | null;
+	/** 使用情况是否请求中。 */
+	usageLoading: boolean;
+	/** 使用情况整体失败消息（null=无错误）。 */
+	usageError: string | null;
+	/** 使用情况当前粒度。 */
+	usageGranularity: UsageGranularity;
+	/** 使用情况参考日期（本地 YYYY-MM-DD）。 */
+	usageReference: string;
+	/** 切换使用情况粒度的回调。 */
+	onUsageGranularityChange: (granularity: UsageGranularity) => void;
+	/** 使用情况前后周期导航回调。 */
+	onUsageNavigate: (direction: 'prev' | 'next') => void;
+	/** 使用情况失败重试回调。 */
+	onUsageRetry: () => void;
 }): JSX.Element {
 	if (section === 'skill') {
 		return (
@@ -1033,7 +1192,18 @@ function SettingsContent({
 		);
 	}
 	if (section === 'usage') {
-		return <UsageSettings />;
+		return (
+			<UsageSettings
+				stats={usageStats}
+				loading={usageLoading}
+				error={usageError}
+				granularity={usageGranularity}
+				reference={usageReference}
+				onGranularityChange={onUsageGranularityChange}
+				onNavigate={onUsageNavigate}
+				onRetry={onUsageRetry}
+			/>
+		);
 	}
 	return <ModelSettings model={model} saving={saving} onSave={onSaveModel} onSetDefault={onSetDefaultModel} onSetEnabled={onSetModelEnabled} onDelete={onDeleteModel} />;
 }
@@ -1061,6 +1231,14 @@ export function SettingsPage(): JSX.Element {
 	const hooksInitialSnapshotPendingRef = useRef(true);
 	// 当前待确认的异步动作：install=安装后等待新快照，source=来源切换后等待新快照（用 ref 供订阅闭包读取最新值）
 	const pendingActionRef = useRef<'archive' | 'source' | 'directories' | 'modelAction' | null>(null);
+	// ── 使用情况状态（与其他分类草稿隔离：usageStats/usageError 只更新自身，不清空模型/Skill/MCP/Hooks 草稿）──
+	const [usageStats, setUsageStats] = useState<TokenUsageStatsResult | null>(null);
+	const [usageLoading, setUsageLoading] = useState(false);
+	const [usageError, setUsageError] = useState<string | null>(null);
+	const [usageGranularity, setUsageGranularity] = useState<UsageGranularity>('day');
+	const [usageReference, setUsageReference] = useState(() => todayLocalISO());
+	// 是否已发起过首次 usage 请求（进入"使用情况"分类仅请求一次当前自然日，之后由用户筛选变化触发）
+	const usageRequestedRef = useRef(false);
 
 	// 成功反馈只作短暂提示；错误反馈保留，确保用户有时间查看并处理。
 	useEffect(() => {
@@ -1143,9 +1321,67 @@ export function SettingsPage(): JSX.Element {
 					setHooksSaving(false);
 					setHooksTestResult({ ...(msg.rewritten ? { rewritten: msg.rewritten } : {}), ...(msg.error ? { error: msg.error } : {}) });
 					break;
+				case 'usageStats':
+					// 状态推送只更新使用情况快照，不影响模型/Skill/MCP/Hooks 草稿
+					setUsageStats(msg.payload);
+					setUsageLoading(false);
+					setUsageError(null);
+					break;
+				case 'usageStatsError':
+					setUsageLoading(false);
+					setUsageError(msg.message);
+					break;
 			}
 		});
 	}, []);
+
+	// 首次进入"使用情况"分类时请求当前自然日；之后由用户切换粒度/周期触发，不在页面挂载时预取。
+	useEffect(() => {
+		if (activeSection !== 'usage' || usageRequestedRef.current) {
+			return;
+		}
+		usageRequestedRef.current = true;
+		const reference = todayLocalISO();
+		setUsageReference(reference);
+		setUsageLoading(true);
+		setUsageError(null);
+		post({ command: 'requestUsageStats', granularity: 'day', reference });
+	}, [activeSection]);
+
+	/** 发起一次使用情况统计请求。 @param granularity 粒度。 @param reference 参考日期（本地 YYYY-MM-DD）。 @returns 无返回值。 */
+	const requestUsage = (granularity: UsageGranularity, reference: string): void => {
+		setUsageReference(reference);
+		setUsageGranularity(granularity);
+		setUsageLoading(true);
+		setUsageError(null);
+		post({ command: 'requestUsageStats', granularity, reference });
+	};
+
+	/** 切换使用情况粒度（保留当前参考日期所在周期）。 @param granularity 目标粒度。 @returns 无返回值。 */
+	const handleUsageGranularityChange = (granularity: UsageGranularity): void => {
+		if (granularity === usageGranularity) {
+			return;
+		}
+		requestUsage(granularity, usageReference);
+	};
+
+	/** 使用情况前后周期导航。 @param direction prev=上一周期，next=下一周期。 @returns 无返回值。 */
+	const handleUsageNavigate = (direction: 'prev' | 'next'): void => {
+		const base = new Date(`${usageReference}T00:00:00`);
+		const delta = usageGranularity === 'day' ? 1 : usageGranularity === 'week' ? 7 : 0;
+		let next: Date;
+		if (usageGranularity === 'month') {
+			next = new Date(base.getFullYear(), base.getMonth() + (direction === 'prev' ? -1 : 1), 1);
+		} else {
+			next = new Date(base.getFullYear(), base.getMonth(), base.getDate() + (direction === 'prev' ? -delta : delta));
+		}
+		requestUsage(usageGranularity, toLocalISODate(next));
+	};
+
+	/** 使用情况请求失败后重试当前粒度与参考日期。 @returns 无返回值。 */
+	const handleUsageRetry = (): void => {
+		requestUsage(usageGranularity, usageReference);
+	};
 
 	const handleSaveModel = (input: ModelSettingsInput): void => {
 		setFeedback(null);
@@ -1304,6 +1540,14 @@ export function SettingsPage(): JSX.Element {
 						onSaveHooks={handleSaveHooks}
 						onDetectRtk={handleDetectRtk}
 						onTestRtkRewrite={handleTestRtkRewrite}
+						usageStats={usageStats}
+						usageLoading={usageLoading}
+						usageError={usageError}
+						usageGranularity={usageGranularity}
+						usageReference={usageReference}
+						onUsageGranularityChange={handleUsageGranularityChange}
+						onUsageNavigate={handleUsageNavigate}
+						onUsageRetry={handleUsageRetry}
 					/>
 				</div>
 			</main>

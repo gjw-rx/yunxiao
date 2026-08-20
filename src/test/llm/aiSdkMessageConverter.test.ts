@@ -74,6 +74,42 @@ describe('convertToModelMessages', () => {
 		assert.deepStrictEqual(toolMsg.content[0].output, { type: 'text', value: '文件内容' });
 	});
 
+	it('tool 消息携带 toolName 时原样传给 tool-result part（Anthropic tool_result 校验需要）', () => {
+		const messages: LLMMessage[] = [{ role: 'tool', toolCallId: 'call_1', content: '文件内容', toolName: 'fs_read_file' }];
+		const converted = convertToModelMessages(messages);
+		const toolMsg = converted[0] as { content: Array<{ toolName: string }> };
+		assert.strictEqual(toolMsg.content[0].toolName, 'fs_read_file');
+	});
+
+	it('tool 消息缺失 toolName 时兜底为空串（兼容 OpenAI-compatible，忽略该字段）', () => {
+		const messages: LLMMessage[] = [{ role: 'tool', toolCallId: 'call_1', content: '文件内容' }];
+		const converted = convertToModelMessages(messages);
+		const toolMsg = converted[0] as { content: Array<{ toolName: string }> };
+		assert.strictEqual(toolMsg.content[0].toolName, '');
+	});
+
+	it('并行同名 tool call 的两个 tool result 各自携带独立调用 ID 与 toolName', () => {
+		const assistant: LLMMessage = {
+			role: 'assistant',
+			content: '',
+			toolCalls: [
+				{ id: 'call_1', name: 'git_status', arguments: '{}' },
+				{ id: 'call_2', name: 'git_status', arguments: '{}' },
+			],
+		};
+		const results: LLMMessage[] = [
+			{ role: 'tool', toolCallId: 'call_1', content: 'result1', toolName: 'git_status' },
+			{ role: 'tool', toolCallId: 'call_2', content: 'result2', toolName: 'git_status' },
+		];
+		const converted = convertToModelMessages([assistant, ...results]);
+		const first = converted[1] as { content: Array<{ toolCallId: string; toolName: string }> };
+		const second = converted[2] as { content: Array<{ toolCallId: string; toolName: string }> };
+		assert.strictEqual(first.content[0].toolCallId, 'call_1');
+		assert.strictEqual(second.content[0].toolCallId, 'call_2');
+		assert.strictEqual(first.content[0].toolName, 'git_status');
+		assert.strictEqual(second.content[0].toolName, 'git_status');
+	});
+
 	it('tool call arguments 非法 JSON 时 input 兜底为空对象', () => {
 		const messages: LLMMessage[] = [
 			{

@@ -104,6 +104,14 @@ describe('mapStreamPart', () => {
 		assert.strictEqual((events[0] as { reason: string }).reason, 'stop');
 	});
 
+	it('finish reason: error → 不产生任何事件（错误已由 error part 报告，不应再发成功 finish）', () => {
+		const events = mapStreamPart(
+			part('finish', { finishReason: 'error', totalUsage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } }),
+			{ usageEmitted: false },
+		);
+		assert.deepStrictEqual(events, [], 'error 收尾不应产生 finish 或 usage 事件');
+	});
+
 	it('error part → error 事件', () => {
 		const events = mapStreamPart(part('error', { error: new Error('boom') }), { usageEmitted: false });
 		assert.deepStrictEqual(events, [{ type: 'error', error: 'boom' }]);

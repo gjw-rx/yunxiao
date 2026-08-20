@@ -18,7 +18,7 @@ export function hostToAction(msg: HostToWebviewMessage): ChatAction | null {
 		case 'runtimeState':
 			return { type: 'runtimeState', status: msg.status, message: msg.message };
 		case 'modelInfo':
-			return { type: 'modelInfo', model: msg.model };
+			return { type: 'modelInfo', model: msg.model, modelId: msg.modelId, reasoningEffort: msg.reasoningEffort };
 		case 'approvalMode':
 			return { type: 'approvalMode', mode: msg.mode };
 		case 'modelPicker':
@@ -50,13 +50,14 @@ export function hostToAction(msg: HostToWebviewMessage): ChatAction | null {
 				error: msg.error,
 				args: msg.args,
 				output: msg.output,
+				reused: msg.reused,
 			};
 		case 'replyChangeSet':
 			return { type: 'replyChangeSet', changeSet: msg.changeSet };
 		case 'toolCall':
 			return { type: 'toolCall', callId: msg.call_id, tool: msg.tool, args: msg.args };
 		case 'toolResult':
-			return { type: 'toolResult', callId: msg.call_id, status: msg.status, result: msg.result, error: msg.error };
+			return { type: 'toolResult', callId: msg.call_id, status: msg.status, result: msg.result, error: msg.error, reused: msg.reused };
 		case 'thought':
 			return { type: 'thought', text: msg.text };
 		case 'progress':
@@ -67,6 +68,8 @@ export function hostToAction(msg: HostToWebviewMessage): ChatAction | null {
 			return { type: 'historyLoaded', messages: msg.messages };
 		case 'todoState':
 			return { type: 'todoState', snapshot: msg.snapshot, summary: msg.summary };
+		case 'planModeState':
+			return { type: 'planModeState', sessionId: msg.sessionId, state: msg.state };
 		case 'approvalRequest':
 			return {
 				type: 'approvalRequest',

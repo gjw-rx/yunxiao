@@ -117,6 +117,43 @@ export function App(): JSX.Element {
 		dispatchRef.current({ type: 'setSelectedSkills', skills: [...state.selectedSkills, skill] });
 	};
 
+	/** 切换 Plan 模式：normal 进入，planning/review 退出，executing 禁用。 */
+	const handleTogglePlanMode = (): void => {
+		const sessionId = state.currentSessionId;
+		if (!sessionId) {
+			return;
+		}
+		const stage = state.planMode?.stage ?? 'normal';
+		if (stage === 'executing') {
+			return;
+		}
+		post({
+			command: stage === 'normal' ? 'enterPlanMode' : 'exitPlanMode',
+			sessionId,
+		});
+	};
+
+	/** 执行计划（review → executing，携带当前 sessionId）。 */
+	const handleExecutePlan = (): void => {
+		if (state.currentSessionId) {
+			post({ command: 'confirmExecution', sessionId: state.currentSessionId });
+		}
+	};
+
+	/** 继续规划（review → planning，保留草案）。 */
+	const handleContinuePlanning = (): void => {
+		if (state.currentSessionId) {
+			post({ command: 'continuePlanning', sessionId: state.currentSessionId });
+		}
+	};
+
+	/** 退出规划（回到 normal，按草案标记清理）。 */
+	const handleExitPlan = (): void => {
+		if (state.currentSessionId) {
+			post({ command: 'exitPlanMode', sessionId: state.currentSessionId });
+		}
+	};
+
 	return (
 		<div className="app">
 			<SessionHeader
@@ -155,12 +192,22 @@ export function App(): JSX.Element {
 				onToggleTool={(callId) => dispatchRef.current({ type: 'toggleToolExpand', callId })}
 				onResolveApproval={(callId) => dispatchRef.current({ type: 'approvalResolved', callId })}
 			/>
-			<TodoPanel snapshot={state.todoSnapshot} summary={state.todoSummary} />
+			<TodoPanel
+				snapshot={state.todoSnapshot}
+				summary={state.todoSummary}
+				planStage={state.planMode?.stage}
+				sessionId={state.currentSessionId}
+				onExecute={handleExecutePlan}
+				onContinue={handleContinuePlanning}
+				onExit={handleExitPlan}
+			/>
 			<ErrorBar message={state.error} onClear={() => dispatchRef.current({ type: 'clearError' })} />
 			<MessageInput
 				currentSessionId={state.currentSessionId}
 				isStreaming={state.isStreaming}
 				modelName={state.modelName}
+				modelId={state.modelId}
+				reasoningEffort={state.reasoningEffort}
 				approvalMode={state.approvalMode}
 				modelProfiles={state.modelProfiles}
 				selectedFiles={state.selectedFiles}
@@ -178,6 +225,8 @@ export function App(): JSX.Element {
 				onAddFile={handleAddFile}
 				onAddSkill={handleAddSkill}
 				onSend={handleSend}
+				planStage={state.planMode?.stage}
+				onTogglePlan={handleTogglePlanMode}
 			/>
 		</div>
 	);

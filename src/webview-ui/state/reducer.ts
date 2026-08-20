@@ -23,6 +23,7 @@ import type {
 	TokenUsageDetail,
 	WorkspaceFile,
 } from '../protocol';
+import type { SessionPlanState } from '../../memory/planTypes';
 
 /** 消息流条目（扁平渲染顺序数组，按 turn 分组渲染）。 */
 export type MessageItem =
@@ -48,6 +49,10 @@ export interface ChatState {
 	isStreaming: boolean;
 	/** 模型名称 */
 	modelName: string;
+	/** 当前默认模型 ID（模型配置弹层标识当前模型）。 */
+	modelId?: string;
+	/** 当前模型记忆的推理强度三档（缺失时未显式设置）。 */
+	reasoningEffort?: 'low' | 'medium' | 'high';
 	/** 当前工作区工具审批模式。 */
 	approvalMode: ApprovalMode;
 	/** 已启用模型的选择弹窗候选项 */
@@ -70,6 +75,8 @@ export interface ChatState {
 	todoSnapshot: TodoSnapshot | null;
 	/** 当前会话的任务状态汇总。 */
 	todoSummary: TodoSummary | null;
+	/** 当前会话的 Plan 模式状态；未进入 Plan 模式（normal）时为 null。 */
+	planMode: SessionPlanState | null;
 	/** 消息流（含过程步骤与回复气泡，按渲染顺序） */
 	messages: MessageItem[];
 	/** 工具时间线条目：call_id → 条目 */
@@ -106,6 +113,7 @@ export const initialState: ChatState = {
 	sessionTokenUsage: null,
 	todoSnapshot: null,
 	todoSummary: null,
+	planMode: null,
 	messages: [],
 	toolEntries: {},
 	approvals: {},
@@ -165,8 +173,8 @@ export type ChatAction =
 	| { type: 'thought'; text: string }
 	| { type: 'plan'; steps: string[] }
 	| { type: 'toolCall'; callId: string; tool: string; args?: unknown }
-	| { type: 'toolState'; callId: string; tool: string; state: ToolState; error?: string; args?: unknown; output?: unknown }
-	| { type: 'toolResult'; callId: string; status: string; result?: unknown; error?: string }
+	| { type: 'toolState'; callId: string; tool: string; state: ToolState; error?: string; args?: unknown; output?: unknown; reused?: boolean }
+	| { type: 'toolResult'; callId: string; status: string; result?: unknown; error?: string; reused?: boolean }
 	| { type: 'replyChangeSet'; changeSet: ChangeSetReference }
 	| { type: 'approvalRequest'; callId: string; toolName: string; summary: string; filePath?: string }
 	| { type: 'approvalResolved'; callId: string }
@@ -175,9 +183,10 @@ export type ChatAction =
 	| { type: 'tokenUsage'; payload: { token_usage?: TokenUsageDetail } }
 	| { type: 'sessionTokenUsage'; payload: SessionTokenPayload }
 	| { type: 'todoState'; snapshot: TodoSnapshot; summary: TodoSummary }
+	| { type: 'planModeState'; sessionId: string; state: SessionPlanState }
 	| { type: 'historyLoaded'; messages: HistoryEntry[] }
 	| { type: 'workspaceFiles'; files: WorkspaceFile[] }
-	| { type: 'modelInfo'; model: string }
+	| { type: 'modelInfo'; model: string; modelId?: string; reasoningEffort?: 'low' | 'medium' | 'high' }
 	| { type: 'approvalMode'; mode: ApprovalMode }
 	| { type: 'modelPicker'; models: readonly ModelPickerItem[] }
 	| { type: 'slashCommands'; groups: SlashCommandGroup[] }
@@ -208,6 +217,7 @@ function resetConversation(state: ChatState): ChatState {
 		sessionTokenUsage: null,
 		todoSnapshot: null,
 		todoSummary: null,
+		planMode: null,
 	};
 }
 
@@ -265,7 +275,7 @@ function upsertToolEntry(
 	state: ChatState,
 	callId: string,
 	tool: string,
-	target: { state?: ToolState; error?: string; args?: unknown; output?: unknown }
+	target: { state?: ToolState; error?: string; args?: unknown; output?: unknown; reused?: boolean }
 ): ChatState {
 	const existing = state.toolEntries[callId];
 	const merged: ToolEntry = existing
@@ -276,6 +286,7 @@ function upsertToolEntry(
 				args: target.args !== undefined && target.args !== null ? target.args : existing.args,
 				output: target.output !== undefined && target.output !== null ? target.output : existing.output,
 				error: target.error || existing.error,
+				reused: target.reused ?? existing.reused,
 				expanded: existing.expanded,
 		  }
 		: {
@@ -285,6 +296,7 @@ function upsertToolEntry(
 				args: target.args,
 				output: target.output,
 				error: target.error,
+				reused: target.reused,
 				expanded: false,
 		  };
 	return { ...state, toolEntries: { ...state.toolEntries, [callId]: merged } };
@@ -378,12 +390,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 				error: action.error,
 				args: action.args,
 				output: action.output,
+				reused: action.reused,
 			});
 			return ensureToolStep(withEntry, action.callId);
 		}
 		case 'toolResult': {
 			// 仅补充数据，不单独渲染（tool_state_change 已覆盖）；未创建条目时补建 success 步骤
-			const withEntry = upsertToolEntry(state, action.callId, 'tool', { state: 'success', output: action.result, error: action.error });
+			const withEntry = upsertToolEntry(state, action.callId, 'tool', { state: 'success', output: action.result, error: action.error, reused: action.reused });
 			return ensureToolStep(withEntry, action.callId);
 		}
 		case 'replyChangeSet': {
@@ -462,6 +475,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 				todoSummary: action.snapshot.todos.length > 0 ? action.summary : null,
 			};
 		}
+		case 'planModeState': {
+			// 忽略非当前会话的 Plan 状态事件，防止后台会话状态污染当前界面
+			if (state.currentSessionId && action.sessionId !== state.currentSessionId) {
+				return state;
+			}
+			return {
+				...state,
+				// 仅展示非 normal 阶段的 Plan 状态；normal 视为未进入 Plan 模式
+				planMode: action.state.stage === 'normal' ? null : action.state,
+			};
+		}
 		case 'historyLoaded': {
 			const base = resetConversation(state);
 			let messages: MessageItem[] = [];
@@ -476,6 +500,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 							...existing,
 							state: 'success',
 							output: m.content,
+							reused: m.reused,
 						};
 						messages = messages.map((item) =>
 							item.kind === 'tool' && item.callId === m.toolCallId ? { ...item, seq: m.seq } : item
@@ -488,6 +513,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 							tool: 'tool',
 							state: 'success',
 							output: m.content,
+							reused: m.reused,
 							expanded: false,
 						};
 						messages = [...messages, { id: nextId('tool'), kind: 'tool', callId, turn: turnCounter, seq: m.seq }];
@@ -534,7 +560,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 		case 'workspaceFiles':
 			return { ...state, workspaceFiles: action.files };
 		case 'modelInfo':
-			return { ...state, modelName: action.model };
+			// 档位缺省时保留既有值，避免旧宿主/无档位推送覆盖当前档位显示
+			return {
+				...state,
+				modelName: action.model,
+				modelId: action.modelId ?? state.modelId,
+				reasoningEffort: action.reasoningEffort ?? state.reasoningEffort,
+			};
 		case 'approvalMode':
 			return { ...state, approvalMode: action.mode };
 		case 'modelPicker':

@@ -7,6 +7,7 @@ import type { ToolCall, ToolResult } from './types';
 import type { ToolRegistry } from './toolRegistry';
 import type { ToolContext, BaseTool } from '../tools/baseTool';
 import type { ApprovalGateway } from './approvalGateway';
+import type { SessionPlanModeStore } from './planModeStore';
 import { SecurityAudit } from './securityAudit';
 import { ToolExecutionJournal, type ToolExecutionIdentity } from './toolExecutionJournal';
 import type { HookManager } from '../hook/hookManager';
@@ -20,6 +21,7 @@ export class ToolRouter {
 		private readonly audit = new SecurityAudit(),
 		private readonly journal?: ToolExecutionJournal,
 		private readonly hooks?: HookManager,
+		private readonly planMode?: SessionPlanModeStore,
 	) {}
 
 	/** 路由并执行一个工具调用。 */
@@ -32,6 +34,22 @@ export class ToolRouter {
 			this.registry.validateArgs(call.tool, call.args);
 		} catch (error) {
 			return this.toErrorResult(call, context, error);
+		}
+
+		// ── Plan 模式兜底：查找工具后、参数 Hook 与审批前应用统一会话策略，拒绝不允许的调用 ──
+		// 日志记录会话 ID、阶段、工具名与 call ID，不记录敏感参数。
+		if (this.planMode && context.sessionId) {
+			const planState = this.planMode.getState(context.sessionId);
+			if (!this.planMode.isToolAllowed(context.sessionId, tool.schema)) {
+				logger.log(
+					`[ToolRouter] Plan 模式拒绝工具 tool=${call.tool} sessionId=${context.sessionId} stage=${planState.stage} callId=${call.call_id}`
+				);
+				return {
+					call_id: call.call_id,
+					status: 'cancelled',
+					error: `当前阶段（${planState.stage}）不允许调用工具 ${call.tool}`,
+				};
+			}
 		}
 
 		// 原始调用不可变快照（初始校验通过后；JSON 深拷贝，Hook 无法篡改审计对象）
@@ -125,10 +143,29 @@ export class ToolRouter {
 			: context;
 
 		const result = await this.runExecution(tool, finalArgs, execContext, call, context);
+		if (tool.permission !== 'read' && result.status === 'success') {
+			this.invalidateFileLookupCaches(context);
+		}
 
 		// ── post_tool_call：治理后的受治理结果，只读观察 ──
 		await this.dispatchPostToolCall(call, context, result);
 		return result;
+	}
+
+	/** 清除当前运行的文件读取与搜索缓存，避免复用已过期或已脱离上下文的工作区信息。 */
+	invalidateFileLookupCaches(context: Pick<ToolContext, 'sessionId' | 'runId'>): void {
+		const cacheInvalidator = (toolName: string): void => {
+			if (!this.registry.has(toolName)) {
+				return;
+			}
+			const tool = this.registry.lookup(toolName) as BaseTool & {
+				invalidateRunCache?: (sessionId: string | undefined, runId: string | undefined) => void;
+			};
+			tool.invalidateRunCache?.(context.sessionId, context.runId);
+		};
+		cacheInvalidator('fs_read_file');
+		cacheInvalidator('fs_search_files');
+		logger.log(`[ToolRouter] 写操作后已清除文件查询缓存 sessionId=${context.sessionId ?? '未知'}, runId=${context.runId ?? '未知'}`);
 	}
 
 	/**

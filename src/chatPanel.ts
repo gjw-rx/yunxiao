@@ -6,15 +6,19 @@ import type { EventBus, AgentEvent } from './core/eventBus';
 import type { LocalSessionManager } from './core/localSessionManager';
 import type { SkillRegistry } from './skill/skillRegistry';
 import type { ModelConfigStore, ModelSettingsInput } from './config/modelConfigStore';
+import { isReasoningLevel } from './config/modelConfigStore';
 import type { ModelConfig } from './config/modelConfig';
 import type { SyncSource } from './config/syncConfig';
 import type { SkillInstallResult } from './skill/skillInstaller';
 import type { RuntimeStatus } from './webview-ui/protocol';
 import type { SessionTodoStore } from './memory/sessionTodoStore';
 import type { ChangeJournal } from './core/changeJournal';
+import type { SessionPlanModeStore } from './core/planModeStore';
+import type { PlanModeChangePayload } from './memory/planTypes';
 import type { McpConfigStore } from './mcp/configStore';
 import type { McpServerView } from './mcp/types';
 import type { McpSaveMode, McpOperation, HooksConfigView, RtkStatusView } from './webview-ui/protocol';
+import type { UsageGranularity, TokenUsageStatsResult } from './webview-ui/protocol';
 import type { HooksConfigStore } from './hook/hooksConfigStore';
 import type { RtkTransformHook } from './hook/rtkAdapter';
 import { detectRtk, type RtkDetectionResult } from './hook/rtkDetector';
@@ -46,6 +50,8 @@ interface ChatViewDeps {
   readonly todoStore?: SessionTodoStore;
   /** 会话代码变更日志。 */
   readonly changeJournal?: ChangeJournal;
+  /** Plan 模式状态服务（可选；装配后向 Webview 回推 Plan 阶段与接收模式操作）。 */
+  readonly planModeStore?: SessionPlanModeStore;
 }
 
 /** 设置面板依赖：模型存储、配置来源、Skill 安装与模型保存回调。 */
@@ -80,6 +86,8 @@ interface SettingsPanelDeps {
   readonly detectRtk?: (executablePath: string) => Promise<RtkDetectionResult>;
   /** RTK Transform Hook（提供固定样例改写测试）。 */
   readonly rtkTransformHook?: RtkTransformHook;
+  /** 请求当前工作区 token 用量统计（粒度 + 参考日期；结果含标准化区间与 partial 标记）。 */
+  readonly requestUsageStats?: (granularity: UsageGranularity, reference: string) => Promise<TokenUsageStatsResult>;
 }
 
 /** 待处理的审批请求：call_id -> resolve 回调 */
@@ -96,6 +104,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly _eventBus: EventBus;
   private readonly _todoStore?: SessionTodoStore;
   private readonly _changeJournal?: ChangeJournal;
+  private readonly _planModeStore?: SessionPlanModeStore;
   /** 独立代码变更查看面板。 */
   private _changeReviewPanel?: vscode.WebviewPanel;
   /** 当前独立变更页所查看的会话与变更集。 */
@@ -121,6 +130,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._eventBus = deps.eventBus;
     this._todoStore = deps.todoStore;
     this._changeJournal = deps.changeJournal;
+    this._planModeStore = deps.planModeStore;
   }
 
   /**
@@ -309,17 +319,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * 将当前生效模型名称推送到已打开的对话面板。
+   * 将当前生效模型名称、模型 ID 与推理强度推送到已打开的对话面板。
+   * 从模型存储读取非敏感快照，不携带 API Key / baseURL 等敏感连接信息。
    *
-   * @returns void
+   * @returns Promise<void>
    */
-  refreshModelInfo(): void {
-    const modelName = this._settingsDeps?.getModelName() ?? '';
-    if (!this._chatWebview || !modelName) {
+  async refreshModelInfo(): Promise<void> {
+    const deps = this._settingsDeps;
+    if (!this._chatWebview || !deps) {
       return;
     }
-    this._chatWebview.postMessage({ command: 'modelInfo', model: modelName });
-    logger.log(`[ChatPanel] 已刷新对话模型信息 model=${modelName}`);
+    const modelName = deps.getModelName() ?? '';
+    if (!modelName) {
+      return;
+    }
+    let modelId: string | undefined;
+    let reasoningEffort: unknown;
+    try {
+      const view = await deps.modelStore.getSettingsView();
+      modelId = view.defaultModelId;
+      reasoningEffort = view.reasoningEffort;
+    } catch (error) {
+      logger.error(`[ChatPanel] 读取模型信息快照失败: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    this._chatWebview.postMessage({
+      command: 'modelInfo',
+      model: modelName,
+      ...(modelId ? { modelId } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+    });
+    logger.log(`[ChatPanel] 已刷新对话模型信息 model=${modelName} modelId=${modelId ?? '未配置'} reasoningEffort=${String(reasoningEffort ?? '未设置')}`);
   }
 
   /**
@@ -404,6 +433,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'todo_state_change':
         webview.postMessage({ command: 'todoState', ...(e.payload as TodoStateUpdate) });
         break;
+      case 'plan_mode_change':
+        {
+          const payload = e.payload as PlanModeChangePayload;
+          webview.postMessage({
+            command: 'planModeState',
+            sessionId: e.sessionId,
+            state: { stage: payload.to, draftCreated: payload.draftCreated },
+          });
+        }
+        break;
       case 'stream_end':
         webview.postMessage({ command: 'replyEnd' });
         break;
@@ -418,6 +457,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           error?: string;
           args?: unknown;
           output?: unknown;
+		  reused?: boolean;
         };
         webview.postMessage({ command: 'toolState', ...p });
         break;
@@ -428,8 +468,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'tool_result': {
-        const p = e.payload as { call_id: string; status: string; result?: unknown; error?: string };
-        webview.postMessage({ command: 'toolResult', ...p });
+        const p = e.payload as {
+          call_id: string;
+          status: string;
+          result?: unknown;
+          error?: string;
+          metadata?: { reused?: boolean };
+        };
+        webview.postMessage({ command: 'toolResult', ...p, reused: p.metadata?.reused });
         break;
       }
       case 'thought':
@@ -689,6 +735,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this._handleTestRtkRewrite(panel, deps);
         break;
       }
+      case 'requestUsageStats': {
+        await this._handleRequestUsageStats(panel, msg);
+        break;
+      }
+    }
+  }
+
+  /**
+   * 处理设置页使用情况请求：注入统计服务，按粒度与参考日期聚合并回传标准化区间。
+   * 入口、成功与失败分支均记录含粒度、区间、模型数与耗时等可定位日志；整体失败回传有界错误。
+   *
+   * @param panel 设置面板
+   * @param msg Webview 消息（granularity/reference）
+   */
+  private async _handleRequestUsageStats(
+    panel: vscode.WebviewPanel,
+    msg: { command: string;[key: string]: unknown },
+  ): Promise<void> {
+    const deps = this._settingsDeps;
+    if (!deps?.requestUsageStats) {
+      panel.webview.postMessage({ command: 'usageStatsError', message: '用量统计服务未就绪' });
+      return;
+    }
+    const granularity: UsageGranularity = msg.granularity === 'week' || msg.granularity === 'month' ? msg.granularity : 'day';
+    const reference = typeof msg.reference === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(msg.reference)
+      ? msg.reference
+      : new Date().toISOString().slice(0, 10);
+    const startedAt = Date.now();
+    logger.log(`[ChatPanel] 使用情况请求 granularity=${granularity} reference=${reference}`);
+    try {
+      const payload = await deps.requestUsageStats(granularity, reference);
+      logger.log(
+        `[ChatPanel] 使用情况响应 granularity=${granularity} start=${payload.start} end=${payload.end} 模型数=${payload.models.length} partial=${payload.partial} 耗时=${Date.now() - startedAt}ms`,
+      );
+      panel.webview.postMessage({ command: 'usageStats', payload });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.error(`[ChatPanel] 使用情况统计失败 granularity=${granularity} reference=${reference}: ${reason}`);
+      panel.webview.postMessage({ command: 'usageStatsError', message: '用量统计失败，请重试' });
     }
   }
 
@@ -1003,6 +1088,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'deleteSession',
       'deleteMessage',
       'rollbackTurn',
+      'enterPlanMode',
+      'continuePlanning',
+      'exitPlanMode',
+      'confirmExecution',
     ]);
     if (this._runtimeStatus !== 'ready' && guardedCommands.has(msg.command)) {
       logger.log(`[ChatPanel] 运行时未就绪，忽略业务消息 command=${msg.command} status=${this._runtimeStatus}`);
@@ -1019,7 +1108,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         const modelName = this._settingsDeps?.getModelName() ?? '';
         if (modelName) {
-          webview.postMessage({ command: 'modelInfo', model: modelName });
+          await this.refreshModelInfo();
         }
         break;
       }
@@ -1100,6 +1189,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._sessionManager.cancel(sessionId);
         break;
       }
+      case 'enterPlanMode':
+      case 'continuePlanning':
+      case 'exitPlanMode':
+      case 'confirmExecution': {
+        // Plan 模式宿主动作：校验当前会话/阶段后执行，失败提示用户并回推最新状态保持一致
+        const sessionId = msg.sessionId as string;
+        if (!sessionId || sessionId !== this._currentSessionId) {
+          logger.log(`[ChatPanel] 忽略过期 Plan 动作 command=${msg.command} sessionId=${sessionId}`);
+          if (this._currentSessionId) {
+            this._pushPlanMode(webview, this._currentSessionId);
+          }
+          break;
+        }
+        try {
+          if (msg.command === 'enterPlanMode') {
+            this._sessionManager.enterPlanMode(sessionId);
+          } else if (msg.command === 'continuePlanning') {
+            this._sessionManager.continuePlanning(sessionId);
+          } else if (msg.command === 'exitPlanMode') {
+            this._sessionManager.exitPlanMode(sessionId);
+          } else {
+            this._sessionManager.confirmExecution(sessionId);
+          }
+          logger.log(`[ChatPanel] Plan 动作 ${msg.command} 完成 sessionId=${sessionId}`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error(`[ChatPanel] Plan 动作 ${msg.command} 失败 sessionId=${sessionId} error=${message}`);
+          void vscode.window.showWarningMessage(message);
+        }
+        this._pushPlanMode(webview, sessionId);
+        break;
+      }
       case 'compactContext': {
         try {
           const result = await this._sessionManager.compactContext(msg.sessionId as string);
@@ -1163,7 +1284,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const view = await deps.modelStore.getSettingsView();
           const models = (view.models ?? [])
             .filter((model) => model.enabled)
-            .map((model) => ({ id: model.id, model: model.model, provider: model.provider, isDefault: model.isDefault }));
+            .map((model) => ({
+              id: model.id,
+              model: model.model,
+              provider: model.provider,
+              isDefault: model.isDefault,
+              ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}),
+            }));
           webview.postMessage({ command: 'modelPicker', models });
           logger.log(`[ChatPanel] 已返回模型弹窗候选项 count=${models.length}`);
         } catch (err) {
@@ -1190,6 +1317,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         } catch (err) {
           logger.error(`[ChatPanel] 模型弹窗切换失败: ${err instanceof Error ? err.message : String(err)}`);
           vscode.window.showErrorMessage(`切换模型失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+      case 'selectReasoningLevel': {
+        const deps = this._settingsDeps;
+        const modelId = typeof msg.modelId === 'string' ? msg.modelId : '';
+        const level = msg.level;
+        if (!deps || !modelId || !isReasoningLevel(level)) {
+          logger.error(`[ChatPanel] 拒绝无效推理强度请求 modelId=${modelId || '空'} level=${String(level)}`);
+          break;
+        }
+        try {
+          // 重新校验目标模型仍是当前默认且已启用，再持久化并应用运行配置
+          const config = await deps.modelStore.setReasoningEffort(modelId, level);
+          deps.onModelConfigSaved?.(config);
+          await this.refreshModelInfo();
+          logger.log(`[ChatPanel] 推理强度已更新 modelId=${modelId} level=${level}`);
+        } catch (err) {
+          logger.error(`[ChatPanel] 设置推理强度失败 modelId=${modelId} level=${String(level)}: ${err instanceof Error ? err.message : String(err)}`);
+          vscode.window.showErrorMessage(`设置推理强度失败：${err instanceof Error ? err.message : String(err)}`);
         }
         break;
       }
@@ -1363,6 +1510,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const snapshot = this._todoStore.read(sessionId);
       webview.postMessage({ command: 'todoState', snapshot, summary: summarizeTodos(snapshot) });
     }
+    // 历史刷新时回推对应会话的 Plan 状态（初始化/切换会话/删除消息后的刷新共用）
+    this._pushPlanMode(webview, sessionId);
+  }
+
+  /**
+   * 向 Webview 回推指定会话的 Plan 模式状态。
+   * @param webview 聊天面板 webview。
+   * @param sessionId 会话 ID。
+   * @returns 无返回值
+   */
+  private _pushPlanMode(webview: vscode.Webview, sessionId: string): void {
+    if (!this._planModeStore) {
+      return;
+    }
+    webview.postMessage({
+      command: 'planModeState',
+      sessionId,
+      state: this._planModeStore.getState(sessionId),
+    });
   }
 
   /**

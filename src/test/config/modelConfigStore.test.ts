@@ -155,6 +155,39 @@ describe('ModelConfigStore', () => {
 			assert.strictEqual(saved.apiKey, 'sk-new');
 			assert.strictEqual(saved.model, 'gpt-4o-mini');
 		});
+
+		it('provider=anthropic 未填写 baseURL 时使用 Anthropic 官方地址', async () => {
+			const { store } = setup();
+			const saved = await store.save({
+				provider: 'anthropic',
+				model: 'claude-3-5-sonnet-latest',
+				baseURL: '',
+				temperature: 0.7,
+				maxTokens: 4096,
+				apiKey: 'sk-ant-test',
+			});
+			assert.strictEqual(saved.baseURL, 'https://api.anthropic.com/v1');
+		});
+
+		it('provider=anthropic 填写自定义 baseURL 时保留原值', async () => {
+			const { store } = setup();
+			const saved = await store.save({
+				provider: 'anthropic',
+				model: 'claude-3-5-sonnet-latest',
+				baseURL: 'https://my-proxy.example.com/v1',
+				temperature: 0.7,
+				maxTokens: 4096,
+				apiKey: 'sk-ant-test',
+			});
+			assert.strictEqual(saved.baseURL, 'https://my-proxy.example.com/v1');
+		});
+
+		it('旧 provider=openai 档案读取结果不受 Anthropic 支持影响', async () => {
+			const { store } = setup();
+			const saved = await store.save(validInput({ apiKey: 'sk-openai' }));
+			assert.strictEqual(saved.provider, 'openai');
+			assert.strictEqual(saved.baseURL, 'https://api.openai.com/v1');
+		});
 	});
 
 	describe('校验', () => {
@@ -184,8 +217,21 @@ describe('ModelConfigStore', () => {
 		});
 
 		it('不支持的 provider 被拒绝（避免持久化后激活/更新失败）', () => {
-			assert.ok(validateModelSettings(validInput({ provider: 'anthropic' })));
+			assert.ok(validateModelSettings(validInput({ provider: 'unknown-provider' })));
 			assert.ok(validateModelSettings(validInput({ provider: '' })));
+		});
+
+		it('provider=anthropic 且未指定 runtime 时校验通过', () => {
+			assert.strictEqual(validateModelSettings(validInput({ provider: 'anthropic', baseURL: 'https://api.anthropic.com/v1' })), null);
+		});
+
+		it('provider=anthropic 且 runtime=legacy 被拒绝', () => {
+			const error = validateModelSettings(validInput({ provider: 'anthropic', baseURL: 'https://api.anthropic.com/v1', runtime: 'legacy' }));
+			assert.ok(error && error.includes('ai-sdk'), '应返回中文可操作错误');
+		});
+
+		it('provider=anthropic 且 runtime=ai-sdk 校验通过', () => {
+			assert.strictEqual(validateModelSettings(validInput({ provider: 'anthropic', baseURL: 'https://api.anthropic.com/v1', runtime: 'ai-sdk' })), null);
 		});
 
 		it('非法 API 地址被拒绝', () => {
@@ -224,6 +270,72 @@ describe('ModelConfigStore', () => {
 			const first = (await store.getSettingsView()).models?.find((item) => item.model === 'model-a');
 			await store.setModelEnabled(first!.id, false);
 			assert.strictEqual((await store.getSettingsView()).models?.find((item) => item.id === first!.id)?.enabled, false);
+		});
+	});
+
+	describe('推理强度持久化', () => {
+		it('新建模型默认保存中档推理强度', async () => {
+			const { store } = setup();
+			await store.save(validInput({ model: 'model-a' }));
+			const config = await store.getModelConfig();
+			assert.strictEqual(config.reasoningEffort, 'medium');
+		});
+
+		it('读取升级前无推理字段的旧档案时不补写字段', async () => {
+			const { store, globalConfigRoot } = setup();
+			await store.save(validInput({ model: 'legacy-model' }));
+			const filePath = path.join(globalConfigRoot, 'modelConfig', 'models.json');
+			const doc = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+			doc.models = doc.models.map((m: Record<string, unknown>) => {
+				const { reasoningEffort: _removed, ...rest } = m;
+				return rest;
+			});
+			fs.writeFileSync(filePath, JSON.stringify(doc), 'utf8');
+
+			const config = await store.getModelConfig();
+			assert.strictEqual(config.reasoningEffort, undefined, '旧档案缺失字段应保持未设置');
+			const raw = fs.readFileSync(filePath, 'utf8');
+			assert.ok(!raw.includes('reasoningEffort'), '读取不得静默补写字段');
+		});
+
+		it('编辑模型其他字段时保留已有推理强度', async () => {
+			const { store } = setup();
+			await store.save(validInput({ model: 'model-a' }));
+			const view = await store.getSettingsView();
+			const id = view.defaultModelId!;
+			await store.setReasoningEffort(id, 'high');
+			await store.save(validInput({ id, model: 'model-a', temperature: 0.5 }));
+			const config = await store.getModelConfig();
+			assert.strictEqual(config.reasoningEffort, 'high', '编辑其他字段应保留既有档位');
+		});
+
+		it('setReasoningEffort 按模型持久化并进入完整配置', async () => {
+			const { store } = setup();
+			await store.save(validInput({ model: 'model-a' }));
+			const view = await store.getSettingsView();
+			const id = view.defaultModelId!;
+			const config = await store.setReasoningEffort(id, 'low');
+			assert.strictEqual(config.reasoningEffort, 'low');
+			assert.strictEqual((await store.getModelConfig()).reasoningEffort, 'low');
+		});
+
+		it('拒绝非法档位', async () => {
+			const { store } = setup();
+			await store.save(validInput({ model: 'model-a' }));
+			const view = await store.getSettingsView();
+			const id = view.defaultModelId!;
+			await assert.rejects(() => store.setReasoningEffort(id, 'max' as never));
+			assert.strictEqual((await store.getModelConfig()).reasoningEffort, 'medium', '非法档位不得改变原值');
+		});
+
+		it('拒绝为非当前默认模型设置档位', async () => {
+			const { store } = setup();
+			await store.save(validInput({ model: 'model-a' }));
+			await store.save(validInput({ model: 'model-b' }));
+			const view = await store.getSettingsView();
+			const nonDefault = view.models?.find((m) => m.model === 'model-b');
+			assert.ok(nonDefault);
+			await assert.rejects(() => store.setReasoningEffort(nonDefault!.id, 'high'));
 		});
 	});
 });

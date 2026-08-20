@@ -285,6 +285,23 @@ describe('OpenAIProvider', () => {
 		assert.strictEqual(body.thinking, undefined);
 	});
 
+	it('OpenAI 请求 low 档映射为 reasoning_effort=low', async () => {
+		const sse = 'data: {"choices":[{"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+		const { calls, restore } = mockFetch(sse);
+		const provider = new OpenAIProvider(mockConfig);
+
+		await collectEvents(provider.chatCompletion({
+			model: 'gpt-5-mini',
+			messages: [{ role: 'user', content: 'hi' }],
+			reasoningEffort: 'low',
+			stream: true,
+		}));
+
+		restore();
+		const body = JSON.parse(calls[0].init.body as string);
+		assert.strictEqual(body.reasoning_effort, 'low');
+	});
+
 	it('未设置 reasoningEffort 时不传 reasoning 参数', async () => {
 		const sse = 'data: {"choices":[{"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
 		const { calls, restore } = mockFetch(sse);

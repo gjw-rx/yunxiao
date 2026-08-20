@@ -10,7 +10,7 @@ node_modules
 
 # 系统变量
 /.vscode
-/$PWD
+$PWD/
 
 # Agent框架
 /.trae
@@ -21,3 +21,4 @@ node_modules
 # 临时文档
 /docs/opencode源码
 /docs/temp_file
+/docs/pi-agent

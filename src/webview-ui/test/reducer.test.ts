@@ -32,6 +32,35 @@ describe('todoState', () => {
 	});
 });
 
+describe('planModeState', () => {
+	it('映射会话 Plan 状态，并忽略非当前会话的实时事件', () => {
+		const action = hostToAction({
+			command: 'planModeState',
+			sessionId: 'session-1',
+			state: { stage: 'review', draftCreated: true },
+		});
+		expect(action).toEqual({
+			type: 'planModeState',
+			sessionId: 'session-1',
+			state: { stage: 'review', draftCreated: true },
+		});
+		const reviewed = chatReducer(activeState(), action!);
+		expect(reviewed.planMode).toEqual({ stage: 'review', draftCreated: true });
+		const unchanged = chatReducer(reviewed, {
+			type: 'planModeState',
+			sessionId: 'session-2',
+			state: { stage: 'planning', draftCreated: false },
+		});
+		expect(unchanged.planMode).toEqual({ stage: 'review', draftCreated: true });
+	});
+
+	it('切换会话时清空上一个会话的 Plan 状态', () => {
+		const before = activeState({ planMode: { stage: 'review', draftCreated: true } });
+		const next = chatReducer(before, { type: 'openSession', sessionId: 'session-2' });
+		expect(next.planMode).toBeNull();
+	});
+});
+
 /** 构造一个已进入会话且完成握手的初始状态。 */
 function activeState(overrides: Partial<ChatState> = {}): ChatState {
 	return {
@@ -312,5 +341,41 @@ describe('工具参数摘要 summarizeArgs', () => {
 		expect(summarizeArgs({ command: 'npm test' })).toBe('npm test');
 		expect(summarizeArgs({ nested: { a: 1 } })).toBe('');
 		expect(summarizeArgs('plain')).toBe('plain');
+	});
+});
+
+describe('模型信息与推理档位同步', () => {
+	it('modelInfo 携带模型 ID 与推理档位并写入状态', () => {
+		const action = hostToAction({ command: 'modelInfo', model: 'gpt-5', modelId: 'm1', reasoningEffort: 'high' });
+		expect(action).toEqual({ type: 'modelInfo', model: 'gpt-5', modelId: 'm1', reasoningEffort: 'high' });
+		const state = chatReducer(initialState, action!);
+		expect(state.modelName).toBe('gpt-5');
+		expect(state.modelId).toBe('m1');
+		expect(state.reasoningEffort).toBe('high');
+	});
+
+	it('宿主刷新顺序不会产生模型名与档位错配（模型名与档位同帧更新）', () => {
+		// 模拟宿主在切换模型后同帧推送 modelInfo（模型名 + 模型 ID + 该模型档位）
+		let state = chatReducer(initialState, {
+			type: 'modelInfo',
+			model: 'deepseek-chat',
+			modelId: 'm-b',
+			reasoningEffort: 'low',
+		});
+		expect(state.modelName).toBe('deepseek-chat');
+		expect(state.modelId).toBe('m-b');
+		expect(state.reasoningEffort).toBe('low');
+		// 再次刷新（如保存档位后）不至于把档位错配到别的模型名
+		state = chatReducer(state, { type: 'modelInfo', model: 'deepseek-chat', modelId: 'm-b', reasoningEffort: 'high' });
+		expect(state.modelName).toBe('deepseek-chat');
+		expect(state.reasoningEffort).toBe('high');
+		expect(state.modelId).toBe('m-b');
+	});
+
+	it('未提供档位的 modelInfo 保持既有档位不变（兼容旧宿主）', () => {
+		let state = chatReducer(initialState, { type: 'modelInfo', model: 'gpt-4o', modelId: 'm1', reasoningEffort: 'medium' });
+		state = chatReducer(state, { type: 'modelInfo', model: 'gpt-4o', modelId: 'm1' });
+		// 旧宿主不带档位时不应覆盖既有档位
+		expect(state.reasoningEffort).toBe('medium');
 	});
 });

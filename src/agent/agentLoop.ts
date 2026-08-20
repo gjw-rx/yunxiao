@@ -14,6 +14,7 @@ import { loadHistoryForLLM } from '../memory/historyLoader';
 import type { ToolRouter } from '../core/toolRouter';
 import type { ToolRegistry } from '../core/toolRegistry';
 import type { EventBus } from '../core/eventBus';
+import type { SessionPlanModeStore } from '../core/planModeStore';
 import type { ToolContext } from '../tools/baseTool';
 import type { ToolResult, ToolCall } from '../core/types';
 import type { SkillRegistry } from '../skill/skillRegistry';
@@ -81,6 +82,8 @@ export interface AgentLoopConfig {
 	readonly syncSource?: () => SyncSource;
 	/** 当前会话任务快照存储，用于将未结束任务临时注入模型上下文。 */
 	readonly todoStore?: SessionTodoStore;
+	/** Plan 模式状态服务（可选；装配后按会话阶段过滤模型可见工具定义）。 */
+	readonly planModeStore?: SessionPlanModeStore;
 	/** 回滚快照记录器（写文件工具在执行前记录改动前状态）。 */
 	readonly rollbackRecorder?: RollbackRecorder;
 	/** 会话代码变更日志（写文件工具在成功前后记录快照）。 */
@@ -109,6 +112,15 @@ const EMPTY_REPLY_PROMPT =
 
 /** 空回复兜底的最大重试次数（达到后即使仍为空也正常结束）。 */
 const MAX_EMPTY_REPLY_RETRIES = 2;
+
+/** Plan 规划阶段临时注入的只读规划指令（不写入会话历史，退出模式后彻底移除）。 */
+const PLAN_MODE_PROMPT =
+	'# Plan Mode\n' +
+	'You are now in Plan Mode: research and plan only. ' +
+	'You MUST NOT modify any files, run state-changing commands, or perform any write/execute/destructive actions — all such tools are unavailable to you. ' +
+	'Use the available read-only tools to investigate the codebase, search for information, and clarify requirements when necessary. ' +
+	'When you have a complete, ordered execution plan, submit it as a single todo_write call with the full task list, then stop and wait for the user to review. ' +
+	'Do NOT start implementing until the user explicitly approves the plan.';
 
 /** 同一轮中只读可并行工具的最大并发数（参照 langchain maxConcurrency / Anthropic 并行 tool use 建议）。 */
 const MAX_PARALLEL_TOOLS = 3;
@@ -205,6 +217,8 @@ function todosMatch(left: readonly TodoItem[], right: readonly TodoItem[]): bool
 export class AgentLoop {
 	private abortController: AbortController | null = null;
 	private activeSessionId: string | null = null;
+	/** 当前 run 是否成功执行了非空 todo_write（planning 阶段用于进入 review 的信号，run 级）。 */
+	private runTodoWriteSucceeded = false;
 
 	private provider: LLMProvider;
 	private config: AgentLoopConfig;
@@ -225,9 +239,9 @@ export class AgentLoop {
 	 * 更新后续运行使用的模型连接参数（模型配置保存后调用）。
 	 * 进行中的 run 使用启动时的 provider 快照，不受本次更新影响；保存完成后启动的新运行使用新配置。
 	 *
-	 * @param partial 需要更新的模型相关配置字段
+	 * @param partial 需要更新的模型相关配置字段（含可选推理强度）
 	 */
-	updateModelConfig(partial: Pick<AgentLoopConfig, 'model' | 'providerId' | 'temperature' | 'maxTokens'> & { readonly maxContextTokens?: number }): void {
+	updateModelConfig(partial: Pick<AgentLoopConfig, 'model' | 'providerId' | 'temperature' | 'maxTokens' | 'reasoningEffort'> & { readonly maxContextTokens?: number }): void {
 		this.config = {
 			...this.config,
 			...partial,
@@ -235,7 +249,7 @@ export class AgentLoop {
 				? { compaction: { ...this.config.compaction, maxContextTokens: partial.maxContextTokens, maxOutputTokens: partial.maxTokens } }
 				: {}),
 		};
-		logger.log(`[AgentLoop] 模型配置已更新（后续运行生效）model=${partial.model}`);
+		logger.log(`[AgentLoop] 模型配置已更新（后续运行生效）model=${partial.model} reasoningEffort=${partial.reasoningEffort ?? 'default'}`);
 	}
 
 	/**
@@ -279,20 +293,36 @@ export class AgentLoop {
 	}
 
 	/** 主循环入口：追加用户消息，进入 Agent Loop。 */
-	async run(sessionId: string, userText: string): Promise<void> {
+	async run(sessionId: string, userText: string, options?: { readonly hidden?: boolean }): Promise<void> {
 		this.abortController = new AbortController();
 		this.activeSessionId = sessionId;
+		this.runTodoWriteSucceeded = false;
 		const { signal } = this.abortController;
 		// 本次运行固定使用启动时的 provider 快照：保存模型配置仅影响后续新运行，不中途切换进行中的流
 		const runProvider = this.provider;
+		// 本次运行固定使用启动时的模型元数据快照：构造 token 账时使用该快照，
+		// 运行中切换默认模型不改变本 run 已形成账的 provider/模型归属（下一次 run 才用新配置）
+		const runModelId = this.config.model;
+		const runProviderId = this.config.providerId;
+		// 本次运行固定使用启动时的生成配置快照：temperature / maxTokens / reasoningEffort
+		// 在 run 入口一次性捕获，运行内所有 LLM step 均使用该快照，运行中更新配置不影响当前 run
+		const runModel = this.config.model;
+		const runTemperature = this.config.temperature;
+		const runMaxTokens = this.config.maxTokens;
+		const runReasoningEffort = this.config.reasoningEffort;
 
-		const userMessage = this.messageStore.append(sessionId, { role: 'user', content: userText });
+		const userMessage = this.messageStore.append(sessionId, {
+			role: 'user',
+			content: userText,
+			// 隐藏执行指令（如 Plan 确认执行）不渲染为普通用户消息，仅作为 turn 边界参与历史
+			...(options?.hidden ? { injected: true } : {}),
+		});
 		const userMsgSeq = userMessage.seq;
 		const changeWorkspaceRoot = this.config.workspaceRoots[0] ?? process.cwd();
 		// run 开始前会话累计（用于 delta 计算）
 		const baseTotal = this.aggregateSessionTokens(sessionId);
 		this.emitRunStateChange(sessionId, 'running');
-		logger.log(`[AgentLoop] run 开始 sessionId=${sessionId} 用户消息长度=${userText.length}`);
+		logger.log(`[AgentLoop] run 开始 sessionId=${sessionId} model=${this.config.model} providerId=${this.config.providerId ?? '未配置'} 用户消息长度=${userText.length}`);
 		logger.log(`[AgentLoop] 后台准备会话代码变更基线 sessionId=${sessionId}`);
 		const changeBaselinePromise = this.config.changeJournal
 			? this.config.changeJournal.ensureSessionBaseline(sessionId, changeWorkspaceRoot).catch((error) => {
@@ -327,6 +357,16 @@ export class AgentLoop {
 				}
 
 				// ── 1. 上下文压缩检查（每轮开始前）──
+				// ── 0. 提交确认：模型调用前确认用户消息及此前写入已归档成功 ──
+				try {
+					await this.messageStore.commit(sessionId);
+				} catch (error) {
+					logger.error(`[AgentLoop] 用户消息归档提交失败，中止本轮运行 sessionId=${sessionId}`, error instanceof Error ? error.message : String(error));
+					this.emitRunStateChange(sessionId, 'failed', '会话归档提交失败');
+					this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
+					return;
+				}
+
 				// ── 2. 加载完整历史（每轮重新加载，确保模型看到完整上下文）──
 				const history = loadHistoryForLLM(sessionId, this.messageStore);
 
@@ -351,13 +391,18 @@ export class AgentLoop {
 				// ── 4. 组装消息 ──
 				// 活跃任务以缓存友好的方式进入上下文：正常请求依赖历史中的 todo_write 工具结果或检查点任务上下文，
 				// 仅当两者均无模型可见证据且存在活跃任务时才临时注入恢复上下文（不写入消息历史）。
+				// Plan 模式（planning/review）临时注入只读规划指令（不写入历史），并抑制"继续执行活跃任务"恢复提示。
+				const planStage = this.config.planModeStore?.getState(sessionId).stage;
+				const planInstruction = planStage === 'planning' ? PLAN_MODE_PROMPT : null;
+				const suppressTodoRecovery = planStage === 'planning' || planStage === 'review';
 				const todoEvidence = this.detectTodoEvidence(sessionId);
 				const todoContext =
-					todoEvidence.decision === 'recovery'
+					!suppressTodoRecovery && todoEvidence.decision === 'recovery'
 						? this.config.todoStore?.formatActiveContext(sessionId) ?? null
 						: null;
 				const messages: LLMMessage[] = [
 					{ role: 'system', content: systemPrompt },
+					...(planInstruction ? [{ role: 'system' as const, content: planInstruction }] : []),
 					...(todoContext ? [{ role: 'system' as const, content: todoContext }] : []),
 					...history,
 				];
@@ -378,8 +423,12 @@ export class AgentLoop {
 					logger.log(`[AgentLoop] step=${step} 接近 maxSteps=${this.config.maxSteps}，注入预警`);
 				}
 
-				// ── 6. 物化工具定义 ──
-				const tools = toolSchemasToDefinitions(this.toolRegistry.list());
+				// ── 6. 物化工具定义（Plan 模式先按会话阶段过滤，token 估算/压缩/请求共用同一工具集）──
+				const schemas = this.config.planModeStore
+					? this.toolRegistry.list().filter((schema) =>
+						this.config.planModeStore!.isToolAllowed(sessionId, schema))
+					: this.toolRegistry.list();
+				const tools = toolSchemasToDefinitions(schemas);
 				if (this.config.compaction) {
 					const requestTokens = estimateRequest(
 						systemPrompt,
@@ -389,7 +438,7 @@ export class AgentLoop {
 					const compaction = await compactIfNeeded(
 						sessionId,
 						runProvider,
-						this.config.model,
+						runModel,
 						this.config.compaction,
 						this.messageStore,
 						this.eventBus,
@@ -397,19 +446,21 @@ export class AgentLoop {
 						this.config.todoStore,
 					);
 					if (compaction.status === 'compacted') {
+						this.toolRouter.invalidateFileLookupCaches({ sessionId, runId });
+						logger.log(`[AgentLoop] 上下文已压缩，已清除文件查询缓存 sessionId=${sessionId} runId=${runId}`);
 						continue;
 					}
 				}
 
 				// ── 7. 构建 LLM 请求并调用 ──
 				const request: LLMRequest = {
-					model: this.config.model,
+					model: runModel,
 					messages,
 					tools: toolChoice === 'none' ? undefined : tools,
 					toolChoice,
-					temperature: this.config.temperature,
-					maxTokens: this.config.maxTokens,
-					reasoningEffort: this.config.reasoningEffort,
+					temperature: runTemperature,
+					maxTokens: runMaxTokens,
+					reasoningEffort: runReasoningEffort,
 					stream: true,
 					// 将取消信号透传给 AI SDK runtime，真正取消 provider 请求
 					abortSignal: signal,
@@ -430,6 +481,8 @@ export class AgentLoop {
 					systemPrompt,
 					streamResult,
 					userText,
+					providerId: runProviderId,
+					modelId: runModelId,
 				});
 				if (tokenSnapshot) {
 					this.messageStore.updateMessage(sessionId, userMsgSeq, {
@@ -467,7 +520,13 @@ export class AgentLoop {
 						content: streamResult.textContent,
 						tokenUsage: tokenSnapshot ?? undefined,
 					});
-					this.emitRunStateChange(sessionId, 'cancelled');
+					// 取消前确认已形成的回复已提交；提交失败则发布 failed 而非 cancelled
+					if (await this.commitArchiveWith(sessionId, 'cancelled')) {
+						this.emitRunStateChange(sessionId, 'cancelled');
+					} else {
+						logger.error(`[AgentLoop] 取消时归档提交失败 sessionId=${sessionId}，发布 failed`);
+						this.emitRunStateChange(sessionId, 'failed', '取消时归档提交失败');
+					}
 					this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 					return;
 				}
@@ -482,7 +541,7 @@ export class AgentLoop {
 						const compacted = await compactIfNeeded(
 							sessionId,
 							runProvider,
-							this.config.model,
+							runModel,
 							this.config.compaction,
 							this.messageStore,
 							this.eventBus,
@@ -490,6 +549,8 @@ export class AgentLoop {
 							this.config.todoStore,
 						);
 						if (compacted.status === 'compacted') {
+							this.toolRouter.invalidateFileLookupCaches({ sessionId, runId });
+							logger.log(`[AgentLoop] 溢出恢复压缩完成，已清除文件查询缓存 sessionId=${sessionId} runId=${runId}`);
 							continue;
 						}
 					}
@@ -567,7 +628,12 @@ export class AgentLoop {
 
 				// 工具执行后检查中断
 				if (signal.aborted) {
-					this.emitRunStateChange(sessionId, 'cancelled');
+					if (await this.commitArchiveWith(sessionId, 'cancelled')) {
+						this.emitRunStateChange(sessionId, 'cancelled');
+					} else {
+						logger.error(`[AgentLoop] 工具执行后取消时归档提交失败 sessionId=${sessionId}，发布 failed`);
+						this.emitRunStateChange(sessionId, 'failed', '取消时归档提交失败');
+					}
 					this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 					return;
 				}
@@ -583,13 +649,27 @@ export class AgentLoop {
 			}
 
 			// 正常完成
+			// Plan 模式：规划 run 正常结束且本轮成功写入非空 todo_write → 原子进入 review（等待用户审阅）
+			if (this.config.planModeStore) {
+				const stage = this.config.planModeStore.getState(sessionId).stage;
+				if (stage === 'planning' && this.runTodoWriteSucceeded) {
+					this.config.planModeStore.transition(sessionId, 'review');
+					logger.log(`[AgentLoop] 规划 run 已提交非空计划，进入 review sessionId=${sessionId}`);
+				}
+			}
 			this.emitSessionTokenUsage(sessionId, baseTotal);
-			this.emitRunStateChange(sessionId, 'completed');
+			// 终态前确认最终 assistant/tool 结果已归档提交；提交失败则发布 failed 而非 completed
+			if (await this.commitArchiveWith(sessionId, 'completed')) {
+				this.emitRunStateChange(sessionId, 'completed');
+			} else {
+				logger.error(`[AgentLoop] 完成前归档提交失败 sessionId=${sessionId}，发布 failed`);
+				this.emitRunStateChange(sessionId, 'failed', '归档提交失败');
+			}
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
-			logger.log(`[AgentLoop] 正常完成 sessionId=${sessionId} 共 ${step} 步`);
+			logger.log(`[AgentLoop] 正常完成 sessionId=${sessionId} model=${this.config.model} 共 ${step} 步`);
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);
-			logger.notifyError('[AgentLoop] 未捕获异常', { sessionId, msg });
+			logger.notifyError('[AgentLoop] 未捕获异常', { sessionId, msg, model: this.config.model });
 			this.eventBus.emit({
 				type: 'error',
 				sessionId,
@@ -599,6 +679,8 @@ export class AgentLoop {
 			this.emitRunStateChange(sessionId, 'failed', msg);
 			this.eventBus.emit({ type: 'stream_end', sessionId, payload: {} });
 		} finally {
+			this.toolRouter.invalidateFileLookupCaches({ sessionId, runId });
+			logger.log(`[AgentLoop] run 结束，已清除文件查询缓存 sessionId=${sessionId} runId=${runId}`);
 			// session_end：无论正常完成、失败还是取消都在唯一公共出口派发，保证 start/end 配对
 			try {
 				await this.config.hooks?.dispatch('session_end', {
@@ -624,6 +706,24 @@ export class AgentLoop {
 	 */
 	isRunning(sessionId: string): boolean {
 		return this.activeSessionId === sessionId;
+	}
+
+	/**
+	 * 提交确认边界：等待当前会话已排队的归档写入全部结算。
+	 * 提交失败时记录包含 sessionId 的可定位日志并返回 false（调用方据此发布失败状态）。
+	 * @param sessionId 会话 ID。
+	 * @param phase 调用阶段（日志定位）。
+	 * @returns 提交是否成功。
+	 */
+	private async commitArchiveWith(sessionId: string, phase: string): Promise<boolean> {
+		try {
+			await this.messageStore.commit(sessionId);
+			logger.log(`[AgentLoop] 归档提交成功 sessionId=${sessionId} phase=${phase}`);
+			return true;
+		} catch (error) {
+			logger.error(`[AgentLoop] 归档提交失败 sessionId=${sessionId} phase=${phase} reason=${error instanceof Error ? error.message : String(error)}`);
+			return false;
+		}
 	}
 
 	/**
@@ -743,18 +843,73 @@ export class AgentLoop {
 			results[item.index] = await this.executeSingleTool(item.coreCall, toolContext, sessionId);
 		}
 
-		// 4. 按模型返回顺序写入 tool 消息（被 doom 跳过的调用不写）
-		for (const result of results) {
+		// 4. 跟踪 todo_write 成功信号（Plan 模式状态转换依据），按模型返回顺序写入 tool 消息（被 doom 跳过的调用不写）
+		schedulable.forEach((tc, index) => {
+			const result = results[index];
+			if (result) {
+				this.trackTodoWriteResult(sessionId, tc.name, result);
+			}
+		});
+		schedulable.forEach((tc, index) => {
+			const result = results[index];
 			if (result) {
 				this.messageStore.append(sessionId, {
 					role: 'tool',
 					toolCallId: result.call_id,
 					content: toolResultToContent(result),
+					reused: result.metadata?.reused,
+					toolName: tc.name,
 				});
 			}
-		}
+		});
 
 		return { blocked };
+	}
+
+	/**
+	 * 跟踪当前 run 中 todo_write 工具结果：
+	 * 成功且写入非空任务列表时置位 run 级信号并标记本轮草案（仅 planning 生效）；
+	 * executing 阶段写入后快照无活跃任务时自动回到 normal（保留最终快照，不自动重放）。
+	 * @param sessionId 会话 ID。
+	 * @param toolName 工具名。
+	 * @param result 工具执行结果。
+	 * @returns 无返回值。
+	 */
+	private trackTodoWriteResult(sessionId: string, toolName: string, result: ToolResult): void {
+		if (toolName !== 'todo_write' || result.status !== 'success' || !result.result) {
+			return;
+		}
+		let todos: readonly TodoItem[] | null = null;
+		try {
+			const parsed = JSON.parse(result.result) as { todos?: unknown };
+			if (Array.isArray(parsed.todos)) {
+				todos = parsed.todos as readonly TodoItem[];
+			}
+		} catch {
+			return;
+		}
+		if (!todos) {
+			return;
+		}
+
+		if (todos.length > 0 && this.config.planModeStore) {
+			this.runTodoWriteSucceeded = true;
+			this.config.planModeStore.markDraftCreated(sessionId);
+			logger.log(`[AgentLoop] 本轮成功写入非空 Todo 草案 sessionId=${sessionId} count=${todos.length}`);
+		}
+
+		if (this.config.planModeStore) {
+			const stage = this.config.planModeStore.getState(sessionId).stage;
+			if (stage === 'executing') {
+				const active = todos.filter(
+					(todo) => todo.status === 'pending' || todo.status === 'in_progress'
+				).length;
+				if (active === 0) {
+					this.config.planModeStore.transition(sessionId, 'normal');
+					logger.log(`[AgentLoop] executing 阶段任务已全部完成，回到 normal sessionId=${sessionId}`);
+				}
+			}
+		}
 	}
 
 	/**
@@ -823,6 +978,7 @@ export class AgentLoop {
 				state: result.status,
 				error: result.error,
 				output: result.result,
+				reused: result.metadata?.reused,
 			},
 		});
 
@@ -982,14 +1138,19 @@ export class AgentLoop {
 	/**
 	 * 组装每步 token 账：真实 usage + 四类拆分（思考/工具调用/模型回复/用户输入）。
 	 * 分摊法：用户输入 = prompt × 估算(用户消息) / 估算(完整请求体)，保证四类与总量自洽。
+	 * @param params 请求、系统提示词、流结果、用户文本与本次运行启动时捕获的模型元数据
 	 */
 	private buildTokenSnapshot(params: {
 		request: LLMRequest;
 		systemPrompt: string;
 		streamResult: Awaited<ReturnType<AgentLoop['consumeStream']>>;
 		userText: string;
+		/** 本次运行启动时捕获的 Provider 标识（运行中切换默认模型不影响本账归属） */
+		providerId?: string;
+		/** 本次运行启动时捕获的模型标识（同时作为当时的非敏感展示名） */
+		modelId?: string;
 	}): TokenUsageSnapshot | null {
-		const { request, systemPrompt, streamResult, userText } = params;
+		const { request, systemPrompt, streamResult, userText, providerId, modelId } = params;
 		const usage = streamResult.usage;
 		const hasUsage = usage !== null && usage.inputTokens + usage.outputTokens > 0;
 
@@ -1045,6 +1206,9 @@ export class AgentLoop {
 			user_input: userInput,
 			context,
 			source: hasUsage ? 'usage' : 'estimated',
+			// 模型归属：使用本次运行启动时捕获的模型元数据，运行中切换默认模型不影响本账归属
+			...(providerId ? { provider_id: providerId } : {}),
+			...(modelId ? { model_id: modelId, model_label: modelId } : {}),
 		};
 	}
 

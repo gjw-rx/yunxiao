@@ -9,12 +9,29 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
+	ANTHROPIC_DEFAULT_BASE_URL,
 	DEFAULT_MODEL_CONFIG,
 	normalizeRuntime,
 	type ModelConfig,
 	type ModelRuntime,
 } from './modelConfig';
+import type { ReasoningLevel } from '../llm/types';
 import * as logger from '../logger';
+
+/** 新建模型默认写入的推理强度档位（中档）。 */
+export const DEFAULT_REASONING_LEVEL: ReasoningLevel = 'medium';
+
+/** 合法推理强度档位集合（仅 low/medium/high）。 */
+const VALID_REASONING_LEVELS: ReadonlySet<string> = new Set(['low', 'medium', 'high']);
+
+/**
+ * 校验推理强度档位：仅接受 'low' | 'medium' | 'high'，其余返回 false。
+ * @param raw 待校验值
+ * @returns 是否为合法三档之一
+ */
+export function isReasoningLevel(raw: unknown): raw is ReasoningLevel {
+	return typeof raw === 'string' && VALID_REASONING_LEVELS.has(raw);
+}
 
 /** 设置页提交的模型字段（带 id 时更新现有模型，否则新增）。 */
 export interface ModelSettingsInput {
@@ -36,6 +53,8 @@ export interface ModelSettingsInput {
 	readonly runtime?: ModelRuntime;
 	/** 可选的新 API Key：非空才更新 SecretStorage。 */
 	readonly apiKey?: string;
+	/** 用户显式选择的推理强度三档（可选；缺省新建模型写入中档）。 */
+	readonly reasoningEffort?: ReasoningLevel;
 }
 
 /** 模型列表单项（不含 API Key 明文）。 */
@@ -62,6 +81,8 @@ export interface ModelProfileView {
 	readonly isDefault: boolean;
 	/** API Key 是否已配置（不含密钥明文）。 */
 	readonly apiKeyConfigured: boolean;
+	/** 该模型记忆的推理强度三档（缺失时未显式设置）。 */
+	readonly reasoningEffort?: ReasoningLevel;
 }
 
 /** 设置页展示视图；顶层字段保留为当前默认模型，兼容已有表单与旧 Webview。 */
@@ -86,6 +107,8 @@ export interface ModelSettingsView {
 	readonly runtime?: ModelRuntime;
 	/** API Key 是否已配置（不含密钥明文）。 */
 	readonly apiKeyConfigured: boolean;
+	/** 当前默认模型记忆的推理强度三档（缺失时未显式设置）。 */
+	readonly reasoningEffort?: ReasoningLevel;
 }
 
 /** 旧版 globalState 中的非敏感字段键名，仅用于一次性迁移。 */
@@ -104,7 +127,7 @@ const MAX_TOKENS_MIN = 1;
 const MAX_TOKENS_MAX = 128_000;
 const MAX_CONTEXT_TOKENS_MIN = 1_024;
 const MAX_CONTEXT_TOKENS_MAX = 10_000_000;
-const SUPPORTED_PROVIDERS: readonly string[] = ['openai'];
+const SUPPORTED_PROVIDERS: readonly string[] = ['openai', 'anthropic'];
 
 /** 旧版 globalState 持久化结构。 */
 interface LegacyStoredModelFields {
@@ -128,6 +151,8 @@ interface StoredModelProfile extends LegacyStoredModelFields {
 	readonly maxContextTokens: number;
 	readonly runtime: ModelRuntime;
 	readonly enabled: boolean;
+	/** 该模型显式选择的推理强度三档（可选；旧档案缺失时保持未设置）。 */
+	readonly reasoningEffort?: ReasoningLevel;
 }
 
 /** 文件中保存的多模型容器。 */
@@ -146,6 +171,7 @@ interface StoredModelDocument {
 export function validateModelSettings(input: ModelSettingsInput): string | null {
 	if (!input.model || !input.model.trim()) {return '模型名称不能为空';}
 	if (!SUPPORTED_PROVIDERS.includes(input.provider)) {return `不支持的模型服务: ${input.provider}（仅支持 ${SUPPORTED_PROVIDERS.join('、')}）`;}
+	if (input.provider === 'anthropic' && normalizeRuntime(input.runtime) === 'legacy') {return 'Anthropic 模型仅支持 ai-sdk 运行时，不支持 legacy 手写 OpenAI 运行时';}
 	if (input.baseURL) {
 		try {
 			const url = new URL(input.baseURL);
@@ -222,6 +248,7 @@ export class ModelConfigStore {
 			maxContextTokens: selected?.maxContextTokens ?? DEFAULT_MODEL_CONFIG.maxContextTokens,
 			runtime: selected?.runtime ?? DEFAULT_MODEL_CONFIG.runtime,
 			apiKeyConfigured: selected ? Boolean(await this.context.secrets.get(this._apiKeySecretKey(selected.id))) : false,
+			...(selected?.reasoningEffort ? { reasoningEffort: selected.reasoningEffort } : {}),
 		};
 	}
 
@@ -241,16 +268,19 @@ export class ModelConfigStore {
 		const existing = input.id ? document.models.find((item) => item.id === input.id) : undefined;
 		if (input.id && !existing) {throw new Error('未找到要编辑的模型配置');}
 		const id = existing?.id ?? this._newId(document.models);
+		const defaultBaseURL = input.provider === 'anthropic' ? ANTHROPIC_DEFAULT_BASE_URL : DEFAULT_MODEL_CONFIG.baseURL;
 		const profile: StoredModelProfile = {
 			id,
 			provider: input.provider,
 			model: input.model.trim(),
-			baseURL: input.baseURL || DEFAULT_MODEL_CONFIG.baseURL,
+			baseURL: input.baseURL || defaultBaseURL,
 			temperature: input.temperature,
 			maxTokens: input.maxTokens,
 			maxContextTokens: input.maxContextTokens ?? DEFAULT_MODEL_CONFIG.maxContextTokens ?? 262144,
 			runtime: normalizeRuntime(input.runtime),
 			enabled: existing?.enabled ?? true,
+			// 新建模型默认中档；编辑其他字段时保留既有档位，除非本次显式携带 reasoningEffort
+			reasoningEffort: input.reasoningEffort ?? existing?.reasoningEffort ?? (existing ? undefined : DEFAULT_REASONING_LEVEL),
 		};
 		const models = existing ? document.models.map((item) => item.id === id ? profile : item) : [...document.models, profile];
 		await this._writeDocument({ version: 1, defaultModelId: document.defaultModelId ?? id, models });
@@ -275,6 +305,36 @@ export class ModelConfigStore {
 		if (!profile.enabled) {throw new Error('请先启用该模型，再设为默认模型');}
 		await this._writeDocument({ ...document, defaultModelId: modelId });
 		logger.log(`[ModelConfigStore] 默认模型已切换 id=${modelId} model=${profile.model}`);
+		return this.getModelConfig();
+	}
+
+	/**
+	 * 为指定模型持久化推理强度三档。目标模型必须是当前默认且已启用，非法档位被拒绝。
+	 *
+	 * @param modelId 模型 ID
+	 * @param level 推理强度三档（low/medium/high）
+	 * @returns 当前默认模型完整配置
+	 */
+	async setReasoningEffort(modelId: string, level: ReasoningLevel): Promise<ModelConfig> {
+		if (!isReasoningLevel(level)) {
+			logger.error(`[ModelConfigStore] 拒绝非法推理强度档位 modelId=${modelId} level=${String(level)}`);
+			throw new Error('推理强度档位不合法（仅支持 low/medium/high）');
+		}
+		const document = await this._readDocument();
+		const profile = document.models.find((item) => item.id === modelId);
+		if (!profile) {
+			logger.error(`[ModelConfigStore] 拒绝设置推理强度，目标模型不存在 modelId=${modelId}`);
+			throw new Error('未找到要设置推理强度的模型');
+		}
+		if (!profile.enabled || document.defaultModelId !== modelId) {
+			logger.error(`[ModelConfigStore] 拒绝设置推理强度，目标模型非当前默认或未启用 modelId=${modelId} enabled=${profile.enabled}`);
+			throw new Error('只能为当前默认且已启用的模型设置推理强度');
+		}
+		await this._writeDocument({
+			...document,
+			models: document.models.map((item) => item.id === modelId ? { ...item, reasoningEffort: level } : item),
+		});
+		logger.log(`[ModelConfigStore] 推理强度已持久化 modelId=${modelId} level=${level}`);
 		return this.getModelConfig();
 	}
 
@@ -431,6 +491,16 @@ export class ModelConfigStore {
 	 * @returns 完整模型配置
 	 */
 	private _toModelConfig(profile: StoredModelProfile, apiKey: string): ModelConfig {
-		return { provider: profile.provider, model: profile.model, apiKey, baseURL: profile.baseURL, temperature: profile.temperature, maxTokens: profile.maxTokens, maxContextTokens: profile.maxContextTokens ?? DEFAULT_MODEL_CONFIG.maxContextTokens, runtime: profile.runtime };
+		return {
+			provider: profile.provider,
+			model: profile.model,
+			apiKey,
+			baseURL: profile.baseURL,
+			temperature: profile.temperature,
+			maxTokens: profile.maxTokens,
+			maxContextTokens: profile.maxContextTokens ?? DEFAULT_MODEL_CONFIG.maxContextTokens,
+			runtime: profile.runtime,
+			...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}),
+		};
 	}
 }

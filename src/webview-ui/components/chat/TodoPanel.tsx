@@ -1,8 +1,9 @@
 /**
  * 会话任务面板 - 只读展示模型通过 todo_write 维护的当前任务进度。
+ * review 阶段额外提供"执行计划 / 继续规划 / 退出规划"三种审阅操作。
  */
 import { useState, type JSX } from 'react';
-import type { TodoSnapshot, TodoStatus, TodoSummary } from '../../protocol';
+import type { PlanStage, TodoSnapshot, TodoStatus, TodoSummary } from '../../protocol';
 
 /** 任务面板属性。 */
 export interface TodoPanelProps {
@@ -10,6 +11,16 @@ export interface TodoPanelProps {
 	readonly snapshot: TodoSnapshot | null;
 	/** 当前会话的状态汇总。 */
 	readonly summary: TodoSummary | null;
+	/** 当前会话的 Plan 阶段；review 时显示审阅操作。 */
+	readonly planStage?: PlanStage;
+	/** 当前会话 ID（操作消息携带，防止过期会话操作）。 */
+	readonly sessionId?: string | null;
+	/** 执行计划（review → executing）。 */
+	readonly onExecute: () => void;
+	/** 继续规划（review → planning，保留草案）。 */
+	readonly onContinue: () => void;
+	/** 退出规划（回到 normal，按草案标记清理）。 */
+	readonly onExit: () => void;
 }
 
 /**
@@ -31,12 +42,29 @@ function statusMark(status: TodoStatus): string {
 }
 
 /**
- * 展示或折叠当前会话的任务列表。
+ * 展示或折叠当前会话的任务列表；review 阶段展示三种审阅操作。
  * @param props 任务面板属性。
  * @returns 任务面板元素；无任务时不渲染。
  */
-export function TodoPanel({ snapshot, summary }: TodoPanelProps): JSX.Element | null {
+export function TodoPanel({
+	snapshot,
+	summary,
+	planStage,
+	onExecute,
+	onContinue,
+	onExit,
+}: TodoPanelProps): JSX.Element | null {
 	const [expanded, setExpanded] = useState(true);
+	// 审阅操作防抖：点击后短暂禁用，防止重复触发确认执行
+	const [pendingAction, setPendingAction] = useState<string | null>(null);
+	const act = (action: string, run: () => void): void => {
+		if (pendingAction) {
+			return;
+		}
+		setPendingAction(action);
+		run();
+		window.setTimeout(() => setPendingAction(null), 800);
+	};
 	if (!snapshot || !summary || snapshot.todos.length === 0) {
 		return null;
 	}
@@ -81,6 +109,34 @@ export function TodoPanel({ snapshot, summary }: TodoPanelProps): JSX.Element | 
 						</li>
 					))}
 				</ol>
+			)}
+			{planStage === 'review' && (
+				<div className="todo-panel__actions" role="group" aria-label="计划审阅操作">
+					<button
+						type="button"
+						className="todo-panel__action todo-panel__action--primary"
+						disabled={pendingAction !== null}
+						onClick={() => act('execute', onExecute)}
+					>
+						执行计划
+					</button>
+					<button
+						type="button"
+						className="todo-panel__action"
+						disabled={pendingAction !== null}
+						onClick={() => act('continue', onContinue)}
+					>
+						继续规划
+					</button>
+					<button
+						type="button"
+						className="todo-panel__action todo-panel__action--ghost"
+						disabled={pendingAction !== null}
+						onClick={() => act('exit', onExit)}
+					>
+						退出规划
+					</button>
+				</div>
 			)}
 		</section>
 	);

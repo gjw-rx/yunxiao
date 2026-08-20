@@ -5,9 +5,13 @@
  */
 import { createReadStream } from 'fs';
 import { promises as fs } from 'fs';
+import type { Stats } from 'fs';
 import * as path from 'path';
 import {
 	BaseTool,
+	DEFAULT_GOVERN_MAX_BYTES,
+	DEFAULT_GOVERN_MAX_LINES,
+	DEFAULT_TOOL_RESULT_LIMIT,
 	requireStringArg,
 	type ToolContext,
 	type ToolExecutionResult,
@@ -25,6 +29,8 @@ export const DEFAULT_READ_LIMIT = 2000;
 export const DEFAULT_MAX_BYTES = 50 * 1024;
 /** 默认单行最大字符数（超出截断并标注）。 */
 export const DEFAULT_MAX_LINE_LENGTH = 2000;
+/** 文件分页包装（路径、类型、内容标签与结尾提示）占用的最大行数。 */
+const READ_OUTPUT_WRAPPER_LINES = 6;
 
 /** 单行截断后缀。 */
 const MAX_LINE_SUFFIX = `... (line truncated to ${DEFAULT_MAX_LINE_LENGTH} chars)`;
@@ -74,6 +80,28 @@ interface ReadPageResult {
 	more: boolean;
 	/** 是否检测到二进制内容（NUL 字节）。 */
 	binary: boolean;
+}
+
+/** 当前 Agent 运行内单个已读取文件区间的复用记录。 */
+interface ReadCacheEntry {
+	/** 文件变化指纹。 */
+	readonly version: string;
+	/** 已读取的起始行号。 */
+	readonly offset: number;
+	/** 请求的最大行数。 */
+	readonly limit: number;
+	/** 实际返回的最后一行号。 */
+	readonly last: number;
+	/** 是否因行数或字节预算截断。 */
+	readonly truncated: boolean;
+}
+
+/** 正在进行的读取及其完成通知，用于让并发重复调用只读取一次。 */
+interface PendingRead {
+	/** 等待首个读取完成的 Promise。 */
+	readonly completion: Promise<ReadCacheEntry | undefined>;
+	/** 通知等待者首个读取结果。 */
+	readonly resolve: (entry: ReadCacheEntry | undefined) => void;
 }
 
 /**
@@ -213,11 +241,16 @@ function readLinesPaged(
 }
 
 export class ReadFileTool extends BaseTool {
+	/** 按会话运行隔离的已读取文件区间，避免模型在同一轮重复加载未变化内容。 */
+	private readonly readCache = new Map<string, Map<string, ReadCacheEntry>>();
+	/** 正在读取的文件区间；并发相同请求等待首个调用完成。 */
+	private readonly pendingReads = new Map<string, PendingRead>();
+
 	readonly schema: ToolSchema = {
 		name: 'fs_read_file',
 		description:
 			'读取工作区内文本文件内容（UTF-8）。输出带行号；大文件默认返回前 2000 行，可用 offset 续读；' +
-			'单行超过 2000 字符会被截断；目录请用 fs_list_dir。',
+			'单行超过 2000 字符会被截断；同一轮相同区间会复用已读取结果；目录请用 fs_list_dir。',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -241,11 +274,22 @@ export class ReadFileTool extends BaseTool {
 	): Promise<ToolExecutionResult> {
 		const inputPath = args.path as string;
 		const offset = typeof args.offset === 'number' ? args.offset : 1;
-		const limit = typeof args.limit === 'number' ? args.limit : DEFAULT_READ_LIMIT;
-		// 字节预算 = min(单页预算, maxFileSize 护栏)
-		const maxBytes = Math.min(
+		const configuredLimit = context.readMaxLines ?? DEFAULT_READ_LIMIT;
+		const maxContentLines = Math.max(
+			1,
+			(context.governMaxLines ?? DEFAULT_GOVERN_MAX_LINES) - READ_OUTPUT_WRAPPER_LINES,
+		);
+		const limit = Math.min(
+			typeof args.limit === 'number' ? args.limit : configuredLimit,
+			configuredLimit,
+			maxContentLines,
+		);
+		// 单页输出必须同时满足文件工具与统一结果治理的预算，避免连续源码区间被后续头尾裁剪。
+		const resultBudget = Math.min(
 			context.readMaxBytes ?? DEFAULT_MAX_BYTES,
-			context.maxFileSize ?? DEFAULT_MAX_FILE_SIZE
+			context.maxFileSize ?? DEFAULT_MAX_FILE_SIZE,
+			context.governMaxBytes ?? DEFAULT_GOVERN_MAX_BYTES,
+			context.toolResultLimit ?? DEFAULT_TOOL_RESULT_LIMIT,
 		);
 		const maxLineLength = context.readMaxLineLength ?? DEFAULT_MAX_LINE_LENGTH;
 		const startedAt = Date.now();
@@ -281,21 +325,56 @@ export class ReadFileTool extends BaseTool {
 			return { status: 'error', error: `二进制文件，不以文本返回: ${inputPath}` };
 		}
 
+		const cache = this.getRunCache(context);
+		const cacheKey = this.buildCacheKey(resolved.fsPath, offset, limit);
+		const cached = cache?.get(cacheKey);
+		const version = this.getFileVersion(stat);
+		if (cached?.version === version) {
+			return this.createReuseResult(resolved.fsPath, inputPath, offset, limit, cached, startedAt);
+		}
+		const pendingKey = this.buildPendingKey(context, cacheKey);
+		const pending = pendingKey ? this.pendingReads.get(pendingKey) : undefined;
+		if (pending) {
+			const completed = await pending.completion;
+			if (completed?.version === version) {
+				return this.createReuseResult(resolved.fsPath, inputPath, offset, limit, completed, startedAt);
+			}
+		}
+		let pendingRead: PendingRead | undefined;
+		if (pendingKey) {
+			let resolveCompletion: (entry: ReadCacheEntry | undefined) => void = () => undefined;
+			const completion = new Promise<ReadCacheEntry | undefined>((resolve) => {
+				resolveCompletion = resolve;
+			});
+			pendingRead = { completion, resolve: resolveCompletion };
+			this.pendingReads.set(pendingKey, pendingRead);
+		}
+		const completePending = (entry: ReadCacheEntry | undefined): void => {
+			pendingRead?.resolve(entry);
+			if (pendingKey && this.pendingReads.get(pendingKey) === pendingRead) {
+				this.pendingReads.delete(pendingKey);
+			}
+		};
+		const maxBytes = Math.max(1, resultBudget - this.getOutputOverhead(resolved.fsPath, offset, limit, resultBudget));
+
 		// 4. 流式分页读取（行数 + 字节双预算，大文件不再整体拒绝）
 		let page: ReadPageResult;
 		try {
 			page = await readLinesPaged(resolved.fsPath, { offset, limit, maxBytes, maxLineLength });
 		} catch {
+			completePending(undefined);
 			return { status: 'error', error: `读取文件失败: ${inputPath}` };
 		}
 
 		// 5. 内容 NUL 字节二进制检测
 		if (page.binary) {
+			completePending(undefined);
 			return { status: 'error', error: `二进制文件，不以文本返回: ${inputPath}` };
 		}
 
 		// 6. offset 越界检测
 		if (page.totalCount < offset && !(page.totalCount === 0 && offset === 1)) {
+			completePending(undefined);
 			return {
 				status: 'error',
 				error: `Offset ${offset} is out of range for this file (${page.totalCount} lines)`,
@@ -308,7 +387,7 @@ export class ReadFileTool extends BaseTool {
 		const last = offset + page.lines.length - 1;
 		const next = last + 1;
 		if (page.cut) {
-			output += `\n\n(Output capped at ${Math.round(maxBytes / 1024)}KB. Showing lines ${offset}-${last}. Use offset=${next} to continue.)`;
+			output += `\n\n(Output capped at ${Math.max(1, Math.ceil(resultBudget / 1024))}KB. Showing lines ${offset}-${last}. Use offset=${next} to continue.)`;
 		} else if (page.more) {
 			output += `\n\n(Showing lines ${offset}-${last} of ${page.totalCount}. Use offset=${next} to continue.)`;
 		} else {
@@ -324,13 +403,110 @@ export class ReadFileTool extends BaseTool {
 		}
 
 		logger.log(`[fs_read_file] 完成 - path=${inputPath}, lines=${page.lines.length}, totalCount=${page.totalCount}, duration_ms=${Date.now() - startedAt}`);
+		const entry: ReadCacheEntry = {
+			version,
+			offset,
+			limit,
+			last,
+			truncated: page.more || page.cut,
+		};
+		cache?.set(cacheKey, entry);
+		completePending(entry);
 		return {
 			status: 'success',
 			result: output,
 			metadata: {
 				duration_ms: Date.now() - startedAt,
+				paginated: true,
 				truncated: page.more || page.cut,
 			},
 		};
+	}
+
+	/** 构造当前 Agent 运行的读取缓存；缺少会话或运行标识时不缓存。 */
+	private getRunCache(context: ToolContext): Map<string, ReadCacheEntry> | undefined {
+		if (!context.sessionId || !context.runId) {
+			return undefined;
+		}
+		const runKey = `${context.sessionId}:${context.runId}`;
+		let cache = this.readCache.get(runKey);
+		if (!cache) {
+			cache = new Map<string, ReadCacheEntry>();
+			this.readCache.set(runKey, cache);
+		}
+		return cache;
+	}
+
+	/** 构造文件区间的规范化缓存键。 */
+	private buildCacheKey(filePath: string, offset: number, limit: number): string {
+		return `${filePath}\u0000${offset}\u0000${limit}`;
+	}
+
+	/** 根据文件大小和修改时间构造轻量变化指纹。 */
+	private getFileVersion(stat: Stats): string {
+		return `${stat.size}:${stat.mtimeMs}`;
+	}
+
+	/** 创建已复用读取结果，提示模型与用户改用前一次连续内容。 */
+	private createReuseResult(
+		filePath: string,
+		inputPath: string,
+		offset: number,
+		limit: number,
+		entry: ReadCacheEntry,
+		startedAt: number,
+	): ToolExecutionResult {
+		logger.log(`[fs_read_file] 复用当前轮读取结果 - path=${inputPath}, offset=${offset}, limit=${limit}`);
+		return {
+			status: 'success',
+			result: [
+				`<path>${filePath}</path>`,
+				'<type>file</type>',
+				'<read_reuse>',
+				`文件未变化，已复用当前轮已读取内容（行 ${offset}-${entry.last}）。请基于前一次工具结果继续分析；如需其他区间请使用 offset。`,
+				'</read_reuse>',
+			].join('\n'),
+			metadata: {
+				duration_ms: Date.now() - startedAt,
+				reused: true,
+				paginated: true,
+				truncated: entry.truncated || undefined,
+			},
+		};
+	}
+
+	/** 估算分页包装文本的最大开销，预留后保证结果不会突破统一字符预算。 */
+	private getOutputOverhead(filePath: string, offset: number, limit: number, resultBudget: number): number {
+		const last = offset + limit - 1;
+		const next = last + 1;
+		return Buffer.byteLength([
+			`<path>${filePath}</path>`,
+			'<type>file</type>',
+			'<content>',
+			'',
+			`(Output capped at ${Math.max(1, Math.ceil(resultBudget / 1024))}KB. Showing lines ${offset}-${last}. Use offset=${next} to continue.)`,
+			'</content>',
+		].join('\n'), 'utf8');
+	}
+
+	/** 构造并发读取等待表的键；缺少会话或运行标识时不做单飞控制。 */
+	private buildPendingKey(context: ToolContext, cacheKey: string): string | undefined {
+		return context.sessionId && context.runId ? `${context.sessionId}:${context.runId}\u0000${cacheKey}` : undefined;
+	}
+
+	/** 在写操作后清除指定运行的读取记录，确保后续读取获取最新文件内容。 */
+	invalidateRunCache(sessionId: string | undefined, runId: string | undefined): void {
+		if (!sessionId || !runId) {
+			return;
+		}
+		this.readCache.delete(`${sessionId}:${runId}`);
+		const prefix = `${sessionId}:${runId}\u0000`;
+		for (const [key, pending] of this.pendingReads) {
+			if (key.startsWith(prefix)) {
+				pending.resolve(undefined);
+				this.pendingReads.delete(key);
+			}
+		}
+		logger.log(`[fs_read_file] 已清除运行读取缓存 - sessionId=${sessionId}, runId=${runId}`);
 	}
 }

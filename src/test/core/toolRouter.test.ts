@@ -35,6 +35,26 @@ class FakeWriteTool extends BaseTool {
 	}
 }
 
+/** 测试用文件查询工具：暴露运行缓存失效调用次数。 */
+class FakeFileLookupTool extends BaseTool {
+	readonly schema: ToolSchema = {
+		name: 'fs_search_files',
+		description: 'fake search',
+		parameters: { type: 'object', properties: {} },
+		permissions: 'read',
+	};
+	invalidated: Array<{ sessionId: string | undefined; runId: string | undefined }> = [];
+
+	async execute(): Promise<ToolExecutionResult> {
+		return { status: 'success', result: 'search result' };
+	}
+
+	/** 记录写操作触发的缓存失效请求。 */
+	invalidateRunCache(sessionId: string | undefined, runId: string | undefined): void {
+		this.invalidated.push({ sessionId, runId });
+	}
+}
+
 const CTX: ToolContext = { workspaceRoots: [], sessionId: 'sess-1' };
 
 class MemoryState implements WorkspaceState {
@@ -160,6 +180,23 @@ describe('ToolRouter approval gating', () => {
 		// Assert
 		assert.strictEqual(result.status, 'success'); // 直通执行
 		assert.deepStrictEqual(tool.executed, ['a.ts']);
+	});
+
+	it('写工具成功后清除当前运行的文件查询缓存', async () => {
+		// Arrange
+		const reg = new ToolRegistry();
+		reg.register(new FakeWriteTool());
+		const lookup = new FakeFileLookupTool();
+		reg.register(lookup);
+		const router = new ToolRouter(reg);
+		// Act
+		const result = await router.route(
+			{ call_id: 'invalidate-1', tool: 'fs_write_file', args: { path: 'a.ts', content: 'x' } },
+			{ ...CTX, runId: 'run-1' },
+		);
+		// Assert
+		assert.strictEqual(result.status, 'success');
+		assert.deepStrictEqual(lookup.invalidated, [{ sessionId: 'sess-1', runId: 'run-1' }]);
 	});
 
 	it('复用已完成的副作用工具结果而不重复执行', async () => {

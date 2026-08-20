@@ -63,6 +63,11 @@ export function mapStreamPart<T extends ToolSet>(
 			return [{ type: 'toolCall', id: part.toolCallId, name: part.toolName, arguments: argumentsText }];
 		}
 		case 'finish': {
+			// finishReason='error'：AI SDK 在流内 error part 之后仍会补发一次顶层 finish 收尾（无更多 step 时），
+			// 但既然已发出 error 事件，不应再发成功 finish（design.md：出错后停止该次调用，不发出成功 finish）
+			if (part.finishReason === 'error') {
+				return [];
+			}
 			const events: LLMEvent[] = [];
 			if (!state.usageEmitted && part.totalUsage) {
 				state.usageEmitted = true;

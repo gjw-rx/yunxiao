@@ -166,7 +166,7 @@ describe('AgentLoop 模型可见任务状态', () => {
 			store.append('s1', {
 				role: 'compaction',
 				summary: '已压缩摘要',
-				recentContext: [...store.loadHistory('s1')],
+				firstKeptSeq: 0,
 				todoContext:
 					'当前会话的任务进度（由本地 todo_write 工具维护）：\n- [进行中] a. 任务A\n- [待办] b. 任务B\n继续执行这些未完成任务；不要重复已完成任务。',
 			});

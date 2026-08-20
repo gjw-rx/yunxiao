@@ -92,7 +92,7 @@ async function setup() {
 }
 
 describe('ChatViewProvider /model 切换模型宿主处理', () => {
-	it('返回已启用模型列表供对话面板的模型弹窗展示', async () => {
+	it('返回已启用模型列表供对话面板的模型弹窗展示（含推理档位，不含敏感字段）', async () => {
 		const { internals, messages, modelA, modelB } = await setup();
 		assert.ok(modelA);
 		assert.ok(modelB);
@@ -102,10 +102,15 @@ describe('ChatViewProvider /model 切换模型宿主处理', () => {
 		assert.deepStrictEqual(messages, [{
 			command: 'modelPicker',
 			models: [
-				{ id: modelA!.id, model: 'gpt-4o', provider: 'openai', isDefault: true },
-				{ id: modelB!.id, model: 'deepseek-chat', provider: 'openai', isDefault: false },
+				{ id: modelA!.id, model: 'gpt-4o', provider: 'openai', isDefault: true, reasoningEffort: 'medium' },
+				{ id: modelB!.id, model: 'deepseek-chat', provider: 'openai', isDefault: false, reasoningEffort: 'medium' },
 			],
 		}]);
+		// 弹层数据不得包含 API Key / baseURL 等敏感连接信息
+		const serialized = JSON.stringify(messages);
+		assert.ok(!serialized.includes('sk-a'), '弹层数据不得包含 API Key');
+		assert.ok(!serialized.includes('sk-b'), '弹层数据不得包含 API Key');
+		assert.ok(!serialized.includes('api.openai.com') && !serialized.includes('ds/v1'), '弹层数据不得包含 baseURL');
 	});
 
 	it('从对话面板模型弹窗选择模型后切换默认模型', async () => {
@@ -208,5 +213,72 @@ describe('ChatViewProvider /model 切换模型宿主处理', () => {
 
 		assert.strictEqual(quickPickCalled, false, '无可用模型时不应弹出选择列表');
 		assert.strictEqual(savedConfigs.length, 0, '无可用模型时不应触发保存回调');
+	});
+
+	it('切换模型后同步目标模型记忆的推理档位', async () => {
+		const { internals, modelStore, savedConfigs, modelA, modelB } = await setup();
+		assert.ok(modelA);
+		assert.ok(modelB);
+		// 先切换 model-b 为默认，再为其记忆高档（setReasoningEffort 仅允许当前默认模型）
+		await modelStore.setDefaultModel(modelB!.id);
+		await modelStore.setReasoningEffort(modelB!.id, 'high');
+		// 切回 model-a 为默认，再通过弹层切回 model-b，应同步其记忆的高档
+		await modelStore.setDefaultModel(modelA!.id);
+
+		await internals._handleMessage({ command: 'selectModel', modelId: modelB!.id });
+
+		const view = await modelStore.getSettingsView();
+		assert.strictEqual(view.defaultModelId, modelB!.id);
+		assert.strictEqual(view.reasoningEffort, 'high', '切换模型后应同步目标模型记忆的档位');
+		assert.strictEqual(savedConfigs.length, 1);
+		const saved = savedConfigs[0] as { reasoningEffort?: string };
+		assert.strictEqual(saved.reasoningEffort, 'high', '保存回调配置应携带目标模型档位');
+	});
+
+	it('有效推理强度选择持久化并推送最新模型信息', async () => {
+		const { internals, modelStore, savedConfigs, modelA } = await setup();
+		assert.ok(modelA);
+
+		await internals._handleMessage({ command: 'selectReasoningLevel', modelId: modelA!.id, level: 'low' });
+
+		const view = await modelStore.getSettingsView();
+		assert.strictEqual(view.reasoningEffort, 'low');
+		assert.strictEqual(savedConfigs.length, 1, '选择档位应触发 onModelConfigSaved');
+		const saved = savedConfigs[0] as { reasoningEffort?: string };
+		assert.strictEqual(saved.reasoningEffort, 'low');
+	});
+
+	it('拒绝非法推理强度档位', async () => {
+		const { internals, modelStore, savedConfigs, modelA } = await setup();
+		assert.ok(modelA);
+		const origError = vscode.window.showErrorMessage;
+		vscode.window.showErrorMessage = (async () => undefined) as unknown as typeof vscode.window.showErrorMessage;
+		try {
+			await internals._handleMessage({ command: 'selectReasoningLevel', modelId: modelA!.id, level: 'max' });
+		} finally {
+			vscode.window.showErrorMessage = origError;
+		}
+
+		const view = await modelStore.getSettingsView();
+		assert.strictEqual(view.reasoningEffort, 'medium', '非法档位应保留原值');
+		assert.strictEqual(savedConfigs.length, 0, '非法档位不应触发保存回调');
+	});
+
+	it('拒绝为过期/非当前默认模型设置档位', async () => {
+		const { internals, modelStore, savedConfigs, modelA, modelB } = await setup();
+		assert.ok(modelA);
+		assert.ok(modelB);
+		const origError = vscode.window.showErrorMessage;
+		vscode.window.showErrorMessage = (async () => undefined) as unknown as typeof vscode.window.showErrorMessage;
+		try {
+			// model-b 不是当前默认模型，应被拒绝
+			await internals._handleMessage({ command: 'selectReasoningLevel', modelId: modelB!.id, level: 'high' });
+		} finally {
+			vscode.window.showErrorMessage = origError;
+		}
+
+		const view = await modelStore.getSettingsView();
+		assert.strictEqual(view.defaultModelId, modelA!.id, '默认模型不应改变');
+		assert.strictEqual(savedConfigs.length, 0, '过期请求不应触发保存回调');
 	});
 });

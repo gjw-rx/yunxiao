@@ -5,6 +5,7 @@
  * 本文件不再从 VS Code 配置 API 读取 `yunxiaoAgent.model.*`。
  */
 import * as logger from '../logger';
+import type { ReasoningLevel } from '../llm/types';
 
 /**
  * 模型运行时选择（迁移期临时开关）。
@@ -31,6 +32,8 @@ export interface ModelConfig {
 	readonly maxContextTokens?: number;
 	/** 模型运行时选择（迁移期开关，缺省为 ai-sdk） */
 	readonly runtime?: ModelRuntime;
+	/** 用户显式选择的推理强度三档（仅当前模型可选；缺省沿用 Provider 默认行为）。 */
+	readonly reasoningEffort?: ReasoningLevel;
 }
 
 /** 模型配置安全默认值（无已保存配置时使用，供存储服务合并）。 */
@@ -44,6 +47,9 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
 	maxContextTokens: 262144,
 	runtime: 'ai-sdk',
 };
+
+/** Anthropic 官方 Messages API 默认地址（未填写自定义 baseURL 时使用）。 */
+export const ANTHROPIC_DEFAULT_BASE_URL = 'https://api.anthropic.com/v1';
 
 /** 合法 runtime 取值集合 */
 const VALID_RUNTIMES: ReadonlySet<string> = new Set(['ai-sdk', 'legacy']);

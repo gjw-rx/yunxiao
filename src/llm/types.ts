@@ -37,6 +37,8 @@ export interface ToolMessage {
 	readonly role: 'tool';
 	readonly toolCallId: string;
 	readonly content: string;
+	/** 对应 tool call 的工具名；Anthropic tool_result 转换需要，缺失的历史记录由历史加载器恢复后补齐。 */
+	readonly toolName?: string;
 }
 
 /** LLM 消息（discriminated union） */
@@ -60,6 +62,12 @@ export interface ToolDefinition {
 
 /** 工具选择策略 */
 export type ToolChoice = 'auto' | 'none' | 'required';
+
+/**
+ * 用户可见的推理强度三档（模型配置弹层与按模型持久化使用）。
+ * 与 `ReasoningEffort` 的 low/medium/high 一一对应；仅展示这三档，不含 minimal/disabled。
+ */
+export type ReasoningLevel = 'low' | 'medium' | 'high';
 
 /**
  * 思维链强度（OpenAI reasoning 规范）。

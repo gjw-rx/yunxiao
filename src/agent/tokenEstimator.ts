@@ -79,6 +79,7 @@ function getMessageText(msg: Message): string {
 		case 'tool':
 			return msg.content;
 		case 'compaction':
-			return msg.summary + (msg.todoContext ?? '') + msg.recentContext.map((m) => getMessageText(m)).join('');
+			// 新检查点以 firstKeptSeq 为边界（原文由活动路径提供，不再复制）；旧检查点按 recentContext 展开
+			return msg.summary + (msg.todoContext ?? '') + (msg.recentContext ? msg.recentContext.map((m) => getMessageText(m)).join('') : '');
 	}
 }
