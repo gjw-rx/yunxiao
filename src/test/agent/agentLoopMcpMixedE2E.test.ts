@@ -34,7 +34,7 @@ const fixtures: HttpFixtureHandle[] = [];
 /** 可观测并发的本地只读工具：记录峰值并发与执行顺序。 */
 class LocalReadProbeTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'local_read',
+		name: 'fs_read_file',
 		description: '本地只读探测',
 		parameters: { type: 'object', properties: { path: { type: 'string' } } },
 		permissions: 'read',
@@ -123,7 +123,7 @@ describe('本地+STDIO+远程混合调用（11.7）', () => {
 		const provider = makeProvider([
 			[
 				makeToolCallEvent('m0', 'mcp__fixture__tool_0', { input: 'mcp-read' }),
-				makeToolCallEvent('l0', 'local_read', { path: '/a.ts' }),
+				makeToolCallEvent('l0', 'read', { path: '/a.ts' }),
 				makeFinishEvent('tool_use'),
 			],
 			[makeTextEvent('done'), makeFinishEvent()],

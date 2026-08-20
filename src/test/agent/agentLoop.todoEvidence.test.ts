@@ -83,7 +83,7 @@ function createSequenceProvider(eventsPerCall: readonly (readonly LLMEvent[])[])
 
 /** 构造 todo_write 工具调用事件。 @param id 调用 ID。 @param todos 任务列表。 @returns 工具调用事件。 */
 function makeTodoCall(id: string, todos: readonly TodoItem[]): LLMEvent {
-	return { type: 'toolCall', id, name: 'todo_write', arguments: JSON.stringify({ todos }) };
+	return { type: 'toolCall', id, name: 'todowrite', arguments: JSON.stringify({ todos }) };
 }
 
 /** 构造 AgentLoop。 @param provider LLM Provider。 @param todoStore 任务存储。 @param store 消息存储。 @returns AgentLoop。 */

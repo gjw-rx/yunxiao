@@ -18,7 +18,13 @@ import type { SessionPlanModeStore } from '../core/planModeStore';
 import type { ToolContext } from '../tools/baseTool';
 import type { ToolResult, ToolCall } from '../core/types';
 import type { SkillRegistry } from '../skill/skillRegistry';
-import { toolSchemasToDefinitions, llmToolCallToCoreToolCall, toolResultToContent } from './toolAdapter';
+import { toolSchemasToDefinitions, toolResultToContent } from './toolAdapter';
+import {
+	buildRunToolSnapshot,
+	resolveResponsibilityCall,
+	snapshotAllSchemas,
+	type RunToolSnapshot,
+} from './toolExposurePolicy';
 import { buildSystemPrompt } from './systemPrompt';
 import { loadProjectRules, loadAgentProjectRules } from './projectRules';
 import { loadTraeRules } from './traeRules';
@@ -31,6 +37,7 @@ import { estimateText, estimateRequest } from './tokenEstimator';
 import type { TokenUsageSnapshot } from '../memory/types';
 import type { Message } from '../memory/types';
 import type { TodoSnapshot, TodoItem } from '../memory/todoTypes';
+import type { PlanStage } from '../memory/planTypes';
 import type { SessionTodoStore } from '../memory/sessionTodoStore';
 import { randomUUID } from 'crypto';
 import { DoomLoopDetector } from './doomLoopDetector';
@@ -349,6 +356,24 @@ export class AgentLoop {
 		let stepWarned = false;
 		let emptyReplyRetries = 0;
 
+		// 本次 run 固定使用启动时的 Plan 阶段与工具暴露快照（任务 3.1/3.3）：
+		// 本地职责型 schema、ready MCP schema、token 估算、压缩与每轮模型请求复用同一快照，
+		// Registry / MCP 状态或 Plan 阶段在 run 中途的变化从下一次 run 生效。
+		const runPlanStage: PlanStage = this.config.planModeStore?.getState(sessionId).stage ?? 'normal';
+		const runToolSnapshot: RunToolSnapshot = buildRunToolSnapshot(
+			this.toolRegistry.listLocalTools(),
+			this.toolRegistry.listMcpTools(),
+			runPlanStage,
+		);
+		// 可观测性：仅记录统计（本地职责数 / MCP 直出数 / schema 估算 token），不含敏感参数或完整 schema
+		const schemaTokenEstimate = estimateText(
+			JSON.stringify([...runToolSnapshot.localTools, ...runToolSnapshot.mcpTools].map((s) => s.name)),
+		);
+		logger.log(
+			`[AgentLoop] 工具暴露快照就绪 sessionId=${sessionId} runId=${runId} stage=${runPlanStage} ` +
+			`localExposed=${runToolSnapshot.exposedLocalCount}/${runToolSnapshot.registeredLocalCount} mcpExposed=${runToolSnapshot.exposedMcpCount} schemaTokenEstimate=${schemaTokenEstimate}`,
+		);
+
 		try {
 			while (true) {
 				if (signal.aborted) {
@@ -423,11 +448,8 @@ export class AgentLoop {
 					logger.log(`[AgentLoop] step=${step} 接近 maxSteps=${this.config.maxSteps}，注入预警`);
 				}
 
-				// ── 6. 物化工具定义（Plan 模式先按会话阶段过滤，token 估算/压缩/请求共用同一工具集）──
-				const schemas = this.config.planModeStore
-					? this.toolRegistry.list().filter((schema) =>
-						this.config.planModeStore!.isToolAllowed(sessionId, schema))
-					: this.toolRegistry.list();
+				// ── 6. 物化工具定义（复用 run 级暴露快照：本地职责型 + ready MCP，token 估算/压缩/请求共用同一工具集）──
+				const schemas = snapshotAllSchemas(runToolSnapshot);
 				const tools = toolSchemasToDefinitions(schemas);
 				if (this.config.compaction) {
 					const requestTokens = estimateRequest(
@@ -624,6 +646,7 @@ export class AgentLoop {
 					doomDetector,
 					sessionId,
 					userText,
+					runToolSnapshot,
 				);
 
 				// 工具执行后检查中断
@@ -791,6 +814,7 @@ export class AgentLoop {
 	/**
 	 * 执行本轮工具调用（参照 langchain maxConcurrency / Anthropic 并行 tool use 实践）。
 	 * - doom loop 检测提前到调度前：命中后注入引导，该调用及其后的调用不再执行
+	 * - 职责型本地工具解析为底层 ToolCall 后交由 ToolRouter；未暴露工具与 virtual 工具在路由前被拒绝
 	 * - 只读+canParallel 工具最多 MAX_PARALLEL_TOOLS 个并发，写/执行/destructive 串行
 	 * - 结果按模型返回顺序写入 messageStore，保证 OpenAI 兼容 API 的 tool 消息配对稳定
 	 */
@@ -800,6 +824,7 @@ export class AgentLoop {
 		doomDetector: DoomLoopDetector,
 		sessionId: string,
 		userText: string,
+		runToolSnapshot: RunToolSnapshot,
 	): Promise<{ blocked: boolean }> {
 		// 1. 调度前 doom 扫描：找到第一个触发 doom loop 的调用，其后的调用不再执行
 		let doomIndex = -1;
@@ -825,25 +850,40 @@ export class AgentLoop {
 			});
 		}
 
-		// 2. 分组：只读+canParallel 进并行组，其余进串行组
-		const parallel: Array<{ coreCall: ToolCall; index: number }> = [];
-		const serial: Array<{ coreCall: ToolCall; index: number }> = [];
+		// 2. 解析为可执行项：职责型名称映射到底层 ToolCall；未暴露/virtual 直接生成拒绝结果
+		const executables: Array<{ callBack: ToolCall; parallelable: boolean } | { preResult: ToolResult } | undefined> =
+			new Array(schedulable.length);
 		schedulable.forEach((tc, index) => {
-			const coreCall = llmToolCallToCoreToolCall(tc);
-			(this.toolRouter.canRunInParallel(coreCall) ? parallel : serial).push({ coreCall, index });
+			executables[index] = this.resolveExecutable(tc, runToolSnapshot);
 		});
 
-		// 3. 执行：并行组有界并发，串行组逐个；结果按原索引写入
+		// 3. 分组：只读+canParallel 进并行组，其余进串行组（含预生成拒绝结果）
+		const parallel: Array<{ callBack: ToolCall; index: number; modelName: string }> = [];
+		const serial: Array<{ callBack: ToolCall; index: number; modelName: string }> = [];
+		schedulable.forEach((tc, index) => {
+			const item = executables[index];
+			if (item && 'callBack' in item) {
+				(item.parallelable ? parallel : serial).push({ callBack: item.callBack, index, modelName: tc.name });
+			}
+		});
+
+		// 4. 执行：并行组有界并发，串行组逐个；结果按原索引写入
 		const results: Array<ToolResult | undefined> = new Array(schedulable.length);
 		await this.runBoundedParallel(parallel, results, toolContext, sessionId);
 		for (const item of serial) {
 			if (this.abortController?.signal.aborted) {
 				break;
 			}
-			results[item.index] = await this.executeSingleTool(item.coreCall, toolContext, sessionId);
+			results[item.index] = await this.executeSingleTool(item.callBack, item.modelName, toolContext, sessionId);
 		}
+		schedulable.forEach((tc, index) => {
+			const item = executables[index];
+			if (item && 'preResult' in item) {
+				results[index] = item.preResult;
+			}
+		});
 
-		// 4. 跟踪 todo_write 成功信号（Plan 模式状态转换依据），按模型返回顺序写入 tool 消息（被 doom 跳过的调用不写）
+		// 5. 跟踪 todo_write 成功信号（Plan 模式状态转换依据），按模型返回顺序写入 tool 消息（被 doom 跳过的调用不写）
 		schedulable.forEach((tc, index) => {
 			const result = results[index];
 			if (result) {
@@ -867,6 +907,52 @@ export class AgentLoop {
 	}
 
 	/**
+	 * 将模型提交的工具调用解析为可执行项。
+	 * 职责型本地工具映射为底层 ToolCall（仍经 ToolRouter 执行）；未暴露的本地/MCP 工具与
+	 * 无底层实现的 virtual 工具（webfetch/task/question）直接在路由前生成拒绝结果。
+	 *
+	 * @param tc 模型提交的工具调用。
+	 * @param snapshot 当前 run 的工具暴露快照。
+	 * @returns 含底层 ToolCall 的可执行项，或预生成的拒绝结果，或 undefined。
+	 */
+	private resolveExecutable(
+		tc: { id: string; name: string; arguments: string },
+		snapshot: RunToolSnapshot,
+	): { callBack: ToolCall; parallelable: boolean } | { preResult: ToolResult } | undefined {
+		const callId = tc.id;
+		const modelName = tc.name;
+		const reject = (reason: string): { preResult: ToolResult } => ({
+			preResult: { call_id: callId, status: 'error', error: reason, metadata: { retryable: false } },
+		});
+
+		if (!snapshot.exposedNames.has(modelName)) {
+			logger.log(`[AgentLoop] 拒绝执行未暴露工具 tool=${modelName} call_id=${callId} stage=${snapshot.stage}`);
+			return reject(`工具 ${modelName} 不在当前阶段可用，请改用可见工具`);
+		}
+
+		let parsedArgs: Record<string, unknown>;
+		try {
+			parsedArgs = JSON.parse(tc.arguments);
+		} catch {
+			parsedArgs = {};
+		}
+
+		const resolved = resolveResponsibilityCall(modelName, parsedArgs);
+		if (resolved?.kind === 'virtual') {
+			logger.log(`[AgentLoop] 工具尚未实现 tool=${modelName} call_id=${callId}`);
+			return reject(`工具 ${modelName} 实现尚未就绪，暂不可用`);
+		}
+
+		const tool = resolved?.kind === 'mapped' ? resolved.tool : modelName;
+		const args = resolved?.kind === 'mapped' ? resolved.args : parsedArgs;
+		logger.log(`[AgentLoop] 工具调用解析 tool=${modelName} → ${tool === modelName ? '(直出)' : tool} call_id=${callId}`);
+		return {
+			callBack: { call_id: callId, tool, args },
+			parallelable: snapshot.parallelableNames.has(modelName),
+		};
+	}
+
+	/**
 	 * 跟踪当前 run 中 todo_write 工具结果：
 	 * 成功且写入非空任务列表时置位 run 级信号并标记本轮草案（仅 planning 生效）；
 	 * executing 阶段写入后快照无活跃任务时自动回到 normal（保留最终快照，不自动重放）。
@@ -876,7 +962,8 @@ export class AgentLoop {
 	 * @returns 无返回值。
 	 */
 	private trackTodoWriteResult(sessionId: string, toolName: string, result: ToolResult): void {
-		if (toolName !== 'todo_write' || result.status !== 'success' || !result.result) {
+		// 模型可见名 todowrite 会经职责映射路由到底层 todo_write，两者均识别
+		if ((toolName !== 'todowrite' && toolName !== 'todo_write') || result.status !== 'success' || !result.result) {
 			return;
 		}
 		let todos: readonly TodoItem[] | null = null;
@@ -917,7 +1004,7 @@ export class AgentLoop {
 	 * 结果按原索引写入（顺序稳定）。abort 后不再启动新调用，已启动的调用跑完。
 	 */
 	private async runBoundedParallel(
-		items: Array<{ coreCall: ToolCall; index: number }>,
+		items: Array<{ callBack: ToolCall; index: number; modelName: string }>,
 		results: Array<ToolResult | undefined>,
 		toolContext: ToolContext,
 		sessionId: string,
@@ -932,38 +1019,44 @@ export class AgentLoop {
 						return;
 					}
 					const item = items[next++];
-					results[item.index] = await this.executeSingleTool(item.coreCall, toolContext, sessionId);
+					results[item.index] = await this.executeSingleTool(item.callBack, item.modelName, toolContext, sessionId);
 				}
 			}),
 		);
 	}
 
-	/** 执行单个工具并发出状态/结果事件（并行与串行共用同一状态机）。 */
+	/**
+	 * 执行单个底层工具并发出状态/结果事件（并行与串行共用同一状态机）。
+	 * 事件中的 tool 使用模型可见名（职责型或 MCP 名），路由交由 ToolRouter 执行底层工具。
+	 * @param callBack 底层工具调用（职责型工具已映射到底层实现）。
+	 * @param modelName 模型可见的工具名（用于 UI 展示）。
+	 */
 	private async executeSingleTool(
-		coreCall: ToolCall,
+		callBack: ToolCall,
+		modelName: string,
 		toolContext: ToolContext,
 		sessionId: string,
 	): Promise<ToolResult> {
 		this.eventBus.emit({
 			type: 'tool_state_change',
 			sessionId,
-			payload: { call_id: coreCall.call_id, tool: coreCall.tool, state: 'running', args: coreCall.args },
+			payload: { call_id: callBack.call_id, tool: modelName, state: 'running', args: callBack.args },
 		});
 
 		let result: ToolResult;
 		try {
-			result = await this.toolRouter.route(coreCall, toolContext);
-			logger.log(`[AgentLoop] 工具 ${coreCall.tool} 执行完成 status=${result.status}`);
+			result = await this.toolRouter.route(callBack, toolContext);
+			logger.log(`[AgentLoop] 工具 ${modelName} 执行完成 status=${result.status}`);
 		} catch (error) {
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (error instanceof ToolValidationError) {
 				// 模型传参错误：属可预期的业务错误，不记 ERROR 弹窗，作为普通工具错误返回由模型自行修正
-				logger.log(`[AgentLoop] 工具 ${coreCall.tool} 参数校验失败: ${errorMsg}`);
+				logger.log(`[AgentLoop] 工具 ${modelName} 参数校验失败: ${errorMsg}`);
 			} else {
-				logger.notifyError(`[AgentLoop] 工具 ${coreCall.tool} 执行异常`, errorMsg);
+				logger.notifyError(`[AgentLoop] 工具 ${modelName} 执行异常`, errorMsg);
 			}
 			result = {
-				call_id: coreCall.call_id,
+				call_id: callBack.call_id,
 				status: 'error',
 				error: errorMsg,
 			};
@@ -973,8 +1066,8 @@ export class AgentLoop {
 			type: 'tool_state_change',
 			sessionId,
 			payload: {
-				call_id: coreCall.call_id,
-				tool: coreCall.tool,
+				call_id: callBack.call_id,
+				tool: modelName,
 				state: result.status,
 				error: result.error,
 				output: result.result,

@@ -14,7 +14,7 @@ import type { AgentEvent } from '../../core/eventBus';
 
 class MockReadTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'read_file',
+		name: 'fs_read_file',
 		description: 'Read a file',
 		parameters: { type: 'object', properties: { path: { type: 'string' } } },
 		permissions: 'read',
@@ -35,7 +35,7 @@ class MockReadTool extends BaseTool {
 
 class MockWriteTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'write_file',
+		name: 'fs_write_file',
 		description: 'Write a file',
 		parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } } },
 		permissions: 'write',
@@ -56,7 +56,7 @@ class MockWriteTool extends BaseTool {
 /** 可观测并发的只读工具：记录最大并发数与执行顺序。 */
 class MockProbeReadTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'read_file',
+		name: 'fs_read_file',
 		description: 'Read a file',
 		parameters: { type: 'object', properties: { path: { type: 'string' } } },
 		permissions: 'read',
@@ -95,7 +95,7 @@ class MockProbeReadTool extends BaseTool {
 /** 可观测并发的写工具：写工具必须串行（maxActive 恒为 1）。 */
 class MockProbeWriteTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'write_file',
+		name: 'fs_write_file',
 		description: 'Write a file',
 		parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } } },
 		permissions: 'write',
@@ -193,9 +193,9 @@ describe('AgentLoop convergence', () => {
 			// 3 次相同调用 → 第 3 次触发 doom loop 引导
 			// 第 4 次无工具调用 → 结束
 			const provider = makeProvider([
-				[makeToolCallEvent('1', 'read_file', { path: '/a.ts' }), makeFinishEvent('tool_use')],
-				[makeToolCallEvent('2', 'read_file', { path: '/a.ts' }), makeFinishEvent('tool_use')],
-				[makeToolCallEvent('3', 'read_file', { path: '/a.ts' }), makeFinishEvent('tool_use')], // doom!
+				[makeToolCallEvent('1', 'read', { path: '/a.ts' }), makeFinishEvent('tool_use')],
+				[makeToolCallEvent('2', 'read', { path: '/a.ts' }), makeFinishEvent('tool_use')],
+				[makeToolCallEvent('3', 'read', { path: '/a.ts' }), makeFinishEvent('tool_use')], // doom!
 				[makeTextEvent('Done'), makeFinishEvent()],
 			]);
 
@@ -217,9 +217,9 @@ describe('AgentLoop convergence', () => {
 			registry.register(readTool);
 
 			const provider = makeProvider([
-				[makeToolCallEvent('1', 'read_file', { path: '/a.ts' }), makeFinishEvent('tool_use')],
-				[makeToolCallEvent('2', 'read_file', { path: '/b.ts' }), makeFinishEvent('tool_use')],
-				[makeToolCallEvent('3', 'read_file', { path: '/c.ts' }), makeFinishEvent('tool_use')],
+				[makeToolCallEvent('1', 'read', { path: '/a.ts' }), makeFinishEvent('tool_use')],
+				[makeToolCallEvent('2', 'read', { path: '/b.ts' }), makeFinishEvent('tool_use')],
+				[makeToolCallEvent('3', 'read', { path: '/c.ts' }), makeFinishEvent('tool_use')],
 				[makeTextEvent('Done'), makeFinishEvent()],
 			]);
 
@@ -243,8 +243,8 @@ describe('AgentLoop convergence', () => {
 
 			// 2 次相同调用 → 都应执行（无缓存）
 			const provider = makeProvider([
-				[makeToolCallEvent('1', 'read_file', { path: '/a.ts' }), makeFinishEvent('tool_use')],
-				[makeToolCallEvent('2', 'read_file', { path: '/a.ts' }), makeFinishEvent('tool_use')],
+				[makeToolCallEvent('1', 'read', { path: '/a.ts' }), makeFinishEvent('tool_use')],
+				[makeToolCallEvent('2', 'read', { path: '/a.ts' }), makeFinishEvent('tool_use')],
 				[makeTextEvent('Done'), makeFinishEvent()],
 			]);
 
@@ -272,7 +272,7 @@ describe('AgentLoop convergence', () => {
 			const events: LLMEvent[][] = [];
 			for (let i = 0; i < 5; i++) {
 				events.push([
-					makeToolCallEvent(`${i}`, 'read_file', { path: `/file${i}.ts` }),
+					makeToolCallEvent(`${i}`, 'read', { path: `/file${i}.ts` }),
 					makeFinishEvent('tool_use'),
 				]);
 			}
@@ -299,7 +299,7 @@ describe('AgentLoop convergence', () => {
 			// 同一轮返回 5 个 read_file 调用 → 应分组并发且峰值并发 ≤ 3
 			const provider = makeProvider([
 				[
-					...Array.from({ length: 5 }, (_, i) => makeToolCallEvent(`r${i}`, 'read_file', { path: `/f${i}.ts` })),
+					...Array.from({ length: 5 }, (_, i) => makeToolCallEvent(`r${i}`, 'read', { path: `/f${i}.ts` })),
 					makeFinishEvent('tool_use'),
 				],
 				[makeTextEvent('Done'), makeFinishEvent()],
@@ -322,9 +322,9 @@ describe('AgentLoop convergence', () => {
 
 			const provider = makeProvider([
 				[
-					makeToolCallEvent('r0', 'read_file', { path: '/f0.ts' }),
-					makeToolCallEvent('r1', 'read_file', { path: '/f1.ts' }),
-					makeToolCallEvent('r2', 'read_file', { path: '/f2.ts' }),
+					makeToolCallEvent('r0', 'read', { path: '/f0.ts' }),
+					makeToolCallEvent('r1', 'read', { path: '/f1.ts' }),
+					makeToolCallEvent('r2', 'read', { path: '/f2.ts' }),
 					makeFinishEvent('tool_use'),
 				],
 				[makeTextEvent('Done'), makeFinishEvent()],
@@ -351,10 +351,10 @@ describe('AgentLoop convergence', () => {
 			// 同一轮：[read, write, read, write]
 			const provider = makeProvider([
 				[
-					makeToolCallEvent('r0', 'read_file', { path: '/a.ts' }),
-					makeToolCallEvent('w0', 'write_file', { path: '/a.ts' }),
-					makeToolCallEvent('r1', 'read_file', { path: '/b.ts' }),
-					makeToolCallEvent('w1', 'write_file', { path: '/b.ts' }),
+					makeToolCallEvent('r0', 'read', { path: '/a.ts' }),
+					makeToolCallEvent('w0', 'write', { path: '/a.ts' }),
+					makeToolCallEvent('r1', 'read', { path: '/b.ts' }),
+					makeToolCallEvent('w1', 'write', { path: '/b.ts' }),
 					makeFinishEvent('tool_use'),
 				],
 				[makeTextEvent('Done'), makeFinishEvent()],
@@ -381,11 +381,11 @@ describe('AgentLoop convergence', () => {
 
 			// 第 3 步起连续相同调用：该批 [x, y] 中 x 触发 doom → x、y 都不执行
 			const provider = makeProvider([
-				[makeToolCallEvent('1', 'read_file', { path: '/a.ts' }), makeFinishEvent('tool_use')],
-				[makeToolCallEvent('2', 'read_file', { path: '/a.ts' }), makeFinishEvent('tool_use')],
+				[makeToolCallEvent('1', 'read', { path: '/a.ts' }), makeFinishEvent('tool_use')],
+				[makeToolCallEvent('2', 'read', { path: '/a.ts' }), makeFinishEvent('tool_use')],
 				[
-					makeToolCallEvent('3', 'read_file', { path: '/a.ts' }),
-					makeToolCallEvent('4', 'read_file', { path: '/b.ts' }),
+					makeToolCallEvent('3', 'read', { path: '/a.ts' }),
+					makeToolCallEvent('4', 'read', { path: '/b.ts' }),
 					makeFinishEvent('tool_use'),
 				],
 				[makeTextEvent('Done'), makeFinishEvent()],

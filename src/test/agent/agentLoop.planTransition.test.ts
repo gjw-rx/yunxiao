@@ -52,7 +52,7 @@ class ScriptedProvider implements LLMProvider {
 /** todo_write 工具调用回合（可指定任务列表）。 */
 function todoWriteTurn(todos: unknown[]): () => LLMEvent[] {
 	return () => [
-		{ type: 'toolCall', id: 'c1', name: 'todo_write', arguments: JSON.stringify({ todos }) },
+		{ type: 'toolCall', id: 'c1', name: 'todowrite', arguments: JSON.stringify({ todos }) },
 		{ type: 'finish', reason: 'tool_use' },
 	];
 }
@@ -157,7 +157,7 @@ describe('AgentLoop Plan 状态转换', () => {
 			planMode.transition('s1', 'planning');
 			const provider = new ScriptedProvider([
 				() => [
-					{ type: 'toolCall', id: 'c1', name: 'todo_write', arguments: JSON.stringify({ todos: [{ id: 'a', content: '调研', status: 'pending' }] }) },
+					{ type: 'toolCall', id: 'c1', name: 'todowrite', arguments: JSON.stringify({ todos: [{ id: 'a', content: '调研', status: 'pending' }] }) },
 					{ type: 'finish', reason: 'tool_use' },
 				],
 				() => [{ type: 'error', error: 'boom' }],

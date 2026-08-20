@@ -43,14 +43,14 @@ class MockReadTool extends BaseTool {
 
 class MockStatusTool extends BaseTool {
 	readonly schema: ToolSchema = {
-		name: 'git_status',
-		description: '查看 git 状态',
-		parameters: { type: 'object', properties: {} },
+		name: 'fs_read_file',
+		description: '读取文件',
+		parameters: { type: 'object', properties: { path: { type: 'string' } } },
 		permissions: 'read',
 		canParallel: true,
 	};
-	async execute(): Promise<{ status: ToolCallStatus; result?: string }> {
-		return { status: 'success', result: 'clean' };
+	async execute(args: Record<string, unknown>): Promise<{ status: ToolCallStatus; result?: string }> {
+		return { status: 'success', result: `clean ${args.path}` };
 	}
 }
 
@@ -62,7 +62,7 @@ describe('AgentLoop 工具结果持久化 toolName', () => {
 		const store = new MessageStore();
 		const provider = makeProvider([
 			[
-				{ type: 'toolCall', id: 'call_1', name: 'fs_read_file', arguments: JSON.stringify({ path: '/tmp/a.ts' }) },
+				{ type: 'toolCall', id: 'call_1', name: 'read', arguments: JSON.stringify({ path: '/tmp/a.ts' }) },
 				{ type: 'finish', reason: 'tool_use' },
 			],
 			[{ type: 'textDelta', text: 'done' }, { type: 'finish', reason: 'stop' }],
@@ -80,7 +80,7 @@ describe('AgentLoop 工具结果持久化 toolName', () => {
 		const toolMsg = store.loadHistory('s1').find((m) => m.role === 'tool') as (Message & { role: 'tool' }) | undefined;
 		assert.ok(toolMsg, '应存在 tool 结果消息');
 		assert.strictEqual(toolMsg!.toolCallId, 'call_1');
-		assert.strictEqual((toolMsg as unknown as { toolName?: string }).toolName, 'fs_read_file', 'tool 结果应携带实际工具名');
+		assert.strictEqual((toolMsg as unknown as { toolName?: string }).toolName, 'read', 'tool 结果应携带模型可见职责名');
 	});
 
 	it('并行同名工具调用的两个 tool 结果各自携带正确工具名', async () => {
@@ -90,8 +90,8 @@ describe('AgentLoop 工具结果持久化 toolName', () => {
 		const store = new MessageStore();
 		const provider = makeProvider([
 			[
-				{ type: 'toolCall', id: 'call_1', name: 'git_status', arguments: '{}' },
-				{ type: 'toolCall', id: 'call_2', name: 'git_status', arguments: '{}' },
+				{ type: 'toolCall', id: 'call_1', name: 'read', arguments: JSON.stringify({ path: '/a.ts' }) },
+				{ type: 'toolCall', id: 'call_2', name: 'read', arguments: JSON.stringify({ path: '/b.ts' }) },
 				{ type: 'finish', reason: 'tool_use' },
 			],
 			[{ type: 'textDelta', text: 'done' }, { type: 'finish', reason: 'stop' }],
@@ -109,7 +109,7 @@ describe('AgentLoop 工具结果持久化 toolName', () => {
 		const toolMsgs = store.loadHistory('s1').filter((m) => m.role === 'tool') as Array<Message & { role: 'tool'; toolName?: string }>;
 		assert.strictEqual(toolMsgs.length, 2);
 		const byId = new Map(toolMsgs.map((m) => [m.toolCallId, m.toolName]));
-		assert.strictEqual(byId.get('call_1'), 'git_status');
-		assert.strictEqual(byId.get('call_2'), 'git_status');
+		assert.strictEqual(byId.get('call_1'), 'read');
+		assert.strictEqual(byId.get('call_2'), 'read');
 	});
 });

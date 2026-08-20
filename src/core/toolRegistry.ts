@@ -179,6 +179,41 @@ export class ToolRegistry {
 		return [...this.tools.values()].map((t) => t.schema);
 	}
 
+	/** 当前已被 owner（如 MCP Server）登记的所有工具名集合。 */
+	private ownerToolNames(): Set<string> {
+		const names = new Set<string>();
+		for (const entry of this.owners.values()) {
+			for (const name of entry.toolNames) {
+				names.add(name);
+			}
+		}
+		return names;
+	}
+
+	/**
+	 * 列举本地静态工具 schema（非 owner 登记，如内置 fs/code/git/terminal/ todo/web/skill 工具）。
+	 * 模型协议层通过 ToolExposurePolicy 收敛为职责型工具，不直接暴露这些实现名。
+	 * @returns 本地静态工具 schema 列表
+	 */
+	listLocalTools(): ToolSchema[] {
+		const owned = this.ownerToolNames();
+		return [...this.tools.values()]
+			.filter((t) => !owned.has(t.schema.name))
+			.map((t) => t.schema);
+	}
+
+	/**
+	 * 列举 owner（MCP Server）登记的工具 schema。
+	 * 仅 enabled 且 ready 的 Server 会发布工具（connecting/disabled 不登记），故此处天然只含 ready 工具。
+	 * @returns MCP 工具 schema 列表
+	 */
+	listMcpTools(): ToolSchema[] {
+		const owned = this.ownerToolNames();
+		return [...this.tools.values()]
+			.filter((t) => owned.has(t.schema.name))
+			.map((t) => t.schema);
+	}
+
 	// ── 内部辅助 ──
 
 	/** 回滚：恢复旧 owner 工具集（replaceOwnerTools 注册失败时调用）。 */

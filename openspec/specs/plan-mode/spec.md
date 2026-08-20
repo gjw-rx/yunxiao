@@ -42,23 +42,32 @@ TBD - created by archiving change add-plan-mode. Update Purpose after archive.
 - **THEN** 系统保持 `planning`，不自动开始执行，已成功持久化的 Todo 快照保持可见
 
 ### Requirement: Plan 模式强制只读工具边界
-在 `planning` 或 `review` 阶段，系统 SHALL 仅向模型暴露 `permissions === 'read'` 的工具定义。系统 MUST 在本地工具路由入口使用相同会话策略再次校验调用，并 MUST 在 Hook、审批或实际执行之前以结构化取消结果拒绝所有非允许工具。`todo_write` SHALL 因其会话元数据性质和现有 `read` 权限继续可用；`terminal_exec`、写入、执行和破坏性工具 MUST NOT 可用。
+系统 SHALL 在 planning 和 reviewing 阶段使用 OpenCode 风格职责型工具的只读子集：`read`、`glob`、`grep`、`webfetch`、`websearch`、`skill`、`question` 和现有特例 `todowrite`。`bash`、`edit`、`write`、`apply_patch`、`task` MUST NOT 出现在允许调用范围。对 MCP 工具，系统 SHALL 继续遵循现有 permission 分类：允许的 read MCP 工具直接暴露完整 schema，不允许的 write/execute/destructive 或未分类 MCP 工具不进入 Plan 可调用快照。MCP 不使用 search/describe/call 渐进桥。ToolRouter SHALL 保留现有 Plan 权限校验，且拒绝必须发生在 Hook、审批或底层执行之前。`todowrite` SHALL 继续遵循既有 Plan 特例，不因本变更扩大其权限。
 
-#### Scenario: 模型仅看到只读工具与 Todo
-- **WHEN** `planning` 会话构建 LLM 请求
-- **THEN** 请求工具列表只包含本地只读工具、明确声明只读的 MCP 工具及 `todo_write`，不包含 `terminal_exec` 或任何 `write`、`execute`、`destructive` 工具
+#### Scenario: Planning 阶段只暴露只读职责工具
+- **WHEN** AgentLoop 在 planning 阶段构造模型请求
+- **THEN** 本地直接工具仅包含 `read`、`glob`、`grep`、`webfetch`、`websearch`、`skill`、`question` 和 `todowrite`
+- **AND** `bash`、`edit`、`write`、`apply_patch`、`task` 不出现在直接 schema
 
-#### Scenario: 隐藏工具调用被路由兜底拒绝
-- **WHEN** 模型在 `planning` 阶段仍返回一个已注册但不允许的写入或执行工具调用
-- **THEN** ToolRouter 在 Hook、审批和执行之前返回 `cancelled` 结果，目标工具没有副作用
+#### Scenario: Ready read MCP 工具直接暴露
+- **WHEN** planning 或 reviewing 阶段存在 enabled 且 ready 且 permission 为 read 的 MCP 工具
+- **THEN** 该 MCP 工具以原名称和完整 schema 直接出现在模型请求
+- **AND** 不要求先通过任何渐进发现工具
 
-#### Scenario: 未声明只读的 MCP 工具被排除
-- **WHEN** MCP 工具没有 `readOnlyHint: true`，其权限按现有规则映射为 `execute`
-- **THEN** 该工具在 `planning` 和 `review` 阶段既不暴露给模型也不能被路由执行
+#### Scenario: 隐藏写工具仍被拒绝
+- **WHEN** 模型在 planning 或 reviewing 阶段伪造 `bash`、`edit` 或底层写工具调用
+- **THEN** 系统返回 Plan 权限拒绝
+- **AND** 拒绝发生在 Hook、审批和底层工具执行之前
 
-#### Scenario: Plan 模式允许更新任务草案
-- **WHEN** 模型在 `planning` 阶段调用 `todo_write` 更新完整任务列表
-- **THEN** 系统按既有 Todo 校验和持久化规则执行调用，且不触发写入工具审批
+#### Scenario: 未分类 MCP 工具不得在 Plan 中调用
+- **WHEN** MCP 工具没有可靠的 read 权限分类，且模型在 planning 或 reviewing 阶段尝试调用它
+- **THEN** 该工具不进入 Plan 可调用快照
+- **AND** 远程 MCP 请求不会发生
+
+#### Scenario: Todo 更新保留既有特例
+- **WHEN** planning 或 reviewing 阶段按既有规则允许 `todowrite` 更新当前计划状态
+- **THEN** 该调用继续按原有 Plan 特例处理
+- **AND** 本变更不授予其他写工具权限
 
 ### Requirement: 计划执行必须经过用户确认
 进入 `review` 后，系统 SHALL 停止自动 Agent 调用，并 SHALL 在 Todo 面板提供"执行计划""继续规划""退出规划"操作。只有"执行计划"可将阶段切换为 `executing`；"继续规划" SHALL 恢复 `planning` 并保留当前草案；"退出规划" SHALL 返回 `normal`，若本轮已创建草案则清空该草案。所有操作 MUST 校验当前会话、阶段与运行状态，重复或过期操作 MUST NOT 触发执行。

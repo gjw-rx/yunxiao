@@ -96,33 +96,42 @@ function exposedTools(provider: CapturingProvider): Set<string> {
 }
 
 describe('AgentLoop Plan 模式工具暴露', () => {
-	const ALL = new Set(['fs_read_file', 'todo_write', 'fs_write_file', 'terminal_exec', 'fs_delete_file']);
-	const READ_ONLY = new Set(['fs_read_file', 'todo_write']);
+	// 新暴露策略：普通/executing 固定暴露 13 个职责型本地工具（隐藏 fs_*/terminal 等专用 schema）
+	const ALL = new Set([
+		'bash', 'read', 'glob', 'grep', 'edit', 'write', 'apply_patch', 'task',
+		'webfetch', 'websearch', 'todowrite', 'skill', 'question',
+	]);
+	// planning/review 仅暴露只读职责子集
+	const READ_ONLY = new Set(['read', 'glob', 'grep', 'webfetch', 'websearch', 'skill', 'question', 'todowrite']);
 
-	it('normal 阶段暴露完整工具集', async () => {
+	it('normal 阶段暴露固定 13 个职责型工具，隐藏专用 schema', async () => {
 		const { provider, planMode, loop, cleanup } = setup();
 		try {
 			await loop.run('s1', 'hi');
 			assert.deepStrictEqual(exposedTools(provider), ALL);
+			assert.ok(!exposedTools(provider).has('fs_read_file'));
+			assert.ok(!exposedTools(provider).has('terminal_exec'));
 			assert.strictEqual(planMode.getState('s1').stage, 'normal');
 		} finally {
 			cleanup();
 		}
 	});
 
-	it('planning 阶段仅暴露 read 工具与 todo_write', async () => {
+	it('planning 阶段仅暴露只读职责子集', async () => {
 		const { provider, planMode, loop, cleanup } = setup();
 		try {
 			planMode.transition('s1', 'planning');
 			await loop.run('s1', '调研一下');
 			assert.deepStrictEqual(exposedTools(provider), READ_ONLY);
-			assert.ok(!exposedTools(provider).has('terminal_exec'));
+			assert.ok(!exposedTools(provider).has('bash'));
+			assert.ok(!exposedTools(provider).has('edit'));
+			assert.ok(!exposedTools(provider).has('write'));
 		} finally {
 			cleanup();
 		}
 	});
 
-	it('review 阶段仅暴露 read 工具与 todo_write', async () => {
+	it('review 阶段仅暴露只读职责子集', async () => {
 		const { provider, planMode, loop, cleanup } = setup();
 		try {
 			planMode.transition('s1', 'planning');
@@ -134,7 +143,7 @@ describe('AgentLoop Plan 模式工具暴露', () => {
 		}
 	});
 
-	it('executing 阶段恢复完整工具集', async () => {
+	it('executing 阶段恢复完整职责集合与隐藏专用 schema', async () => {
 		const { provider, planMode, loop, cleanup } = setup();
 		try {
 			planMode.transition('s1', 'planning');
@@ -142,6 +151,7 @@ describe('AgentLoop Plan 模式工具暴露', () => {
 			planMode.transition('s1', 'executing');
 			await loop.run('s1', '开始执行');
 			assert.deepStrictEqual(exposedTools(provider), ALL);
+			assert.ok(!exposedTools(provider).has('fs_write_file'));
 		} finally {
 			cleanup();
 		}

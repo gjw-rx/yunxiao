@@ -68,7 +68,7 @@ describe('AgentLoop Anthropic 端到端', () => {
 		const { provider, calls } = makeProvider([
 			// 第一轮：Claude 返回单个 tool use（Anthropic 大缓存命中的 usage）
 			[
-				{ type: 'toolCall', id: 'toolu_1', name: 'fs_read_file', arguments: JSON.stringify({ path: '/tmp/a.ts' }) },
+				{ type: 'toolCall', id: 'toolu_1', name: 'read', arguments: JSON.stringify({ path: '/tmp/a.ts' }) },
 				{ type: 'finish', reason: 'tool_use' },
 				{ type: 'usage', inputTokens: 11583, outputTokens: 105, totalTokens: 11688, noCacheTokens: 191, cacheReadTokens: 11392, cacheWriteTokens: 0, reasoningTokens: 59 },
 			],
@@ -103,7 +103,7 @@ describe('AgentLoop Anthropic 端到端', () => {
 		const toolMsg = store.loadHistory('s1').find((m) => m.role === 'tool') as (Message & { role: 'tool'; toolName?: string });
 		assert.ok(toolMsg, '应持久化 tool 结果消息');
 		assert.strictEqual(toolMsg!.toolCallId, 'toolu_1');
-		assert.strictEqual(toolMsg!.toolName, 'fs_read_file', 'tool 结果应携带实际工具名');
+		assert.strictEqual(toolMsg!.toolName, 'read', 'tool 结果应携带模型可见职责名');
 
 		// 4. 最终回复文本
 		const finalText = store.loadHistory('s1')

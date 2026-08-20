@@ -74,9 +74,10 @@ describe('AgentLoop 运行配置快照', () => {
 				if (requests.length === 1) {
 					// 第一轮返回工具调用（finish=tool_use），触发工具执行与第二次 step
 					streamStarted = true;
-					yield { type: 'toolCall', id: 't1', name: 'fs_read_file', arguments: '{}' };
+					yield { type: 'toolCall', id: 't1', name: 'read', arguments: '{"path":"/a.ts"}' };
 					yield { type: 'finish', reason: 'tool_use' };
 					await gate;
+					return;
 				}
 				yield makeFinishEvent();
 				yield makeUsageEvent(100, 20, { total: 120 });

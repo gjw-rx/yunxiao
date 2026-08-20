@@ -1,9 +1,7 @@
-# ai-sdk-tool-schema-adapter Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change migrate-to-vercel-ai-sdk. Update Purpose after archive.
-## Requirements
 ### Requirement: Registered local tools are exposed through AI SDK-compatible schemas
+
 The runtime SHALL convert the current run's 13 local responsibility-tool schemas — `bash`, `read`, `glob`, `grep`, `edit`, `write`, `apply_patch`, `task`, `webfetch`, `websearch`, `todowrite`, `skill`, and `question` — into AI SDK-compatible tool definitions using their model-visible names, descriptions, and JSON Schema parameters. The runtime SHALL continue converting every tool schema from each enabled and ready MCP server in the current run's MCP snapshot into an AI SDK-compatible definition using the registered MCP name, description, and input schema. Conversion SHALL preserve the source snapshot schema rather than introduce a second manually maintained parameter schema. Other local Registry entries SHALL remain executable implementation details and SHALL NOT become independent local AI SDK definitions.
 
 #### Scenario: Responsibility tool is exposed
@@ -26,24 +24,3 @@ The runtime SHALL convert the current run's 13 local responsibility-tool schemas
 - **THEN** the underlying ToolRouter validation returns a structured failure
 - **AND** no remote MCP execution occurs
 
-### Requirement: AI SDK tool definitions do not execute local tools directly
-The AI SDK tool adapter SHALL NOT register an execute callback for static local tools or MCP adapters. AgentLoop SHALL dispatch every normalized ToolCall to ToolRouter after the stream yields it, and MCP protocol invocation SHALL occur only from McpToolAdapter after routing succeeds.
-
-#### Scenario: Local tool requested
-- **WHEN** the model requests `fs_read_file`
-- **THEN** AgentLoop dispatches through ToolRouter rather than AI SDK execute
-
-#### Scenario: Remote MCP tool requested
-- **WHEN** the model requests a Streamable HTTP MCP tool
-- **THEN** AgentLoop dispatches through ToolRouter and AI SDK never accesses its URL or Client
-
-### Requirement: Existing tool execution policy remains authoritative
-The AI SDK integration SHALL preserve ToolRouter as the sole execution boundary for static and MCP tools, including audit, approval, execution journal where applicable, result governance, cancellation and parallelism. A tool's STDIO or remote source MUST NOT bypass or weaken any control.
-
-#### Scenario: Unclassified remote tool proposed
-- **WHEN** the model requests a remote MCP tool mapped to execute
-- **THEN** ToolRouter requests approval before network tools/call
-
-#### Scenario: Mixed parallel calls
-- **WHEN** one response includes local, read-only MCP and execute MCP calls
-- **THEN** AgentLoop applies the existing parallelism policy before dispatch
